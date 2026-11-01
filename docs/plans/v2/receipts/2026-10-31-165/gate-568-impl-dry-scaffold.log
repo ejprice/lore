@@ -1,0 +1,10 @@
+HEAD=0c7477c9704316424008f973125ea63f24ae70a7
+DIRTY_FILES=36
+TREE=7518ca95523552b0db77f4c1b6c8639243e6eb6cffce386958ee7a6e31e46e61
+loremaster python: /home/ejprice/PycharmProjects/lore/.venv/bin/python
+slug line: ['  slug: "odoo_custom"']
+resolver _project_slug: odoo_custom
+leftovers: ['.git', 'lore.yaml']
+refused: SlugRefusal project directory '---' has no valid lore slug (derived '', which does not match ^[a-z0-9][a-z0-9_]*$); set project.slug by hand in the project's lore.yaml, or rename the directory (project /var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/52f8a1cf-f8c5-489f-8508-55108631062a/scratchpad/dry.XSmQIa/---)
+--- leftovers: []
+EXIT=0

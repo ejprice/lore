@@ -1,0 +1,184 @@
+lore_deploy.py sha256 before: ad23a318f112b1e80f62d71d8fd88ed19df39c73134028facba6d830b3ea31d9  lore_deploy.py
+
+PROOF FAILED — the observed RED set is not the declared one.
+
+  DECLARED RED but STAYED GREEN (the pin never fired — the mutation may have landed in code no test reaches):
+    - skills/lore-deploy/scripts/test_ledger_572.py::TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex::test_a_failed_cold_index_leaves_the_project_unprovisioned[demand_intelligence]
+    - skills/lore-deploy/scripts/test_ledger_572.py::TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex::test_a_failed_cold_index_leaves_the_project_unprovisioned[odoo-custom]
+    - skills/lore-deploy/scripts/test_ledger_572.py::TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex::test_a_failed_cold_index_over_an_owner_only_ledger_leaves_it_unprovisioned[demand_intelligence]
+    - skills/lore-deploy/scripts/test_ledger_572.py::TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex::test_a_failed_cold_index_over_an_owner_only_ledger_leaves_it_unprovisioned[odoo-custom]
+
+  WENT RED but was NOT DECLARED (the mutation broke something else; a bare '1 failed' tail cannot see this):
+    + test_ledger_572.py::TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex::test_a_failed_cold_index_leaves_the_project_unprovisioned[demand_intelligence]
+    + test_ledger_572.py::TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex::test_a_failed_cold_index_leaves_the_project_unprovisioned[odoo-custom]
+    + test_ledger_572.py::TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex::test_a_failed_cold_index_over_an_owner_only_ledger_leaves_it_unprovisioned[demand_intelligence]
+    + test_ledger_572.py::TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex::test_a_failed_cold_index_over_an_owner_only_ledger_leaves_it_unprovisioned[odoo-custom]
+
+  declared: ['skills/lore-deploy/scripts/test_ledger_572.py::TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex::test_a_failed_cold_index_leaves_the_project_unprovisioned[demand_intelligence]', 'skills/lore-deploy/scripts/test_ledger_572.py::TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex::test_a_failed_cold_index_leaves_the_project_unprovisioned[odoo-custom]', 'skills/lore-deploy/scripts/test_ledger_572.py::TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex::test_a_failed_cold_index_over_an_owner_only_ledger_leaves_it_unprovisioned[demand_intelligence]', 'skills/lore-deploy/scripts/test_ledger_572.py::TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex::test_a_failed_cold_index_over_an_owner_only_ledger_leaves_it_unprovisioned[odoo-custom]']
+  observed: ['test_ledger_572.py::TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex::test_a_failed_cold_index_leaves_the_project_unprovisioned[demand_intelligence]', 'test_ledger_572.py::TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex::test_a_failed_cold_index_leaves_the_project_unprovisioned[odoo-custom]', 'test_ledger_572.py::TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex::test_a_failed_cold_index_over_an_owner_only_ledger_leaves_it_unprovisioned[demand_intelligence]', 'test_ledger_572.py::TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex::test_a_failed_cold_index_over_an_owner_only_ledger_leaves_it_unprovisioned[odoo-custom]']
+mutation LANDED (anchor matched exactly once) in lore_deploy.py
+running: systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0 uv run python -m pytest -q . ../tests -n 8 --timeout=300 -p no:cacheprovider -rfE
+
+bringing up nodes...
+bringing up nodes...
+
+...........................F..........F................................. [ 17%]
+........................................................................ [ 34%]
+........................................................................ [ 51%]
+....F....................F.............................................. [ 68%]
+........................................................................ [ 85%]
+...........................................................              [100%]
+=================================== FAILURES ===================================
+_ TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex.test_a_failed_cold_index_over_an_owner_only_ledger_leaves_it_unprovisioned[demand_intelligence] _
+[gw4] linux -- Python 3.14.7 /var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/c5431713-c7ba-47d8-aaeb-7e58efed101c/scratchpad/mut572/.venv/bin/python3
+
+self = <test_ledger_572.TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex object at 0x7f7d139044d0>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18362/popen-gw4/test_a_failed_cold_index_over_0/proje...pture.CaptureFixture object at 0x7f7d1314c1a0>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f7d1d038180>)
+
+    def test_a_failed_cold_index_over_an_owner_only_ledger_leaves_it_unprovisioned(
+        self, scene: LedgerScene
+    ) -> None:
+        """Owner row present, index fails → still unprovisioned: the next setup indexes."""
+        scene.record_owner_only()
+        _stub_probes(scene.monkeypatch, result=lore_deploy._EXIT_OK)
+        DeployShim.install(scene.monkeypatch, index_returncode=INDEX_FAILS)
+        failed = scene.setup()
+        assert failed.return_code == lore_deploy._EXIT_ERROR, (
+            f"a failed cold index must fail setup; rc={failed.return_code} raised={failed.raised!r} "
+            f"stderr={failed.stderr!r}"
+        )
+    
+        retried, shim = scene.setup_reindexes()
+    
+        _assert_ok(retried, "the setup after a failed cold index must provision")
+>       assert len(shim.index_calls) == 1, (
+            f"after a FAILED cold index the next setup must cold-index again; ran {shim.index_calls}"
+        )
+E       AssertionError: after a FAILED cold index the next setup must cold-index again; ran []
+E       assert 0 == 1
+E        +  where 0 = len([])
+E        +    where [] = DeployShim(real_run=DeployShim(real_run=<function _run at 0x7f7d1d077e20>, index_returncode=1, index_calls=[['/var/tmp...format', '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}', 'lore-demand_intelligence']]).index_calls
+
+test_ledger_572.py:396: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_demand_intelligence → http://127.0.0.1:9201/mcp
+_ TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex.test_a_failed_cold_index_over_an_owner_only_ledger_leaves_it_unprovisioned[odoo-custom] _
+[gw4] linux -- Python 3.14.7 /var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/c5431713-c7ba-47d8-aaeb-7e58efed101c/scratchpad/mut572/.venv/bin/python3
+
+self = <test_ledger_572.TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex object at 0x7f7d138d6360>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18362/popen-gw4/test_a_failed_cold_index_over_1/proje...pture.CaptureFixture object at 0x7f7d133e9090>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f7d1d3ef230>)
+
+    def test_a_failed_cold_index_over_an_owner_only_ledger_leaves_it_unprovisioned(
+        self, scene: LedgerScene
+    ) -> None:
+        """Owner row present, index fails → still unprovisioned: the next setup indexes."""
+        scene.record_owner_only()
+        _stub_probes(scene.monkeypatch, result=lore_deploy._EXIT_OK)
+        DeployShim.install(scene.monkeypatch, index_returncode=INDEX_FAILS)
+        failed = scene.setup()
+        assert failed.return_code == lore_deploy._EXIT_ERROR, (
+            f"a failed cold index must fail setup; rc={failed.return_code} raised={failed.raised!r} "
+            f"stderr={failed.stderr!r}"
+        )
+    
+        retried, shim = scene.setup_reindexes()
+    
+        _assert_ok(retried, "the setup after a failed cold index must provision")
+>       assert len(shim.index_calls) == 1, (
+            f"after a FAILED cold index the next setup must cold-index again; ran {shim.index_calls}"
+        )
+E       AssertionError: after a FAILED cold index the next setup must cold-index again; ran []
+E       assert 0 == 1
+E        +  where 0 = len([])
+E        +    where [] = DeployShim(real_run=DeployShim(real_run=<function _run at 0x7f7d1d077e20>, index_returncode=1, index_calls=[['/var/tmp...ct', '--format', '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}', 'lore-odoo_custom']]).index_calls
+
+test_ledger_572.py:396: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_odoo_custom → http://127.0.0.1:9201/mcp
+_ TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex.test_a_failed_cold_index_leaves_the_project_unprovisioned[demand_intelligence] _
+[gw3] linux -- Python 3.14.7 /var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/c5431713-c7ba-47d8-aaeb-7e58efed101c/scratchpad/mut572/.venv/bin/python3
+
+self = <test_ledger_572.TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex object at 0x7fa5370969e0>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18362/popen-gw3/test_a_failed_cold_index_leave0/proje...pture.CaptureFixture object at 0x7fa536837790>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7fa536e47ee0>)
+
+    def test_a_failed_cold_index_leaves_the_project_unprovisioned(
+        self, scene: LedgerScene
+    ) -> None:
+        """Failed index → setup fails, and the NEXT setup cold-indexes again.
+    
+        A marker written before the index (or written regardless of its exit) makes the next
+        setup a no-op over an index that never completed.
+        """
+        _stub_probes(scene.monkeypatch, result=lore_deploy._EXIT_OK)
+        failing = DeployShim.install(scene.monkeypatch, index_returncode=INDEX_FAILS)
+        failed = scene.setup()
+        assert failed.raised is None and failed.return_code == lore_deploy._EXIT_ERROR, (
+            f"a failed cold index must fail setup; rc={failed.return_code} raised={failed.raised!r}"
+        )
+        assert len(failing.index_calls) == 1, (
+            f"setup must have tried the cold index; ran {failing.index_calls}"
+        )
+    
+        retried, shim = scene.setup_reindexes()
+    
+        _assert_ok(retried, "the setup after a failed cold index must provision")
+>       assert len(shim.index_calls) == 1, (
+            f"after a FAILED cold index the next setup must cold-index again; ran {shim.index_calls}"
+        )
+E       AssertionError: after a FAILED cold index the next setup must cold-index again; ran []
+E       assert 0 == 1
+E        +  where 0 = len([])
+E        +    where [] = DeployShim(real_run=DeployShim(real_run=<function _run at 0x7fa54072be20>, index_returncode=1, index_calls=[['/var/tmp...format', '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}', 'lore-demand_intelligence']]).index_calls
+
+test_ledger_572.py:376: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_demand_intelligence → http://127.0.0.1:9201/mcp
+_ TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex.test_a_failed_cold_index_leaves_the_project_unprovisioned[odoo-custom] _
+[gw3] linux -- Python 3.14.7 /var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/c5431713-c7ba-47d8-aaeb-7e58efed101c/scratchpad/mut572/.venv/bin/python3
+
+self = <test_ledger_572.TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex object at 0x7fa537096ea0>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18362/popen-gw3/test_a_failed_cold_index_leave1/proje...pture.CaptureFixture object at 0x7fa5367d2750>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7fa5367f7d10>)
+
+    def test_a_failed_cold_index_leaves_the_project_unprovisioned(
+        self, scene: LedgerScene
+    ) -> None:
+        """Failed index → setup fails, and the NEXT setup cold-indexes again.
+    
+        A marker written before the index (or written regardless of its exit) makes the next
+        setup a no-op over an index that never completed.
+        """
+        _stub_probes(scene.monkeypatch, result=lore_deploy._EXIT_OK)
+        failing = DeployShim.install(scene.monkeypatch, index_returncode=INDEX_FAILS)
+        failed = scene.setup()
+        assert failed.raised is None and failed.return_code == lore_deploy._EXIT_ERROR, (
+            f"a failed cold index must fail setup; rc={failed.return_code} raised={failed.raised!r}"
+        )
+        assert len(failing.index_calls) == 1, (
+            f"setup must have tried the cold index; ran {failing.index_calls}"
+        )
+    
+        retried, shim = scene.setup_reindexes()
+    
+        _assert_ok(retried, "the setup after a failed cold index must provision")
+>       assert len(shim.index_calls) == 1, (
+            f"after a FAILED cold index the next setup must cold-index again; ran {shim.index_calls}"
+        )
+E       AssertionError: after a FAILED cold index the next setup must cold-index again; ran []
+E       assert 0 == 1
+E        +  where 0 = len([])
+E        +    where [] = DeployShim(real_run=DeployShim(real_run=<function _run at 0x7fa54072be20>, index_returncode=1, index_calls=[['/var/tmp...ct', '--format', '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}', 'lore-odoo_custom']]).index_calls
+
+test_ledger_572.py:376: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_odoo_custom → http://127.0.0.1:9201/mcp
+=========================== short test summary info ============================
+FAILED test_ledger_572.py::TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex::test_a_failed_cold_index_over_an_owner_only_ledger_leaves_it_unprovisioned[demand_intelligence]
+FAILED test_ledger_572.py::TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex::test_a_failed_cold_index_over_an_owner_only_ledger_leaves_it_unprovisioned[odoo-custom]
+FAILED test_ledger_572.py::TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex::test_a_failed_cold_index_leaves_the_project_unprovisioned[demand_intelligence]
+FAILED test_ledger_572.py::TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex::test_a_failed_cold_index_leaves_the_project_unprovisioned[odoo-custom]
+4 failed, 415 passed in 36.85s
+Running as unit: run-p1836464-i110804296.scope; invocation ID: b1cf61b6481141899b36964613d847ee
+
+tree restored byte-exact (lore_deploy.py: md5 41146b5dd626176af773bb87818bda25)
+EXIT=4
+lore_deploy.py sha256 after: ad23a318f112b1e80f62d71d8fd88ed19df39c73134028facba6d830b3ea31d9  lore_deploy.py

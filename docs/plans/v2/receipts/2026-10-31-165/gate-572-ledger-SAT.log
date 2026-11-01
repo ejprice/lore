@@ -1,0 +1,291 @@
+HEAD=99c2b8e50ccba8e1a8635b031144529460945940
+DIRTY_FILES=37
+TREE=10a6ddb74a608fdfac0aaa62f7d7a60728c79f2542cb99d9fae739499ad0385f
+Running as unit: run-p1603713-i110571546.scope; invocation ID: 89ce57350afe4a178518626eab835b9e
+PROVENANCE /var/tmp/claude-1000/ledger572-scratch/loremaster/loremaster/__init__.py /var/tmp/claude-1000/ledger572-scratch/skills/lore-deploy/scripts/lore_deploy.py
+Running as unit: run-p1603727-i110571560.scope; invocation ID: c6341b1aeb5a4f848b5b3549ef15455d
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [ 18%]
+........................................................................ [ 36%]
+.................................................................F...... [ 54%]
+.....F.......F..F.F...F..............................................F.. [ 72%]
+........................................................................ [ 90%]
+.......................................                                  [100%]
+=================================== FAILURES ===================================
+_ TestSetupRecordsAndHonoursItsOwnProjectPath.test_existing_deployment_backfills_its_legacy_manifest_and_proceeds[odoo_custom] _
+[gw0] linux -- Python 3.14.7 /var/tmp/claude-1000/ledger572-scratch/.venv/bin/python3
+
+self = <test_scaffold_slug.TestSetupRecordsAndHonoursItsOwnProjectPath object at 0x7fc320fb5480>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fc32155b620>
+tmp_path = PosixPath('/var/tmp/pytest-of-ejprice/pytest-18276/popen-gw0/test_existing_deployment_backf0')
+capsys = <_pytest.capture.CaptureFixture object at 0x7fc32cf8ead0>
+configured_slug = 'odoo_custom'
+
+    @pytest.mark.parametrize("configured_slug", CONFIGURED_SLUGS)
+    def test_existing_deployment_backfills_its_legacy_manifest_and_proceeds(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        configured_slug: str,
+    ) -> None:
+        """lore.yaml declares the slug + a legacy ``<slug>.db`` (no row) → backfill, no-op success.
+    
+        Every live manifest predated the row (both on this host, measured 2026-10-31), so
+        re-running setup on an existing deployment must never be refused (directive #18015).
+        No container (a stopped deployment) and an ABSENT env-file: a build that refuses, or that
+        falls through past the provisioned check, fails here.
+        """
+        project = _project_dir(tmp_path, HEADLINE_NAME)
+        _write_operator_config(project, configured_slug)
+        _write_manifest(configured_slug, owner=None)
+        shim = PodmanShim.install(monkeypatch, container_state=None)
+    
+        outcome = _drive_setup(project, tmp_path / "absent.env", capsys)
+    
+>       assert outcome.raised is None and outcome.return_code == lore_deploy._EXIT_OK, (
+            f"re-running setup on an existing {configured_slug} deployment must not be refused; "
+            f"got rc={outcome.return_code} raised={outcome.raised!r} stderr={outcome.stderr!r}"
+        )
+E       AssertionError: re-running setup on an existing odoo_custom deployment must not be refused; got rc=2 raised=None stderr='setup: secrets env-file /var/tmp/pytest-of-ejprice/pytest-18276/popen-gw0/test_existing_deployment_backf0/absent.env not found; create it first.\n'
+E       assert (None is None and 2 == 0)
+E        +  where None = VerbOutcome(return_code=2, raised=None, stdout='', stderr='setup: secrets env-file /var/tmp/pytest-of-ejprice/pytest-18276/popen-gw0/test_existing_deployment_backf0/absent.env not found; create it first.\n').raised
+E        +  and   2 = VerbOutcome(return_code=2, raised=None, stdout='', stderr='setup: secrets env-file /var/tmp/pytest-of-ejprice/pytest-18276/popen-gw0/test_existing_deployment_backf0/absent.env not found; create it first.\n').return_code
+E        +  and   0 = lore_deploy._EXIT_OK
+
+test_scaffold_slug.py:1011: AssertionError
+_ TestSetupRecordsAndHonoursItsOwnProjectPath.test_existing_deployment_backfills_its_legacy_manifest_and_proceeds[odoo] _
+[gw0] linux -- Python 3.14.7 /var/tmp/claude-1000/ledger572-scratch/.venv/bin/python3
+
+self = <test_scaffold_slug.TestSetupRecordsAndHonoursItsOwnProjectPath object at 0x7fc320fb5220>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fc3215680c0>
+tmp_path = PosixPath('/var/tmp/pytest-of-ejprice/pytest-18276/popen-gw0/test_existing_deployment_backf1')
+capsys = <_pytest.capture.CaptureFixture object at 0x7fc321206fd0>
+configured_slug = 'odoo'
+
+    @pytest.mark.parametrize("configured_slug", CONFIGURED_SLUGS)
+    def test_existing_deployment_backfills_its_legacy_manifest_and_proceeds(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        configured_slug: str,
+    ) -> None:
+        """lore.yaml declares the slug + a legacy ``<slug>.db`` (no row) → backfill, no-op success.
+    
+        Every live manifest predated the row (both on this host, measured 2026-10-31), so
+        re-running setup on an existing deployment must never be refused (directive #18015).
+        No container (a stopped deployment) and an ABSENT env-file: a build that refuses, or that
+        falls through past the provisioned check, fails here.
+        """
+        project = _project_dir(tmp_path, HEADLINE_NAME)
+        _write_operator_config(project, configured_slug)
+        _write_manifest(configured_slug, owner=None)
+        shim = PodmanShim.install(monkeypatch, container_state=None)
+    
+        outcome = _drive_setup(project, tmp_path / "absent.env", capsys)
+    
+>       assert outcome.raised is None and outcome.return_code == lore_deploy._EXIT_OK, (
+            f"re-running setup on an existing {configured_slug} deployment must not be refused; "
+            f"got rc={outcome.return_code} raised={outcome.raised!r} stderr={outcome.stderr!r}"
+        )
+E       AssertionError: re-running setup on an existing odoo deployment must not be refused; got rc=2 raised=None stderr='setup: secrets env-file /var/tmp/pytest-of-ejprice/pytest-18276/popen-gw0/test_existing_deployment_backf1/absent.env not found; create it first.\n'
+E       assert (None is None and 2 == 0)
+E        +  where None = VerbOutcome(return_code=2, raised=None, stdout='', stderr='setup: secrets env-file /var/tmp/pytest-of-ejprice/pytest-18276/popen-gw0/test_existing_deployment_backf1/absent.env not found; create it first.\n').raised
+E        +  and   2 = VerbOutcome(return_code=2, raised=None, stdout='', stderr='setup: secrets env-file /var/tmp/pytest-of-ejprice/pytest-18276/popen-gw0/test_existing_deployment_backf1/absent.env not found; create it first.\n').return_code
+E        +  and   0 = lore_deploy._EXIT_OK
+
+test_scaffold_slug.py:1011: AssertionError
+_ TestEveryVerbUsesTheConfiguredSlug.test_status_reads_the_manifest_the_slug_names[odoo] _
+[gw4] linux -- Python 3.14.7 /var/tmp/claude-1000/ledger572-scratch/.venv/bin/python3
+
+self = <test_scaffold_slug.TestEveryVerbUsesTheConfiguredSlug object at 0x7f0f3551a350>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f0f355da150>
+tmp_path = PosixPath('/var/tmp/pytest-of-ejprice/pytest-18276/popen-gw4/test_status_reads_the_manifest0')
+capsys = <_pytest.capture.CaptureFixture object at 0x7f0f34fab230>
+configured_slug = 'odoo'
+
+    def test_status_reads_the_manifest_the_slug_names(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        configured_slug: str,
+    ) -> None:
+        """A provisioned project's manifest (``<slug>.db``) is found and summarised."""
+        project = _project_dir(tmp_path, HEADLINE_NAME)
+        _write_operator_config(project, configured_slug)
+        manifest = _write_manifest(configured_slug, owner=project)
+        shim = PodmanShim.install(monkeypatch, container_state=None)
+    
+        lore_deploy.verb_status(project)
+    
+        out = capsys.readouterr().out
+>       assert f"{MANIFEST_STATE}={MANIFEST_INDEXED_ROWS}" in out, (
+            f"status must summarise the manifest at {manifest} "
+            f"({MANIFEST_STATE}={MANIFEST_INDEXED_ROWS}); stdout: {out!r}"
+        )
+E       AssertionError: status must summarise the manifest at /var/tmp/pytest-of-ejprice/pytest-18276/popen-gw4/test_status_reads_the_manifest0/state/odoo.db (indexed=3); stdout: "status: lore-odoo container = absent\nstatus: ledger '/var/tmp/pytest-of-ejprice/pytest-18276/popen-gw4/test_status_reads_the_manifest0/state/odoo.db' owner='/var/tmp/pytest-of-ejprice/pytest-18276/popen-gw4/test_status_reads_the_manifest0/projects/odoo-custom' provisioned_at=None\nstatus: index counts live in the store — call lore_index() for them.\n"
+E       assert 'indexed=3' in "status: lore-odoo container = absent\nstatus: ledger '/var/tmp/pytest-of-ejprice/pytest-18276/popen-gw4/test_status_r...est0/projects/odoo-custom' provisioned_at=None\nstatus: index counts live in the store — call lore_index() for them.\n"
+
+test_scaffold_slug.py:776: AssertionError
+_ TestSetupRecordsAndHonoursItsOwnProjectPath.test_same_project_rerun_with_its_running_container_is_not_refused _
+[gw0] linux -- Python 3.14.7 /var/tmp/claude-1000/ledger572-scratch/.venv/bin/python3
+
+self = <test_scaffold_slug.TestSetupRecordsAndHonoursItsOwnProjectPath object at 0x7fc321170b90>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fc32124c8a0>
+tmp_path = PosixPath('/var/tmp/pytest-of-ejprice/pytest-18276/popen-gw0/test_same_project_rerun_with_i0')
+capsys = <_pytest.capture.CaptureFixture object at 0x7fc323e57800>
+
+    def test_same_project_rerun_with_its_running_container_is_not_refused(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Its own lore.yaml, manifest (owner = THIS path) and container → provisioned no-op."""
+        project = _project_dir(tmp_path, HEADLINE_NAME)
+        _write_operator_config(project, HEADLINE_SLUG)
+        _write_manifest(HEADLINE_SLUG, owner=project)
+        env_file = _write_env_file(tmp_path)
+        _stub_network_probes(monkeypatch)
+        shim = PodmanShim.install(monkeypatch, container_state="running", workspace_source=project)
+    
+        outcome = _drive_setup(project, env_file, capsys)
+    
+        assert outcome.raised is None and outcome.return_code == lore_deploy._EXIT_OK, (
+            f"the same project re-running setup must not be refused; got rc={outcome.return_code} "
+            f"raised={outcome.raised!r} stderr={outcome.stderr!r}"
+        )
+>       assert shim.index_calls == [], "a provisioned project must not be re-indexed"
+E       AssertionError: a provisioned project must not be re-indexed
+E       assert [['/var/tmp/c...m/lore.yaml']] == []
+E         
+E         Left contains one more item: ['/var/tmp/claude-1000/ledger572-scratch/.venv/bin/python3', '-m', 'loremaster.index', '--config', '/var/tmp/pytest-of-ejprice/pytest-18276/popen-gw0/test_same_project_rerun_with_i0/projects/odoo-custom/lore.yaml']
+E         Use -v to get more diff
+
+test_scaffold_slug.py:1041: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_odoo_custom → http://127.0.0.1:9201/mcp
+_ TestEveryVerbUsesTheConfiguredSlug.test_setup_recognises_a_provisioned_project_and_rewires_its_slug[odoo_custom] _
+[gw4] linux -- Python 3.14.7 /var/tmp/claude-1000/ledger572-scratch/.venv/bin/python3
+
+self = <test_scaffold_slug.TestEveryVerbUsesTheConfiguredSlug object at 0x7f0f3551a550>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f0f35421310>
+tmp_path = PosixPath('/var/tmp/pytest-of-ejprice/pytest-18276/popen-gw4/test_setup_recognises_a_provis0')
+capsys = <_pytest.capture.CaptureFixture object at 0x7f0f34fab3f0>
+configured_slug = 'odoo_custom'
+
+    def test_setup_recognises_a_provisioned_project_and_rewires_its_slug(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        configured_slug: str,
+    ) -> None:
+        """Config + ``<slug>.db`` present → no-op success, no re-index, .mcp.json ``lore_<slug>``.
+    
+        The env-file is deliberately ABSENT: a setup that looks for the manifest under any
+        other slug misses the provisioned project, falls through to the env-file check and
+        fails, instead of re-running the expensive cold index.
+        """
+        project = _project_dir(tmp_path, HEADLINE_NAME)
+        _write_operator_config(project, configured_slug)
+        _write_manifest(configured_slug, owner=project)
+        shim = PodmanShim.install(monkeypatch, container_state=None)
+    
+        outcome = _drive_setup(project, tmp_path / "absent.env", capsys)
+    
+>       assert outcome.raised is None and outcome.return_code == lore_deploy._EXIT_OK, (
+            f"setup must recognise the provisioned {configured_slug} project; got "
+            f"rc={outcome.return_code} raised={outcome.raised!r} stderr={outcome.stderr!r}"
+        )
+E       AssertionError: setup must recognise the provisioned odoo_custom project; got rc=2 raised=None stderr='setup: secrets env-file /var/tmp/pytest-of-ejprice/pytest-18276/popen-gw4/test_setup_recognises_a_provis0/absent.env not found; create it first.\n'
+E       assert (None is None and 2 == 0)
+E        +  where None = VerbOutcome(return_code=2, raised=None, stdout='', stderr='setup: secrets env-file /var/tmp/pytest-of-ejprice/pytest-18276/popen-gw4/test_setup_recognises_a_provis0/absent.env not found; create it first.\n').raised
+E        +  and   2 = VerbOutcome(return_code=2, raised=None, stdout='', stderr='setup: secrets env-file /var/tmp/pytest-of-ejprice/pytest-18276/popen-gw4/test_setup_recognises_a_provis0/absent.env not found; create it first.\n').return_code
+E        +  and   0 = lore_deploy._EXIT_OK
+
+test_scaffold_slug.py:804: AssertionError
+_ TestEveryVerbUsesTheConfiguredSlug.test_setup_recognises_a_provisioned_project_and_rewires_its_slug[odoo] _
+[gw4] linux -- Python 3.14.7 /var/tmp/claude-1000/ledger572-scratch/.venv/bin/python3
+
+self = <test_scaffold_slug.TestEveryVerbUsesTheConfiguredSlug object at 0x7f0f34e4a4e0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f0f34f52830>
+tmp_path = PosixPath('/var/tmp/pytest-of-ejprice/pytest-18276/popen-gw4/test_setup_recognises_a_provis1')
+capsys = <_pytest.capture.CaptureFixture object at 0x7f0f3516cc80>
+configured_slug = 'odoo'
+
+    def test_setup_recognises_a_provisioned_project_and_rewires_its_slug(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        configured_slug: str,
+    ) -> None:
+        """Config + ``<slug>.db`` present → no-op success, no re-index, .mcp.json ``lore_<slug>``.
+    
+        The env-file is deliberately ABSENT: a setup that looks for the manifest under any
+        other slug misses the provisioned project, falls through to the env-file check and
+        fails, instead of re-running the expensive cold index.
+        """
+        project = _project_dir(tmp_path, HEADLINE_NAME)
+        _write_operator_config(project, configured_slug)
+        _write_manifest(configured_slug, owner=project)
+        shim = PodmanShim.install(monkeypatch, container_state=None)
+    
+        outcome = _drive_setup(project, tmp_path / "absent.env", capsys)
+    
+>       assert outcome.raised is None and outcome.return_code == lore_deploy._EXIT_OK, (
+            f"setup must recognise the provisioned {configured_slug} project; got "
+            f"rc={outcome.return_code} raised={outcome.raised!r} stderr={outcome.stderr!r}"
+        )
+E       AssertionError: setup must recognise the provisioned odoo project; got rc=2 raised=None stderr='setup: secrets env-file /var/tmp/pytest-of-ejprice/pytest-18276/popen-gw4/test_setup_recognises_a_provis1/absent.env not found; create it first.\n'
+E       assert (None is None and 2 == 0)
+E        +  where None = VerbOutcome(return_code=2, raised=None, stdout='', stderr='setup: secrets env-file /var/tmp/pytest-of-ejprice/pytest-18276/popen-gw4/test_setup_recognises_a_provis1/absent.env not found; create it first.\n').raised
+E        +  and   2 = VerbOutcome(return_code=2, raised=None, stdout='', stderr='setup: secrets env-file /var/tmp/pytest-of-ejprice/pytest-18276/popen-gw4/test_setup_recognises_a_provis1/absent.env not found; create it first.\n').return_code
+E        +  and   0 = lore_deploy._EXIT_OK
+
+test_scaffold_slug.py:804: AssertionError
+_ TestEveryVerbUsesTheConfiguredSlug.test_status_reads_the_manifest_the_slug_names[odoo_custom] _
+[gw7] linux -- Python 3.14.7 /var/tmp/claude-1000/ledger572-scratch/.venv/bin/python3
+
+self = <test_scaffold_slug.TestEveryVerbUsesTheConfiguredSlug object at 0x7fd35f497bd0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fd35eddb460>
+tmp_path = PosixPath('/var/tmp/pytest-of-ejprice/pytest-18276/popen-gw7/test_status_reads_the_manifest0')
+capsys = <_pytest.capture.CaptureFixture object at 0x7fd35f0ba410>
+configured_slug = 'odoo_custom'
+
+    def test_status_reads_the_manifest_the_slug_names(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        configured_slug: str,
+    ) -> None:
+        """A provisioned project's manifest (``<slug>.db``) is found and summarised."""
+        project = _project_dir(tmp_path, HEADLINE_NAME)
+        _write_operator_config(project, configured_slug)
+        manifest = _write_manifest(configured_slug, owner=project)
+        shim = PodmanShim.install(monkeypatch, container_state=None)
+    
+        lore_deploy.verb_status(project)
+    
+        out = capsys.readouterr().out
+>       assert f"{MANIFEST_STATE}={MANIFEST_INDEXED_ROWS}" in out, (
+            f"status must summarise the manifest at {manifest} "
+            f"({MANIFEST_STATE}={MANIFEST_INDEXED_ROWS}); stdout: {out!r}"
+        )
+E       AssertionError: status must summarise the manifest at /var/tmp/pytest-of-ejprice/pytest-18276/popen-gw7/test_status_reads_the_manifest0/state/odoo_custom.db (indexed=3); stdout: "status: lore-odoo_custom container = absent\nstatus: ledger '/var/tmp/pytest-of-ejprice/pytest-18276/popen-gw7/test_status_reads_the_manifest0/state/odoo_custom.db' owner='/var/tmp/pytest-of-ejprice/pytest-18276/popen-gw7/test_status_reads_the_manifest0/projects/odoo-custom' provisioned_at=None\nstatus: index counts live in the store — call lore_index() for them.\n"
+E       assert 'indexed=3' in "status: lore-odoo_custom container = absent\nstatus: ledger '/var/tmp/pytest-of-ejprice/pytest-18276/popen-gw7/test_s...est0/projects/odoo-custom' provisioned_at=None\nstatus: index counts live in the store — call lore_index() for them.\n"
+
+test_scaffold_slug.py:776: AssertionError
+=========================== short test summary info ============================
+FAILED test_scaffold_slug.py::TestSetupRecordsAndHonoursItsOwnProjectPath::test_existing_deployment_backfills_its_legacy_manifest_and_proceeds[odoo_custom]
+FAILED test_scaffold_slug.py::TestSetupRecordsAndHonoursItsOwnProjectPath::test_existing_deployment_backfills_its_legacy_manifest_and_proceeds[odoo]
+FAILED test_scaffold_slug.py::TestEveryVerbUsesTheConfiguredSlug::test_status_reads_the_manifest_the_slug_names[odoo]
+FAILED test_scaffold_slug.py::TestSetupRecordsAndHonoursItsOwnProjectPath::test_same_project_rerun_with_its_running_container_is_not_refused
+FAILED test_scaffold_slug.py::TestEveryVerbUsesTheConfiguredSlug::test_setup_recognises_a_provisioned_project_and_rewires_its_slug[odoo_custom]
+FAILED test_scaffold_slug.py::TestEveryVerbUsesTheConfiguredSlug::test_setup_recognises_a_provisioned_project_and_rewires_its_slug[odoo]
+FAILED test_scaffold_slug.py::TestEveryVerbUsesTheConfiguredSlug::test_status_reads_the_manifest_the_slug_names[odoo_custom]
+7 failed, 392 passed in 35.75s
+EXIT=1

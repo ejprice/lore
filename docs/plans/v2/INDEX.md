@@ -2522,3 +2522,11 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   - Rulings: am-37 §14 (operator) and §15–§15.4 (sidecar, which the operator delegated fork rulings to on 2026-10-05).
   - Residuals: #539 (scout's awaitable branch), #540/#545 (currency render), #541 (#486 pin gaps), #543 (the "could not <verb>" class at 16 other wrap callers; operator scope), #544 (the process-match gate pattern), #546/#547 (the search hook); coldaudit-mint-q1c R-1/R-2 (namespaced kind keys, optional).
   - Receipts: `receipts/2026-10-05-am37-14/`. NEXT: 58 (next agent, §RE-BASE first).
+- **2026-11-01 — #165 wave CLOSED (lore-lore boots without the hand-rolled mount)**:
+  - #165/#186: `lore_deploy start` binds the snapshot where the server reads it.
+  - A root `conftest.py` guard refuses any test connection to :18500 (production store).
+  - Also fixed: #566/#569/#571 (gated_ground conftest/norecursedirs), #567 (xdist flake) and #568 (one slug normaliser + resolver, collision refusal).
+  - #572 deploy-side half: the host `<slug>.db` is setup's Ledger with a provisioned marker; status shows no ledger counts.
+  - Full suite at `707a061`: 530 failed = the baseline set exactly, 0 new.
+  - Open: #570 (pinned bound), #572 (SurrealManifest move), #573 (test strays in the real state dir), #574 (wave residuals, operator-deprioritised).
+  - Receipts: `receipts/2026-10-31-165/` (WAVE-STATE.md, rulings, reports, gate logs). Acceptance (stop+start lore-lore) is recorded in WAVE-STATE.md.

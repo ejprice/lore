@@ -1,0 +1,106 @@
+--- /var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/10bf06cd-a28b-47fa-a521-4d267266f506/scratchpad/lore_deploy.scratch-base.py	2026-10-31 20:02:34.078894069 -0400
++++ lore_deploy.py	2026-10-31 20:04:39.080161932 -0400
+@@ -33,6 +33,7 @@
+ import shlex
+ import shutil
+ import socket
++import datetime
+ import sqlite3
+ import subprocess
+ import sys
+@@ -513,6 +514,8 @@
+ CONTAINER_WORKSPACE = "/workspace"
+ #: The manifest ``meta`` key ``setup`` records the owning project path under (F4b).
+ PROJECT_PATH_META_KEY = "project_path"
++#: The ledger ``meta`` key ``setup`` writes only after a successful cold index (#572).
++PROVISIONED_META_KEY = "provisioned_at"
+ #: The ``meta`` DDL of the historical SQLite manifest (``loremaster.index.manifest._SCHEMA``,
+ #: the documented origin; the loremaster side no longer executes it). ``CREATE TABLE IF NOT
+ #: EXISTS`` so a manifest that already has the table keeps it untouched.
+@@ -611,23 +614,40 @@
+         """Whether the manifest file exists."""
+         return self.manifest.exists()
+ 
+-    def recorded_path(self) -> str | None:
+-        """The recorded owning project path, or ``None`` (no manifest, or a legacy one)."""
++    def _meta(self, key: str) -> str | None:
+         if not self.manifest.exists():
+             return None
+         try:
+             connection = sqlite3.connect(f"file:{self.manifest}?mode=ro", uri=True)
+             try:
+-                row = connection.execute(
+-                    "SELECT v FROM meta WHERE k = ?", (PROJECT_PATH_META_KEY,)
+-                ).fetchone()
++                row = connection.execute("SELECT v FROM meta WHERE k = ?", (key,)).fetchone()
+             finally:
+                 connection.close()
+         except sqlite3.OperationalError:
+-            # No ``meta`` table: a manifest that predates every meta row is ownerless.
+             return None
+         return None if row is None else str(row[0])
+ 
++    def recorded_path(self) -> str | None:
++        """The recorded owning project path, or ``None`` (no manifest, or a legacy one)."""
++        return self._meta(PROJECT_PATH_META_KEY)
++
++    def provisioned_at(self) -> str | None:
++        """When setup's cold index last succeeded, or ``None`` (never provisioned)."""
++        return self._meta(PROVISIONED_META_KEY)
++
++    def mark_provisioned(self, project: Path) -> None:
++        """Record the owner and the provisioned marker (only after a successful cold index)."""
++        self.record(project)
++        connection = sqlite3.connect(self.manifest)
++        try:
++            with connection:
++                connection.execute(
++                    "INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)",
++                    (PROVISIONED_META_KEY, datetime.datetime.now(datetime.UTC).isoformat()),
++                )
++        finally:
++            connection.close()
++
+     def record(self, project: Path) -> None:
+         """Record ``project`` as the slug's owner (creating the file/table when absent)."""
+         MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
+@@ -1111,11 +1131,8 @@
+     owner = ManifestOwner(slug)
+ 
+     # 1. Detect an existing deployment → no-op the expensive parts.
+-    already = config_path.exists() and owner.exists()
++    already = config_path.exists() and owner.provisioned_at() is not None
+     if already:
+-        if owner.recorded_path() is None:
+-            # A legacy manifest this project's own lore.yaml declares: claim it (F4b).
+-            owner.record(project)
+         print(f"setup: {slug} already provisioned (config + manifest present) — no-op.")
+         # Still re-merge the .mcp.json (cheap, idempotent) so wiring is current.
+         _merge_mcp_from_config(project, slug, config_path)
+@@ -1164,7 +1181,7 @@
+     if cold.returncode != 0:
+         print(f"setup: cold index reported failures:\n{cold.stderr.strip()}", file=sys.stderr)
+         return _EXIT_ERROR
+-    owner.record(project)
++    owner.mark_provisioned(project)
+ 
+     # 8. Merge .mcp.json.
+     _merge_mcp_from_config(project, slug, config_path)
+@@ -1423,11 +1440,13 @@
+                 f"status: {container_name} image: STALE — newer {IMAGE} exists; "
+                 f"run `start` to recreate"
+             )
+-    if manifest.exists():
+-        counts = _manifest_counts(manifest)
+-        print(f"status: manifest {manifest} → {counts}")
++    ledger = ManifestOwner(slug)
++    if ledger.exists():
++        print(f"status: ledger {str(manifest)!r} owner={ledger.recorded_path()!r} "
++              f"provisioned_at={ledger.provisioned_at()!r}")
+     else:
+-        print(f"status: no manifest at {manifest} (not yet set up).")
++        print(f"status: no ledger at {str(manifest)!r} (not yet set up).")
++    print("status: index counts live in the store — call lore_index() for them.")
+     if running:
+         if config_path.exists():
+             try:

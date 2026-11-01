@@ -1,0 +1,2167 @@
+HEAD=f247deb498ba0f3f2c8fab53b92c865138084c89
+DIRTY_FILES=36
+TREE=9ecdccee4c4f7bec1acddfc449b1ccac064c16b9b5b3748d72a4241c6caf2040
+Running as unit: run-p1698933-i110666766.scope; invocation ID: a870d0c073ef4110b36e20acfcd6a3a0
+bringing up nodes...
+bringing up nodes...
+
+...................F.FF...FFF.FFF....FF.....FFF.............F........... [ 17%]
+....F..FF.F..FF.F....FF.F..F....F.F..F...F........F..................FF. [ 34%]
+........F.F.F.....F.........FF...F..F...............F...F............F.. [ 51%]
+..F..F...F.....F......F.....F.......F.......F.............FF.FF......F.. [ 68%]
+........................................................................ [ 85%]
+...........................................................              [100%]
+=================================== FAILURES ===================================
+_ TestStatusShowsNoIndexFactFromTheLedger.test_status_names_where_the_index_counts_live[demand_intelligence-None] _
+[gw6] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsNoIndexFactFromTheLedger object at 0x7f2b907990f0>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in0/proje...pture.CaptureFixture object at 0x7f2b906f6f90>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f2b95a04180>)
+state = None
+
+    @pytest.mark.parametrize("state", [None, *sorted(LEDGER_STATES)])
+    def test_status_names_where_the_index_counts_live(
+        self, scene: LedgerScene, state: str | None
+    ) -> None:
+        """Every ledger state, absent included: status names ``lore_index()`` for the index counts."""
+        if state is not None:
+            LEDGER_STATES[state](scene)
+    
+        outcome = scene.status()
+    
+        _assert_ok(outcome, f"status over ledger state {state}")
+>       assert INDEX_COUNTS_POINTER in outcome.stdout, (
+            f"status must say the index counts live in the store and name {INDEX_COUNTS_POINTER}() "
+            f"as where to read them; stdout: {outcome.stdout!r}"
+        )
+E       AssertionError: status must say the index counts live in the store and name lore_index() as where to read them; stdout: 'status: lore-demand_intelligence container = absent\nstatus: no manifest at /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in0/state/demand_intelligence.db (not yet set up).\n'
+E       assert 'lore_index' in 'status: lore-demand_intelligence container = absent\nstatus: no manifest at /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in0/state/demand_intelligence.db (not yet set up).\n'
+E        +  where 'status: lore-demand_intelligence container = absent\nstatus: no manifest at /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in0/state/demand_intelligence.db (not yet set up).\n' = OutcomeOfVerb(return_code=0, raised=None, stdout='status: lore-demand_intelligence container = absent\nstatus: no mani...ce/pytest-18321/popen-gw6/test_status_names_where_the_in0/state/demand_intelligence.db (not yet set up).\n', stderr='').stdout
+
+test_ledger_572.py:571: AssertionError
+_ TestStatusShowsNoIndexFactFromTheLedger.test_status_names_where_the_index_counts_live[demand_intelligence-legacy_pre_p5] _
+[gw6] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsNoIndexFactFromTheLedger object at 0x7f2b907a06d0>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in1/proje...pture.CaptureFixture object at 0x7f2b905379d0>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f2b95cf7230>)
+state = 'legacy_pre_p5'
+
+    @pytest.mark.parametrize("state", [None, *sorted(LEDGER_STATES)])
+    def test_status_names_where_the_index_counts_live(
+        self, scene: LedgerScene, state: str | None
+    ) -> None:
+        """Every ledger state, absent included: status names ``lore_index()`` for the index counts."""
+        if state is not None:
+            LEDGER_STATES[state](scene)
+    
+        outcome = scene.status()
+    
+        _assert_ok(outcome, f"status over ledger state {state}")
+>       assert INDEX_COUNTS_POINTER in outcome.stdout, (
+            f"status must say the index counts live in the store and name {INDEX_COUNTS_POINTER}() "
+            f"as where to read them; stdout: {outcome.stdout!r}"
+        )
+E       AssertionError: status must say the index counts live in the store and name lore_index() as where to read them; stdout: 'status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in1/state/demand_intelligence.db → failed=103, indexed=309\n'
+E       assert 'lore_index' in 'status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in1/state/demand_intelligence.db → failed=103, indexed=309\n'
+E        +  where 'status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in1/state/demand_intelligence.db → failed=103, indexed=309\n' = OutcomeOfVerb(return_code=0, raised=None, stdout='status: lore-demand_intelligence container = absent\nstatus: manifes...t-18321/popen-gw6/test_status_names_where_the_in1/state/demand_intelligence.db → failed=103, indexed=309\n', stderr='').stdout
+
+test_ledger_572.py:571: AssertionError
+_ TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex.test_a_failed_cold_index_over_an_owner_only_ledger_leaves_it_unprovisioned[demand_intelligence] _
+[gw4] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex object at 0x7efddc0c5370>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw4/test_a_failed_cold_index_over_0/proje...pture.CaptureFixture object at 0x7efddbeb3230>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7efde51e8180>)
+
+    def test_a_failed_cold_index_over_an_owner_only_ledger_leaves_it_unprovisioned(
+        self, scene: LedgerScene
+    ) -> None:
+        """Owner row present, index fails → still unprovisioned: the next setup indexes."""
+        scene.record_owner_only()
+        _stub_probes(scene.monkeypatch, result=lore_deploy._EXIT_OK)
+        DeployShim.install(scene.monkeypatch, index_returncode=INDEX_FAILS)
+        failed = scene.setup()
+>       assert failed.return_code == lore_deploy._EXIT_ERROR, (
+            f"a failed cold index must fail setup; rc={failed.return_code} raised={failed.raised!r} "
+            f"stderr={failed.stderr!r}"
+        )
+E       AssertionError: a failed cold index must fail setup; rc=0 raised=None stderr=''
+E       assert 0 == 2
+E        +  where 0 = OutcomeOfVerb(return_code=0, raised=None, stdout='setup: demand_intelligence already provisioned (config + manifest present) — no-op.\n', stderr='').return_code
+E        +  and   2 = lore_deploy._EXIT_ERROR
+
+test_ledger_572.py:388: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_demand_intelligence → http://127.0.0.1:9201/mcp
+_ TestStatusShowsNoIndexFactFromTheLedger.test_status_over_a_meta_only_ledger_reports_nothing_unreadable[odoo-custom-owner_and_marker] _
+[gw7] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsNoIndexFactFromTheLedger object at 0x7f4e501c10d0>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_over_a_meta_only_l0/proje...pture.CaptureFixture object at 0x7f4e50136f90>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f4e59470180>)
+state = 'owner_and_marker'
+
+    @pytest.mark.parametrize("state", [None, "owner_only", "owner_and_marker"])
+    def test_status_over_a_meta_only_ledger_reports_nothing_unreadable(
+        self, scene: LedgerScene, state: str | None
+    ) -> None:
+        """A ledger with no ``files`` table (or none at all) is not an error to report."""
+        if state is not None:
+            LEDGER_STATES[state](scene)
+            scene.replace_files_table(None)
+    
+        outcome = scene.status()
+    
+        _assert_ok(outcome, f"status over ledger state {state}")
+        printed = outcome.stdout + outcome.stderr
+>       assert UNREADABLE_TOKEN not in printed.lower(), (
+            f"a meta-only ledger is the ledger's normal shape, not an unreadable index; got {printed!r}"
+        )
+E       AssertionError: a meta-only ledger is the ledger's normal shape, not an unreadable index; got 'status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_over_a_meta_only_l0/state/odoo_custom.db → (unreadable: no such table: files)\n'
+E       assert 'unreadable' not in 'status: lor...le: files)\n'
+E         
+E         'unreadable' is contained here:
+E           tom.db → (unreadable: no such table: files)
+E         ?           ++++++++++
+
+test_ledger_572.py:589: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_odoo_custom → http://127.0.0.1:9201/mcp
+_ TestProvisionedDecisionFollowsTheMarker.test_status_does_not_provision_an_owner_only_ledger[odoo-custom] _
+[gw5] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestProvisionedDecisionFollowsTheMarker object at 0x7f26043f5ef0>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_does_not_provision0/proje...pture.CaptureFixture object at 0x7f2604352f90>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f260985c180>)
+
+    def test_status_does_not_provision_an_owner_only_ledger(self, scene: LedgerScene) -> None:
+        """The marker is written only by setup: a status run leaves an owner-only ledger unprovisioned."""
+        scene.record_owner_only()
+        _assert_ok(scene.status(), "status over an owner-only ledger")
+    
+        _, shim = scene.setup_reindexes()
+    
+>       assert len(shim.index_calls) == 1, (
+            f"status must not mark the project provisioned; the next setup ran {shim.index_calls}"
+        )
+E       AssertionError: status must not mark the project provisioned; the next setup ran []
+E       assert 0 == 1
+E        +  where 0 = len([])
+E        +    where [] = DeployShim(real_run=DeployShim(real_run=<function _run at 0x7f26096d16f0>, index_returncode=0, index_calls=[], podman_...ct', '--format', '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}', 'lore-odoo_custom']]).index_calls
+
+test_ledger_572.py:476: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_odoo_custom → http://127.0.0.1:9201/mcp
+_ TestStatusShowsTheLedgerAsWhatItIs.test_status_shows_the_recorded_owner_path[demand_intelligence-owner_only] _
+[gw7] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsTheLedgerAsWhatItIs object at 0x7f4e501dc550>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_shows_the_recorded0/proje...pture.CaptureFixture object at 0x7f4e4ff779d0>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f4e59757230>)
+state = 'owner_only'
+
+    @pytest.mark.parametrize("state", ["owner_only", "owner_and_marker"])
+    def test_status_shows_the_recorded_owner_path(self, scene: LedgerScene, state: str) -> None:
+        """The ledger's recorded ``project_path`` appears in status."""
+        LEDGER_STATES[state](scene)
+    
+        outcome = scene.status()
+    
+        _assert_ok(outcome, f"status over a {state} ledger")
+        owner = lore_deploy.ManifestOwner(scene.slug).recorded_path()
+        assert owner is not None, f"arranging: the {state} ledger must record an owner"
+>       assert owner in outcome.stdout, (
+            f"status must show the ledger's owner path {owner}; stdout: {outcome.stdout!r}"
+        )
+E       AssertionError: status must show the ledger's owner path /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_shows_the_recorded0/projects/demand_intelligence; stdout: 'status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_shows_the_recorded0/state/demand_intelligence.db → (unreadable: no such table: files)\n'
+E       assert '/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_shows_the_recorded0/projects/demand_intelligence' in 'status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_shows_the_recorded0/state/demand_intelligence.db → (unreadable: no such table: files)\n'
+E        +  where 'status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_shows_the_recorded0/state/demand_intelligence.db → (unreadable: no such table: files)\n' = OutcomeOfVerb(return_code=0, raised=None, stdout='status: lore-demand_intelligence container = absent\nstatus: manifes...en-gw7/test_status_shows_the_recorded0/state/demand_intelligence.db → (unreadable: no such table: files)\n', stderr='').stdout
+
+test_ledger_572.py:607: AssertionError
+_ TestStatusShowsNoIndexFactFromTheLedger.test_status_names_where_the_index_counts_live[demand_intelligence-owner_and_marker] _
+[gw6] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsNoIndexFactFromTheLedger object at 0x7f2b90749250>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in2/proje...pture.CaptureFixture object at 0x7f2b904682d0>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f2b90605fd0>)
+state = 'owner_and_marker'
+
+    @pytest.mark.parametrize("state", [None, *sorted(LEDGER_STATES)])
+    def test_status_names_where_the_index_counts_live(
+        self, scene: LedgerScene, state: str | None
+    ) -> None:
+        """Every ledger state, absent included: status names ``lore_index()`` for the index counts."""
+        if state is not None:
+            LEDGER_STATES[state](scene)
+    
+        outcome = scene.status()
+    
+        _assert_ok(outcome, f"status over ledger state {state}")
+>       assert INDEX_COUNTS_POINTER in outcome.stdout, (
+            f"status must say the index counts live in the store and name {INDEX_COUNTS_POINTER}() "
+            f"as where to read them; stdout: {outcome.stdout!r}"
+        )
+E       AssertionError: status must say the index counts live in the store and name lore_index() as where to read them; stdout: 'status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in2/state/demand_intelligence.db → (unreadable: no such table: files)\n'
+E       assert 'lore_index' in 'status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in2/state/demand_intelligence.db → (unreadable: no such table: files)\n'
+E        +  where 'status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in2/state/demand_intelligence.db → (unreadable: no such table: files)\n' = OutcomeOfVerb(return_code=0, raised=None, stdout='status: lore-demand_intelligence container = absent\nstatus: manifes...en-gw6/test_status_names_where_the_in2/state/demand_intelligence.db → (unreadable: no such table: files)\n', stderr='').stdout
+
+test_ledger_572.py:571: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_demand_intelligence → http://127.0.0.1:9201/mcp
+_ TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex.test_a_failed_cold_index_over_an_owner_only_ledger_leaves_it_unprovisioned[odoo-custom] _
+[gw4] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex object at 0x7efddbf447c0>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw4/test_a_failed_cold_index_over_1/proje...pture.CaptureFixture object at 0x7efddbac79d0>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7efde52d3230>)
+
+    def test_a_failed_cold_index_over_an_owner_only_ledger_leaves_it_unprovisioned(
+        self, scene: LedgerScene
+    ) -> None:
+        """Owner row present, index fails → still unprovisioned: the next setup indexes."""
+        scene.record_owner_only()
+        _stub_probes(scene.monkeypatch, result=lore_deploy._EXIT_OK)
+        DeployShim.install(scene.monkeypatch, index_returncode=INDEX_FAILS)
+        failed = scene.setup()
+>       assert failed.return_code == lore_deploy._EXIT_ERROR, (
+            f"a failed cold index must fail setup; rc={failed.return_code} raised={failed.raised!r} "
+            f"stderr={failed.stderr!r}"
+        )
+E       AssertionError: a failed cold index must fail setup; rc=0 raised=None stderr=''
+E       assert 0 == 2
+E        +  where 0 = OutcomeOfVerb(return_code=0, raised=None, stdout='setup: odoo_custom already provisioned (config + manifest present) — no-op.\n', stderr='').return_code
+E        +  and   2 = lore_deploy._EXIT_ERROR
+
+test_ledger_572.py:388: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_odoo_custom → http://127.0.0.1:9201/mcp
+_ TestStatusShowsNoIndexFactFromTheLedger.test_status_names_where_the_index_counts_live[demand_intelligence-owner_only] _
+[gw6] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsNoIndexFactFromTheLedger object at 0x7f2b907490d0>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in3/proje...pture.CaptureFixture object at 0x7f2b9052afd0>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f2b905b1590>)
+state = 'owner_only'
+
+    @pytest.mark.parametrize("state", [None, *sorted(LEDGER_STATES)])
+    def test_status_names_where_the_index_counts_live(
+        self, scene: LedgerScene, state: str | None
+    ) -> None:
+        """Every ledger state, absent included: status names ``lore_index()`` for the index counts."""
+        if state is not None:
+            LEDGER_STATES[state](scene)
+    
+        outcome = scene.status()
+    
+        _assert_ok(outcome, f"status over ledger state {state}")
+>       assert INDEX_COUNTS_POINTER in outcome.stdout, (
+            f"status must say the index counts live in the store and name {INDEX_COUNTS_POINTER}() "
+            f"as where to read them; stdout: {outcome.stdout!r}"
+        )
+E       AssertionError: status must say the index counts live in the store and name lore_index() as where to read them; stdout: 'status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in3/state/demand_intelligence.db → (unreadable: no such table: files)\n'
+E       assert 'lore_index' in 'status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in3/state/demand_intelligence.db → (unreadable: no such table: files)\n'
+E        +  where 'status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in3/state/demand_intelligence.db → (unreadable: no such table: files)\n' = OutcomeOfVerb(return_code=0, raised=None, stdout='status: lore-demand_intelligence container = absent\nstatus: manifes...en-gw6/test_status_names_where_the_in3/state/demand_intelligence.db → (unreadable: no such table: files)\n', stderr='').stdout
+
+test_ledger_572.py:571: AssertionError
+_ TestStatusShowsNoIndexFactFromTheLedger.test_status_names_where_the_index_counts_live[odoo-custom-None] _
+[gw6] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsNoIndexFactFromTheLedger object at 0x7f2b90923280>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in4/proje...pture.CaptureFixture object at 0x7f2b9052ab10>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f2b905b17b0>)
+state = None
+
+    @pytest.mark.parametrize("state", [None, *sorted(LEDGER_STATES)])
+    def test_status_names_where_the_index_counts_live(
+        self, scene: LedgerScene, state: str | None
+    ) -> None:
+        """Every ledger state, absent included: status names ``lore_index()`` for the index counts."""
+        if state is not None:
+            LEDGER_STATES[state](scene)
+    
+        outcome = scene.status()
+    
+        _assert_ok(outcome, f"status over ledger state {state}")
+>       assert INDEX_COUNTS_POINTER in outcome.stdout, (
+            f"status must say the index counts live in the store and name {INDEX_COUNTS_POINTER}() "
+            f"as where to read them; stdout: {outcome.stdout!r}"
+        )
+E       AssertionError: status must say the index counts live in the store and name lore_index() as where to read them; stdout: 'status: lore-odoo_custom container = absent\nstatus: no manifest at /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in4/state/odoo_custom.db (not yet set up).\n'
+E       assert 'lore_index' in 'status: lore-odoo_custom container = absent\nstatus: no manifest at /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in4/state/odoo_custom.db (not yet set up).\n'
+E        +  where 'status: lore-odoo_custom container = absent\nstatus: no manifest at /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in4/state/odoo_custom.db (not yet set up).\n' = OutcomeOfVerb(return_code=0, raised=None, stdout='status: lore-odoo_custom container = absent\nstatus: no manifest at ...of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in4/state/odoo_custom.db (not yet set up).\n', stderr='').stdout
+
+test_ledger_572.py:571: AssertionError
+_ TestStatusShowsNoIndexFactFromTheLedger.test_status_output_does_not_depend_on_the_ledgers_files_table[demand_intelligence-legacy_pre_p5] _
+[gw5] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsNoIndexFactFromTheLedger object at 0x7f26043f82d0>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de0/proje...pture.CaptureFixture object at 0x7f26040c4050>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f2609953230>)
+state = 'legacy_pre_p5'
+
+    @pytest.mark.parametrize("state", sorted(LEDGER_STATES))
+    def test_status_output_does_not_depend_on_the_ledgers_files_table(
+        self, scene: LedgerScene, state: str
+    ) -> None:
+        """Same ledger, ``files`` table absent / empty / 412 rows / 2917 rows → byte-identical status.
+    
+        Whatever wording a build picks, a status that counts the table (per state, in total, in
+        chunks, or "no files indexed yet" for an empty one), or that reports the table missing
+        ("unreadable"), prints different bytes for at least two of these variants.
+        """
+        LEDGER_STATES[state](scene)
+        renders: dict[str | None, OutcomeOfVerb] = {}
+        for variant in FILES_TABLE_VARIANTS:
+            scene.replace_files_table(variant)
+            renders[variant] = scene.status()
+    
+        for variant, outcome in renders.items():
+            _assert_ok(outcome, f"status over a {state} ledger with files={variant}")
+        baseline = renders[FILES_TABLE_VARIANTS[0]]
+        differing = {
+            variant: (outcome.stdout, outcome.stderr)
+            for variant, outcome in renders.items()
+            if (outcome.stdout, outcome.stderr) != (baseline.stdout, baseline.stderr)
+        }
+>       assert differing == {}, (
+            f"status over a {state} ledger must not read its files table (the index lives in the "
+            f"store); output changed with the table: baseline={baseline.stdout!r} vs {differing!r}"
+        )
+E       AssertionError: status over a legacy_pre_p5 ledger must not read its files table (the index lives in the store); output changed with the table: baseline='status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de0/state/demand_intelligence.db → (unreadable: no such table: files)\n' vs {'empty': ('status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de0/state/demand_intelligence.db → no files indexed yet\n', ''), 'small': ('status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de0/state/demand_intelligence.db → failed=103, indexed=309\n', ''), 'large': ('status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de0/state/demand_intelligence.db → failed=729, indexed=2188\n', '')}
+E       assert {'empty': ('s...d=309\n', '')} == {}
+E         
+E         Left contains 3 more items:
+E         {'empty': ('status: lore-demand_intelligence container = absent\n'
+E                    'status: manifest '
+E                    '/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de0/state/demand_intelligence.db '
+E                    '→ no files indexed yet\n',
+E                    ''),...
+E         
+E         ...Full output truncated (11 lines hidden), use '-vv' to show
+
+test_ledger_572.py:531: AssertionError
+_ TestStatusShowsNoIndexFactFromTheLedger.test_status_names_where_the_index_counts_live[odoo-custom-legacy_pre_p5] _
+[gw6] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsNoIndexFactFromTheLedger object at 0x7f2b909233e0>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in5/proje...pture.CaptureFixture object at 0x7f2b906070b0>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f2b904c1250>)
+state = 'legacy_pre_p5'
+
+    @pytest.mark.parametrize("state", [None, *sorted(LEDGER_STATES)])
+    def test_status_names_where_the_index_counts_live(
+        self, scene: LedgerScene, state: str | None
+    ) -> None:
+        """Every ledger state, absent included: status names ``lore_index()`` for the index counts."""
+        if state is not None:
+            LEDGER_STATES[state](scene)
+    
+        outcome = scene.status()
+    
+        _assert_ok(outcome, f"status over ledger state {state}")
+>       assert INDEX_COUNTS_POINTER in outcome.stdout, (
+            f"status must say the index counts live in the store and name {INDEX_COUNTS_POINTER}() "
+            f"as where to read them; stdout: {outcome.stdout!r}"
+        )
+E       AssertionError: status must say the index counts live in the store and name lore_index() as where to read them; stdout: 'status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in5/state/odoo_custom.db → failed=103, indexed=309\n'
+E       assert 'lore_index' in 'status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in5/state/odoo_custom.db → failed=103, indexed=309\n'
+E        +  where 'status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in5/state/odoo_custom.db → failed=103, indexed=309\n' = OutcomeOfVerb(return_code=0, raised=None, stdout='status: lore-odoo_custom container = absent\nstatus: manifest /var/t...ce/pytest-18321/popen-gw6/test_status_names_where_the_in5/state/odoo_custom.db → failed=103, indexed=309\n', stderr='').stdout
+
+test_ledger_572.py:571: AssertionError
+_ TestStatusShowsTheLedgerAsWhatItIs.test_status_shows_the_recorded_owner_path[demand_intelligence-owner_and_marker] _
+[gw7] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsTheLedgerAsWhatItIs object at 0x7f4e501dc690>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_shows_the_recorded1/proje...pture.CaptureFixture object at 0x7f4e4ff00410>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f4e50045d90>)
+state = 'owner_and_marker'
+
+    @pytest.mark.parametrize("state", ["owner_only", "owner_and_marker"])
+    def test_status_shows_the_recorded_owner_path(self, scene: LedgerScene, state: str) -> None:
+        """The ledger's recorded ``project_path`` appears in status."""
+        LEDGER_STATES[state](scene)
+    
+        outcome = scene.status()
+    
+        _assert_ok(outcome, f"status over a {state} ledger")
+        owner = lore_deploy.ManifestOwner(scene.slug).recorded_path()
+        assert owner is not None, f"arranging: the {state} ledger must record an owner"
+>       assert owner in outcome.stdout, (
+            f"status must show the ledger's owner path {owner}; stdout: {outcome.stdout!r}"
+        )
+E       AssertionError: status must show the ledger's owner path /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_shows_the_recorded1/projects/demand_intelligence; stdout: 'status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_shows_the_recorded1/state/demand_intelligence.db → (unreadable: no such table: files)\n'
+E       assert '/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_shows_the_recorded1/projects/demand_intelligence' in 'status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_shows_the_recorded1/state/demand_intelligence.db → (unreadable: no such table: files)\n'
+E        +  where 'status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_shows_the_recorded1/state/demand_intelligence.db → (unreadable: no such table: files)\n' = OutcomeOfVerb(return_code=0, raised=None, stdout='status: lore-demand_intelligence container = absent\nstatus: manifes...en-gw7/test_status_shows_the_recorded1/state/demand_intelligence.db → (unreadable: no such table: files)\n', stderr='').stdout
+
+test_ledger_572.py:607: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_demand_intelligence → http://127.0.0.1:9201/mcp
+_ TestProvisionedDecisionFollowsTheMarker.test_an_owner_only_ledger_is_not_provisioned[demand_intelligence] _
+[gw4] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestProvisionedDecisionFollowsTheMarker object at 0x7efddbfb4050>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw4/test_an_owner_only_ledger_is_n0/proje...pture.CaptureFixture object at 0x7efddba942d0>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7efddba25eb0>)
+
+    def test_an_owner_only_ledger_is_not_provisioned(self, scene: LedgerScene) -> None:
+        """Owner row, no marker (the #568 backfill's shape) → setup cold-indexes once, then is done."""
+        scene.record_owner_only()
+    
+        outcome, shim = scene.setup_reindexes()
+    
+        _assert_ok(outcome, "setup over an owner-only ledger must provision, not refuse")
+>       assert len(shim.index_calls) == 1, (
+            f"an owner row is not a provisioned marker: setup must cold-index; ran {shim.index_calls}"
+        )
+E       AssertionError: an owner row is not a provisioned marker: setup must cold-index; ran []
+E       assert 0 == 1
+E        +  where 0 = len([])
+E        +    where [] = DeployShim(real_run=<function _run at 0x7efde52556f0>, index_returncode=0, index_calls=[], podman_calls=[['podman', 'c...format', '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}', 'lore-demand_intelligence']]).index_calls
+
+test_ledger_572.py:414: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_demand_intelligence → http://127.0.0.1:9201/mcp
+_ TestStatusShowsTheLedgerAsWhatItIs.test_status_shows_the_recorded_owner_path[odoo-custom-owner_only] _
+[gw7] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsTheLedgerAsWhatItIs object at 0x7f4e501a0e90>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_shows_the_recorded2/proje...pture.CaptureFixture object at 0x7f4e4ff6ad70>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f4e4fff1590>)
+state = 'owner_only'
+
+    @pytest.mark.parametrize("state", ["owner_only", "owner_and_marker"])
+    def test_status_shows_the_recorded_owner_path(self, scene: LedgerScene, state: str) -> None:
+        """The ledger's recorded ``project_path`` appears in status."""
+        LEDGER_STATES[state](scene)
+    
+        outcome = scene.status()
+    
+        _assert_ok(outcome, f"status over a {state} ledger")
+        owner = lore_deploy.ManifestOwner(scene.slug).recorded_path()
+        assert owner is not None, f"arranging: the {state} ledger must record an owner"
+>       assert owner in outcome.stdout, (
+            f"status must show the ledger's owner path {owner}; stdout: {outcome.stdout!r}"
+        )
+E       AssertionError: status must show the ledger's owner path /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_shows_the_recorded2/projects/odoo-custom; stdout: 'status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_shows_the_recorded2/state/odoo_custom.db → (unreadable: no such table: files)\n'
+E       assert '/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_shows_the_recorded2/projects/odoo-custom' in 'status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_shows_the_recorded2/state/odoo_custom.db → (unreadable: no such table: files)\n'
+E        +  where 'status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_shows_the_recorded2/state/odoo_custom.db → (unreadable: no such table: files)\n' = OutcomeOfVerb(return_code=0, raised=None, stdout='status: lore-odoo_custom container = absent\nstatus: manifest /var/t...8321/popen-gw7/test_status_shows_the_recorded2/state/odoo_custom.db → (unreadable: no such table: files)\n', stderr='').stdout
+
+test_ledger_572.py:607: AssertionError
+_ TestProvisionedDecisionFollowsTheMarker.test_an_owner_only_ledger_is_not_provisioned[odoo-custom] _
+[gw4] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestProvisionedDecisionFollowsTheMarker object at 0x7efddbfb4190>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw4/test_an_owner_only_ledger_is_n1/proje...pture.CaptureFixture object at 0x7efddbab2ea0>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7efddba417b0>)
+
+    def test_an_owner_only_ledger_is_not_provisioned(self, scene: LedgerScene) -> None:
+        """Owner row, no marker (the #568 backfill's shape) → setup cold-indexes once, then is done."""
+        scene.record_owner_only()
+    
+        outcome, shim = scene.setup_reindexes()
+    
+        _assert_ok(outcome, "setup over an owner-only ledger must provision, not refuse")
+>       assert len(shim.index_calls) == 1, (
+            f"an owner row is not a provisioned marker: setup must cold-index; ran {shim.index_calls}"
+        )
+E       AssertionError: an owner row is not a provisioned marker: setup must cold-index; ran []
+E       assert 0 == 1
+E        +  where 0 = len([])
+E        +    where [] = DeployShim(real_run=<function _run at 0x7efde52556f0>, index_returncode=0, index_calls=[], podman_calls=[['podman', 'c...ct', '--format', '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}', 'lore-odoo_custom']]).index_calls
+
+test_ledger_572.py:414: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_odoo_custom → http://127.0.0.1:9201/mcp
+_ TestStatusShowsNoIndexFactFromTheLedger.test_status_names_where_the_index_counts_live[odoo-custom-owner_and_marker] _
+[gw6] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsNoIndexFactFromTheLedger object at 0x7f2b908c6030>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in6/proje...pture.CaptureFixture object at 0x7f2b905b2140>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f2b904c1950>)
+state = 'owner_and_marker'
+
+    @pytest.mark.parametrize("state", [None, *sorted(LEDGER_STATES)])
+    def test_status_names_where_the_index_counts_live(
+        self, scene: LedgerScene, state: str | None
+    ) -> None:
+        """Every ledger state, absent included: status names ``lore_index()`` for the index counts."""
+        if state is not None:
+            LEDGER_STATES[state](scene)
+    
+        outcome = scene.status()
+    
+        _assert_ok(outcome, f"status over ledger state {state}")
+>       assert INDEX_COUNTS_POINTER in outcome.stdout, (
+            f"status must say the index counts live in the store and name {INDEX_COUNTS_POINTER}() "
+            f"as where to read them; stdout: {outcome.stdout!r}"
+        )
+E       AssertionError: status must say the index counts live in the store and name lore_index() as where to read them; stdout: 'status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in6/state/odoo_custom.db → (unreadable: no such table: files)\n'
+E       assert 'lore_index' in 'status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in6/state/odoo_custom.db → (unreadable: no such table: files)\n'
+E        +  where 'status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in6/state/odoo_custom.db → (unreadable: no such table: files)\n' = OutcomeOfVerb(return_code=0, raised=None, stdout='status: lore-odoo_custom container = absent\nstatus: manifest /var/t...8321/popen-gw6/test_status_names_where_the_in6/state/odoo_custom.db → (unreadable: no such table: files)\n', stderr='').stdout
+
+test_ledger_572.py:571: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_odoo_custom → http://127.0.0.1:9201/mcp
+_ TestStatusShowsNoIndexFactFromTheLedger.test_status_names_where_the_index_counts_live[odoo-custom-owner_only] _
+[gw6] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsNoIndexFactFromTheLedger object at 0x7f2b908c60d0>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in7/proje...pture.CaptureFixture object at 0x7f2b905b2be0>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f2b905f6b70>)
+state = 'owner_only'
+
+    @pytest.mark.parametrize("state", [None, *sorted(LEDGER_STATES)])
+    def test_status_names_where_the_index_counts_live(
+        self, scene: LedgerScene, state: str | None
+    ) -> None:
+        """Every ledger state, absent included: status names ``lore_index()`` for the index counts."""
+        if state is not None:
+            LEDGER_STATES[state](scene)
+    
+        outcome = scene.status()
+    
+        _assert_ok(outcome, f"status over ledger state {state}")
+>       assert INDEX_COUNTS_POINTER in outcome.stdout, (
+            f"status must say the index counts live in the store and name {INDEX_COUNTS_POINTER}() "
+            f"as where to read them; stdout: {outcome.stdout!r}"
+        )
+E       AssertionError: status must say the index counts live in the store and name lore_index() as where to read them; stdout: 'status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in7/state/odoo_custom.db → (unreadable: no such table: files)\n'
+E       assert 'lore_index' in 'status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in7/state/odoo_custom.db → (unreadable: no such table: files)\n'
+E        +  where 'status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_names_where_the_in7/state/odoo_custom.db → (unreadable: no such table: files)\n' = OutcomeOfVerb(return_code=0, raised=None, stdout='status: lore-odoo_custom container = absent\nstatus: manifest /var/t...8321/popen-gw6/test_status_names_where_the_in7/state/odoo_custom.db → (unreadable: no such table: files)\n', stderr='').stdout
+
+test_ledger_572.py:571: AssertionError
+_ TestStatusShowsTheLedgerAsWhatItIs.test_status_shows_the_recorded_owner_path[odoo-custom-owner_and_marker] _
+[gw7] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsTheLedgerAsWhatItIs object at 0x7f4e501a0fc0>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_shows_the_recorded3/proje...pture.CaptureFixture object at 0x7f4e4ff6b6f0>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f4e4fff17b0>)
+state = 'owner_and_marker'
+
+    @pytest.mark.parametrize("state", ["owner_only", "owner_and_marker"])
+    def test_status_shows_the_recorded_owner_path(self, scene: LedgerScene, state: str) -> None:
+        """The ledger's recorded ``project_path`` appears in status."""
+        LEDGER_STATES[state](scene)
+    
+        outcome = scene.status()
+    
+        _assert_ok(outcome, f"status over a {state} ledger")
+        owner = lore_deploy.ManifestOwner(scene.slug).recorded_path()
+        assert owner is not None, f"arranging: the {state} ledger must record an owner"
+>       assert owner in outcome.stdout, (
+            f"status must show the ledger's owner path {owner}; stdout: {outcome.stdout!r}"
+        )
+E       AssertionError: status must show the ledger's owner path /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_shows_the_recorded3/projects/odoo-custom; stdout: 'status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_shows_the_recorded3/state/odoo_custom.db → (unreadable: no such table: files)\n'
+E       assert '/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_shows_the_recorded3/projects/odoo-custom' in 'status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_shows_the_recorded3/state/odoo_custom.db → (unreadable: no such table: files)\n'
+E        +  where 'status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_shows_the_recorded3/state/odoo_custom.db → (unreadable: no such table: files)\n' = OutcomeOfVerb(return_code=0, raised=None, stdout='status: lore-odoo_custom container = absent\nstatus: manifest /var/t...8321/popen-gw7/test_status_shows_the_recorded3/state/odoo_custom.db → (unreadable: no such table: files)\n', stderr='').stdout
+
+test_ledger_572.py:607: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_odoo_custom → http://127.0.0.1:9201/mcp
+_ TestStatusShowsNoIndexFactFromTheLedger.test_status_output_does_not_depend_on_the_ledgers_files_table[demand_intelligence-owner_and_marker] _
+[gw5] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsNoIndexFactFromTheLedger object at 0x7f26043f8410>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de1/proje...pture.CaptureFixture object at 0x7f26040c4e10>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f2604261b50>)
+state = 'owner_and_marker'
+
+    @pytest.mark.parametrize("state", sorted(LEDGER_STATES))
+    def test_status_output_does_not_depend_on_the_ledgers_files_table(
+        self, scene: LedgerScene, state: str
+    ) -> None:
+        """Same ledger, ``files`` table absent / empty / 412 rows / 2917 rows → byte-identical status.
+    
+        Whatever wording a build picks, a status that counts the table (per state, in total, in
+        chunks, or "no files indexed yet" for an empty one), or that reports the table missing
+        ("unreadable"), prints different bytes for at least two of these variants.
+        """
+        LEDGER_STATES[state](scene)
+        renders: dict[str | None, OutcomeOfVerb] = {}
+        for variant in FILES_TABLE_VARIANTS:
+            scene.replace_files_table(variant)
+            renders[variant] = scene.status()
+    
+        for variant, outcome in renders.items():
+            _assert_ok(outcome, f"status over a {state} ledger with files={variant}")
+        baseline = renders[FILES_TABLE_VARIANTS[0]]
+        differing = {
+            variant: (outcome.stdout, outcome.stderr)
+            for variant, outcome in renders.items()
+            if (outcome.stdout, outcome.stderr) != (baseline.stdout, baseline.stderr)
+        }
+>       assert differing == {}, (
+            f"status over a {state} ledger must not read its files table (the index lives in the "
+            f"store); output changed with the table: baseline={baseline.stdout!r} vs {differing!r}"
+        )
+E       AssertionError: status over a owner_and_marker ledger must not read its files table (the index lives in the store); output changed with the table: baseline='status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de1/state/demand_intelligence.db → (unreadable: no such table: files)\n' vs {'empty': ('status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de1/state/demand_intelligence.db → no files indexed yet\n', ''), 'small': ('status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de1/state/demand_intelligence.db → failed=103, indexed=309\n', ''), 'large': ('status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de1/state/demand_intelligence.db → failed=729, indexed=2188\n', '')}
+E       assert {'empty': ('s...d=309\n', '')} == {}
+E         
+E         Left contains 3 more items:
+E         {'empty': ('status: lore-demand_intelligence container = absent\n'
+E                    'status: manifest '
+E                    '/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de1/state/demand_intelligence.db '
+E                    '→ no files indexed yet\n',
+E                    ''),...
+E         
+E         ...Full output truncated (11 lines hidden), use '-vv' to show
+
+test_ledger_572.py:531: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_demand_intelligence → http://127.0.0.1:9201/mcp
+_ TestProvisionedDecisionFollowsTheMarker.test_an_owner_only_ledger_is_never_a_no_op[demand_intelligence] _
+[gw4] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestProvisionedDecisionFollowsTheMarker object at 0x7efddbf789d0>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw4/test_an_owner_only_ledger_is_n2/proje...pture.CaptureFixture object at 0x7efddbab3a80>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7efddba42030>)
+
+    def test_an_owner_only_ledger_is_never_a_no_op(self, scene: LedgerScene) -> None:
+        """Owner row, no marker, no secrets → setup reaches the work and FAILS, never a no-op.
+    
+        A build whose "provisioned" means "the ledger file exists" (or "an owner is recorded")
+        returns ``_EXIT_OK`` here having indexed nothing.
+        """
+        scene.record_owner_only()
+    
+        outcome, shim = scene.setup_short_circuits()
+    
+>       assert outcome.raised is None and outcome.return_code == lore_deploy._EXIT_ERROR, (
+            f"an owner-only ledger is not provisioned: setup must not report a no-op success; "
+            f"rc={outcome.return_code} stdout={outcome.stdout!r}"
+        )
+E       AssertionError: an owner-only ledger is not provisioned: setup must not report a no-op success; rc=0 stdout='setup: demand_intelligence already provisioned (config + manifest present) — no-op.\n'
+E       assert (None is None and 0 == 2)
+E        +  where None = OutcomeOfVerb(return_code=0, raised=None, stdout='setup: demand_intelligence already provisioned (config + manifest present) — no-op.\n', stderr='').raised
+E        +  and   0 = OutcomeOfVerb(return_code=0, raised=None, stdout='setup: demand_intelligence already provisioned (config + manifest present) — no-op.\n', stderr='').return_code
+E        +  and   2 = lore_deploy._EXIT_ERROR
+
+test_ledger_572.py:431: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_demand_intelligence → http://127.0.0.1:9201/mcp
+_ TestStatusShowsNoIndexFactFromTheLedger.test_status_over_a_meta_only_ledger_reports_nothing_unreadable[demand_intelligence-owner_only] _
+[gw6] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsNoIndexFactFromTheLedger object at 0x7f2b907abd50>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_over_a_meta_only_l1/proje...pture.CaptureFixture object at 0x7f2b904c2350>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f2b90810590>)
+state = 'owner_only'
+
+    @pytest.mark.parametrize("state", [None, "owner_only", "owner_and_marker"])
+    def test_status_over_a_meta_only_ledger_reports_nothing_unreadable(
+        self, scene: LedgerScene, state: str | None
+    ) -> None:
+        """A ledger with no ``files`` table (or none at all) is not an error to report."""
+        if state is not None:
+            LEDGER_STATES[state](scene)
+            scene.replace_files_table(None)
+    
+        outcome = scene.status()
+    
+        _assert_ok(outcome, f"status over ledger state {state}")
+        printed = outcome.stdout + outcome.stderr
+>       assert UNREADABLE_TOKEN not in printed.lower(), (
+            f"a meta-only ledger is the ledger's normal shape, not an unreadable index; got {printed!r}"
+        )
+E       AssertionError: a meta-only ledger is the ledger's normal shape, not an unreadable index; got 'status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_over_a_meta_only_l1/state/demand_intelligence.db → (unreadable: no such table: files)\n'
+E       assert 'unreadable' not in 'status: lor...le: files)\n'
+E         
+E         'unreadable' is contained here:
+E           nce.db → (unreadable: no such table: files)
+E         ?           ++++++++++
+
+test_ledger_572.py:589: AssertionError
+_ TestStatusShowsTheLedgerAsWhatItIs.test_status_tells_provisioned_from_owner_only _
+[gw7] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsTheLedgerAsWhatItIs object at 0x7f4e502f5eb0>
+tmp_path = PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_tells_provisioned_0')
+capsys = <_pytest.capture.CaptureFixture object at 0x7f4e500470b0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f4e5003d250>
+
+    def test_status_tells_provisioned_from_owner_only(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The same project, owner-only then provisioned: status prints different reports.
+    
+        Both renders are of ONE project path, so the difference can only be the marker.
+        """
+        scene = LedgerScene.build(tmp_path, "odoo-custom", capsys, monkeypatch)
+        scene.record_owner_only()
+        owner_only = scene.status()
+>       scene.provision()
+
+test_ledger_572.py:624: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_status_tells_provisioned_0/proje...pture.CaptureFixture object at 0x7f4e500470b0>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f4e5003d250>)
+
+    def provision(self) -> OutcomeOfVerb:
+        """Provision through the REAL ``setup`` with probes passing and the cold index succeeding."""
+        _stub_probes(self.monkeypatch, result=lore_deploy._EXIT_OK)
+        shim = DeployShim.install(self.monkeypatch, index_returncode=INDEX_SUCCEEDS)
+        outcome = self.setup()
+        assert outcome.raised is None and outcome.return_code == lore_deploy._EXIT_OK, (
+            f"arranging a provisioned {self.slug} ledger: setup must succeed when the cold index "
+            f"succeeds; rc={outcome.return_code} raised={outcome.raised!r} stderr={outcome.stderr!r}"
+        )
+>       assert len(shim.index_calls) == 1, f"arranging: setup must cold-index once; ran {shim.index_calls}"
+E       AssertionError: arranging: setup must cold-index once; ran []
+E       assert 0 == 1
+E        +  where 0 = len([])
+E        +    where [] = DeployShim(real_run=DeployShim(real_run=<function _run at 0x7f4e594dd6f0>, index_returncode=0, index_calls=[], podman_...ct', '--format', '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}', 'lore-odoo_custom']]).index_calls
+
+test_ledger_572.py:274: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_odoo_custom → http://127.0.0.1:9201/mcp
+_ TestProvisionedDecisionFollowsTheMarker.test_an_owner_only_ledger_is_never_a_no_op[odoo-custom] _
+[gw4] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestProvisionedDecisionFollowsTheMarker object at 0x7efddbf78b00>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw4/test_an_owner_only_ledger_is_n3/proje...pture.CaptureFixture object at 0x7efddb8b0dd0>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7efddb896050>)
+
+    def test_an_owner_only_ledger_is_never_a_no_op(self, scene: LedgerScene) -> None:
+        """Owner row, no marker, no secrets → setup reaches the work and FAILS, never a no-op.
+    
+        A build whose "provisioned" means "the ledger file exists" (or "an owner is recorded")
+        returns ``_EXIT_OK`` here having indexed nothing.
+        """
+        scene.record_owner_only()
+    
+        outcome, shim = scene.setup_short_circuits()
+    
+>       assert outcome.raised is None and outcome.return_code == lore_deploy._EXIT_ERROR, (
+            f"an owner-only ledger is not provisioned: setup must not report a no-op success; "
+            f"rc={outcome.return_code} stdout={outcome.stdout!r}"
+        )
+E       AssertionError: an owner-only ledger is not provisioned: setup must not report a no-op success; rc=0 stdout='setup: odoo_custom already provisioned (config + manifest present) — no-op.\n'
+E       assert (None is None and 0 == 2)
+E        +  where None = OutcomeOfVerb(return_code=0, raised=None, stdout='setup: odoo_custom already provisioned (config + manifest present) — no-op.\n', stderr='').raised
+E        +  and   0 = OutcomeOfVerb(return_code=0, raised=None, stdout='setup: odoo_custom already provisioned (config + manifest present) — no-op.\n', stderr='').return_code
+E        +  and   2 = lore_deploy._EXIT_ERROR
+
+test_ledger_572.py:431: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_odoo_custom → http://127.0.0.1:9201/mcp
+_ TestStatusShowsNoIndexFactFromTheLedger.test_status_output_does_not_depend_on_the_ledgers_files_table[demand_intelligence-owner_only] _
+[gw5] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsNoIndexFactFromTheLedger object at 0x7f26043bcc30>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de2/proje...pture.CaptureFixture object at 0x7f2604387100>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f260420d6a0>)
+state = 'owner_only'
+
+    @pytest.mark.parametrize("state", sorted(LEDGER_STATES))
+    def test_status_output_does_not_depend_on_the_ledgers_files_table(
+        self, scene: LedgerScene, state: str
+    ) -> None:
+        """Same ledger, ``files`` table absent / empty / 412 rows / 2917 rows → byte-identical status.
+    
+        Whatever wording a build picks, a status that counts the table (per state, in total, in
+        chunks, or "no files indexed yet" for an empty one), or that reports the table missing
+        ("unreadable"), prints different bytes for at least two of these variants.
+        """
+        LEDGER_STATES[state](scene)
+        renders: dict[str | None, OutcomeOfVerb] = {}
+        for variant in FILES_TABLE_VARIANTS:
+            scene.replace_files_table(variant)
+            renders[variant] = scene.status()
+    
+        for variant, outcome in renders.items():
+            _assert_ok(outcome, f"status over a {state} ledger with files={variant}")
+        baseline = renders[FILES_TABLE_VARIANTS[0]]
+        differing = {
+            variant: (outcome.stdout, outcome.stderr)
+            for variant, outcome in renders.items()
+            if (outcome.stdout, outcome.stderr) != (baseline.stdout, baseline.stderr)
+        }
+>       assert differing == {}, (
+            f"status over a {state} ledger must not read its files table (the index lives in the "
+            f"store); output changed with the table: baseline={baseline.stdout!r} vs {differing!r}"
+        )
+E       AssertionError: status over a owner_only ledger must not read its files table (the index lives in the store); output changed with the table: baseline='status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de2/state/demand_intelligence.db → (unreadable: no such table: files)\n' vs {'empty': ('status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de2/state/demand_intelligence.db → no files indexed yet\n', ''), 'small': ('status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de2/state/demand_intelligence.db → failed=103, indexed=309\n', ''), 'large': ('status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de2/state/demand_intelligence.db → failed=729, indexed=2188\n', '')}
+E       assert {'empty': ('s...d=309\n', '')} == {}
+E         
+E         Left contains 3 more items:
+E         {'empty': ('status: lore-demand_intelligence container = absent\n'
+E                    'status: manifest '
+E                    '/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de2/state/demand_intelligence.db '
+E                    '→ no files indexed yet\n',
+E                    ''),...
+E         
+E         ...Full output truncated (11 lines hidden), use '-vv' to show
+
+test_ledger_572.py:531: AssertionError
+_ TestStatusShowsNoIndexFactFromTheLedger.test_status_over_a_meta_only_ledger_reports_nothing_unreadable[demand_intelligence-owner_and_marker] _
+[gw6] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsNoIndexFactFromTheLedger object at 0x7f2b907abdd0>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_over_a_meta_only_l2/proje...pture.CaptureFixture object at 0x7f2b9047c320>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f2b905d3af0>)
+state = 'owner_and_marker'
+
+    @pytest.mark.parametrize("state", [None, "owner_only", "owner_and_marker"])
+    def test_status_over_a_meta_only_ledger_reports_nothing_unreadable(
+        self, scene: LedgerScene, state: str | None
+    ) -> None:
+        """A ledger with no ``files`` table (or none at all) is not an error to report."""
+        if state is not None:
+            LEDGER_STATES[state](scene)
+            scene.replace_files_table(None)
+    
+        outcome = scene.status()
+    
+        _assert_ok(outcome, f"status over ledger state {state}")
+        printed = outcome.stdout + outcome.stderr
+>       assert UNREADABLE_TOKEN not in printed.lower(), (
+            f"a meta-only ledger is the ledger's normal shape, not an unreadable index; got {printed!r}"
+        )
+E       AssertionError: a meta-only ledger is the ledger's normal shape, not an unreadable index; got 'status: lore-demand_intelligence container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_over_a_meta_only_l2/state/demand_intelligence.db → (unreadable: no such table: files)\n'
+E       assert 'unreadable' not in 'status: lor...le: files)\n'
+E         
+E         'unreadable' is contained here:
+E           nce.db → (unreadable: no such table: files)
+E         ?           ++++++++++
+
+test_ledger_572.py:589: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_demand_intelligence → http://127.0.0.1:9201/mcp
+_ TestProvisionedDecisionFollowsTheMarker.test_a_legacy_ledger_with_indexed_files_is_not_provisioned[demand_intelligence-large] _
+[gw4] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestProvisionedDecisionFollowsTheMarker object at 0x7efddc0c56d0>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw4/test_a_legacy_ledger_with_inde0/proje...pture.CaptureFixture object at 0x7efddba427a0>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7efddb896650>)
+population = 'large'
+
+    @pytest.mark.parametrize("population", sorted(LEGACY_POPULATIONS))
+    def test_a_legacy_ledger_with_indexed_files_is_not_provisioned(
+        self, scene: LedgerScene, population: str
+    ) -> None:
+        """A pre-P5 ledger (``files`` rows, no owner, no marker) + its lore.yaml → setup indexes.
+    
+        The live ledgers on this host have this shape (schema measured 2026-10-31). Their
+        ``files`` rows describe an index nothing has written since P5, so they prove nothing.
+        The setup still is not refused (the project's own lore.yaml claims the slug).
+        """
+        scene.write_legacy_ledger(population)
+    
+        outcome, shim = scene.setup_reindexes()
+    
+        _assert_ok(outcome, "setup over this project's own legacy ledger must provision, not refuse")
+>       assert len(shim.index_calls) == 1, (
+            f"legacy files rows are not a provisioned marker: setup must cold-index; ran {shim.index_calls}"
+        )
+E       AssertionError: legacy files rows are not a provisioned marker: setup must cold-index; ran []
+E       assert 0 == 1
+E        +  where 0 = len([])
+E        +    where [] = DeployShim(real_run=<function _run at 0x7efde52556f0>, index_returncode=0, index_calls=[], podman_calls=[['podman', 'c...format', '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}', 'lore-demand_intelligence']]).index_calls
+
+test_ledger_572.py:451: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_demand_intelligence → http://127.0.0.1:9201/mcp
+_ TestStatusShowsNoIndexFactFromTheLedger.test_status_over_a_meta_only_ledger_reports_nothing_unreadable[odoo-custom-owner_only] _
+[gw6] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsNoIndexFactFromTheLedger object at 0x7f2b907b4050>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_over_a_meta_only_l4/proje...pture.CaptureFixture object at 0x7f2b905d0d70>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f2b905adfd0>)
+state = 'owner_only'
+
+    @pytest.mark.parametrize("state", [None, "owner_only", "owner_and_marker"])
+    def test_status_over_a_meta_only_ledger_reports_nothing_unreadable(
+        self, scene: LedgerScene, state: str | None
+    ) -> None:
+        """A ledger with no ``files`` table (or none at all) is not an error to report."""
+        if state is not None:
+            LEDGER_STATES[state](scene)
+            scene.replace_files_table(None)
+    
+        outcome = scene.status()
+    
+        _assert_ok(outcome, f"status over ledger state {state}")
+        printed = outcome.stdout + outcome.stderr
+>       assert UNREADABLE_TOKEN not in printed.lower(), (
+            f"a meta-only ledger is the ledger's normal shape, not an unreadable index; got {printed!r}"
+        )
+E       AssertionError: a meta-only ledger is the ledger's normal shape, not an unreadable index; got 'status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_status_over_a_meta_only_l4/state/odoo_custom.db → (unreadable: no such table: files)\n'
+E       assert 'unreadable' not in 'status: lor...le: files)\n'
+E         
+E         'unreadable' is contained here:
+E           tom.db → (unreadable: no such table: files)
+E         ?           ++++++++++
+
+test_ledger_572.py:589: AssertionError
+_ TestStatusShowsNoIndexFactFromTheLedger.test_status_output_does_not_depend_on_the_ledgers_files_table[odoo-custom-legacy_pre_p5] _
+[gw5] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsNoIndexFactFromTheLedger object at 0x7f26043bcd60>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de3/proje...pture.CaptureFixture object at 0x7f2604387a80>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f260420df20>)
+state = 'legacy_pre_p5'
+
+    @pytest.mark.parametrize("state", sorted(LEDGER_STATES))
+    def test_status_output_does_not_depend_on_the_ledgers_files_table(
+        self, scene: LedgerScene, state: str
+    ) -> None:
+        """Same ledger, ``files`` table absent / empty / 412 rows / 2917 rows → byte-identical status.
+    
+        Whatever wording a build picks, a status that counts the table (per state, in total, in
+        chunks, or "no files indexed yet" for an empty one), or that reports the table missing
+        ("unreadable"), prints different bytes for at least two of these variants.
+        """
+        LEDGER_STATES[state](scene)
+        renders: dict[str | None, OutcomeOfVerb] = {}
+        for variant in FILES_TABLE_VARIANTS:
+            scene.replace_files_table(variant)
+            renders[variant] = scene.status()
+    
+        for variant, outcome in renders.items():
+            _assert_ok(outcome, f"status over a {state} ledger with files={variant}")
+        baseline = renders[FILES_TABLE_VARIANTS[0]]
+        differing = {
+            variant: (outcome.stdout, outcome.stderr)
+            for variant, outcome in renders.items()
+            if (outcome.stdout, outcome.stderr) != (baseline.stdout, baseline.stderr)
+        }
+>       assert differing == {}, (
+            f"status over a {state} ledger must not read its files table (the index lives in the "
+            f"store); output changed with the table: baseline={baseline.stdout!r} vs {differing!r}"
+        )
+E       AssertionError: status over a legacy_pre_p5 ledger must not read its files table (the index lives in the store); output changed with the table: baseline='status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de3/state/odoo_custom.db → (unreadable: no such table: files)\n' vs {'empty': ('status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de3/state/odoo_custom.db → no files indexed yet\n', ''), 'small': ('status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de3/state/odoo_custom.db → failed=103, indexed=309\n', ''), 'large': ('status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de3/state/odoo_custom.db → failed=729, indexed=2188\n', '')}
+E       assert {'empty': ('s...d=309\n', '')} == {}
+E         
+E         Left contains 3 more items:
+E         {'empty': ('status: lore-odoo_custom container = absent\n'
+E                    'status: manifest '
+E                    '/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de3/state/odoo_custom.db '
+E                    '→ no files indexed yet\n',
+E                    ''),...
+E         
+E         ...Full output truncated (11 lines hidden), use '-vv' to show
+
+test_ledger_572.py:531: AssertionError
+_ TestProvisionedDecisionFollowsTheMarker.test_a_legacy_ledger_with_indexed_files_is_not_provisioned[demand_intelligence-small] _
+[gw4] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestProvisionedDecisionFollowsTheMarker object at 0x7efddbf44490>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw4/test_a_legacy_ledger_with_inde1/proje...pture.CaptureFixture object at 0x7efddba43460>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7efddb8b5310>)
+population = 'small'
+
+    @pytest.mark.parametrize("population", sorted(LEGACY_POPULATIONS))
+    def test_a_legacy_ledger_with_indexed_files_is_not_provisioned(
+        self, scene: LedgerScene, population: str
+    ) -> None:
+        """A pre-P5 ledger (``files`` rows, no owner, no marker) + its lore.yaml → setup indexes.
+    
+        The live ledgers on this host have this shape (schema measured 2026-10-31). Their
+        ``files`` rows describe an index nothing has written since P5, so they prove nothing.
+        The setup still is not refused (the project's own lore.yaml claims the slug).
+        """
+        scene.write_legacy_ledger(population)
+    
+        outcome, shim = scene.setup_reindexes()
+    
+        _assert_ok(outcome, "setup over this project's own legacy ledger must provision, not refuse")
+>       assert len(shim.index_calls) == 1, (
+            f"legacy files rows are not a provisioned marker: setup must cold-index; ran {shim.index_calls}"
+        )
+E       AssertionError: legacy files rows are not a provisioned marker: setup must cold-index; ran []
+E       assert 0 == 1
+E        +  where 0 = len([])
+E        +    where [] = DeployShim(real_run=<function _run at 0x7efde52556f0>, index_returncode=0, index_calls=[], podman_calls=[['podman', 'c...format', '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}', 'lore-demand_intelligence']]).index_calls
+
+test_ledger_572.py:451: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_demand_intelligence → http://127.0.0.1:9201/mcp
+_ TestProvisionedDecisionFollowsTheMarker.test_a_legacy_ledger_with_indexed_files_is_not_provisioned[odoo-custom-large] _
+[gw4] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestProvisionedDecisionFollowsTheMarker object at 0x7efddbf449e0>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw4/test_a_legacy_ledger_with_inde2/proje...pture.CaptureFixture object at 0x7efddb897550>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7efddb8b66c0>)
+population = 'large'
+
+    @pytest.mark.parametrize("population", sorted(LEGACY_POPULATIONS))
+    def test_a_legacy_ledger_with_indexed_files_is_not_provisioned(
+        self, scene: LedgerScene, population: str
+    ) -> None:
+        """A pre-P5 ledger (``files`` rows, no owner, no marker) + its lore.yaml → setup indexes.
+    
+        The live ledgers on this host have this shape (schema measured 2026-10-31). Their
+        ``files`` rows describe an index nothing has written since P5, so they prove nothing.
+        The setup still is not refused (the project's own lore.yaml claims the slug).
+        """
+        scene.write_legacy_ledger(population)
+    
+        outcome, shim = scene.setup_reindexes()
+    
+        _assert_ok(outcome, "setup over this project's own legacy ledger must provision, not refuse")
+>       assert len(shim.index_calls) == 1, (
+            f"legacy files rows are not a provisioned marker: setup must cold-index; ran {shim.index_calls}"
+        )
+E       AssertionError: legacy files rows are not a provisioned marker: setup must cold-index; ran []
+E       assert 0 == 1
+E        +  where 0 = len([])
+E        +    where [] = DeployShim(real_run=<function _run at 0x7efde52556f0>, index_returncode=0, index_calls=[], podman_calls=[['podman', 'c...ct', '--format', '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}', 'lore-odoo_custom']]).index_calls
+
+test_ledger_572.py:451: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_odoo_custom → http://127.0.0.1:9201/mcp
+_ TestStatusShowsNoIndexFactFromTheLedger.test_status_output_does_not_depend_on_the_ledgers_files_table[odoo-custom-owner_and_marker] _
+[gw5] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsNoIndexFactFromTheLedger object at 0x7f260450dd90>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de4/proje...pture.CaptureFixture object at 0x7f2604263e30>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f260411da50>)
+state = 'owner_and_marker'
+
+    @pytest.mark.parametrize("state", sorted(LEDGER_STATES))
+    def test_status_output_does_not_depend_on_the_ledgers_files_table(
+        self, scene: LedgerScene, state: str
+    ) -> None:
+        """Same ledger, ``files`` table absent / empty / 412 rows / 2917 rows → byte-identical status.
+    
+        Whatever wording a build picks, a status that counts the table (per state, in total, in
+        chunks, or "no files indexed yet" for an empty one), or that reports the table missing
+        ("unreadable"), prints different bytes for at least two of these variants.
+        """
+        LEDGER_STATES[state](scene)
+        renders: dict[str | None, OutcomeOfVerb] = {}
+        for variant in FILES_TABLE_VARIANTS:
+            scene.replace_files_table(variant)
+            renders[variant] = scene.status()
+    
+        for variant, outcome in renders.items():
+            _assert_ok(outcome, f"status over a {state} ledger with files={variant}")
+        baseline = renders[FILES_TABLE_VARIANTS[0]]
+        differing = {
+            variant: (outcome.stdout, outcome.stderr)
+            for variant, outcome in renders.items()
+            if (outcome.stdout, outcome.stderr) != (baseline.stdout, baseline.stderr)
+        }
+>       assert differing == {}, (
+            f"status over a {state} ledger must not read its files table (the index lives in the "
+            f"store); output changed with the table: baseline={baseline.stdout!r} vs {differing!r}"
+        )
+E       AssertionError: status over a owner_and_marker ledger must not read its files table (the index lives in the store); output changed with the table: baseline='status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de4/state/odoo_custom.db → (unreadable: no such table: files)\n' vs {'empty': ('status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de4/state/odoo_custom.db → no files indexed yet\n', ''), 'small': ('status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de4/state/odoo_custom.db → failed=103, indexed=309\n', ''), 'large': ('status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de4/state/odoo_custom.db → failed=729, indexed=2188\n', '')}
+E       assert {'empty': ('s...d=309\n', '')} == {}
+E         
+E         Left contains 3 more items:
+E         {'empty': ('status: lore-odoo_custom container = absent\n'
+E                    'status: manifest '
+E                    '/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de4/state/odoo_custom.db '
+E                    '→ no files indexed yet\n',
+E                    ''),...
+E         
+E         ...Full output truncated (11 lines hidden), use '-vv' to show
+
+test_ledger_572.py:531: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_odoo_custom → http://127.0.0.1:9201/mcp
+_ TestProvisionedDecisionFollowsTheMarker.test_a_legacy_ledger_with_indexed_files_is_not_provisioned[odoo-custom-small] _
+[gw4] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestProvisionedDecisionFollowsTheMarker object at 0x7efddbf77750>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw4/test_a_legacy_ledger_with_inde3/proje...pture.CaptureFixture object at 0x7efddbb9c550>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7efddba20210>)
+population = 'small'
+
+    @pytest.mark.parametrize("population", sorted(LEGACY_POPULATIONS))
+    def test_a_legacy_ledger_with_indexed_files_is_not_provisioned(
+        self, scene: LedgerScene, population: str
+    ) -> None:
+        """A pre-P5 ledger (``files`` rows, no owner, no marker) + its lore.yaml → setup indexes.
+    
+        The live ledgers on this host have this shape (schema measured 2026-10-31). Their
+        ``files`` rows describe an index nothing has written since P5, so they prove nothing.
+        The setup still is not refused (the project's own lore.yaml claims the slug).
+        """
+        scene.write_legacy_ledger(population)
+    
+        outcome, shim = scene.setup_reindexes()
+    
+        _assert_ok(outcome, "setup over this project's own legacy ledger must provision, not refuse")
+>       assert len(shim.index_calls) == 1, (
+            f"legacy files rows are not a provisioned marker: setup must cold-index; ran {shim.index_calls}"
+        )
+E       AssertionError: legacy files rows are not a provisioned marker: setup must cold-index; ran []
+E       assert 0 == 1
+E        +  where 0 = len([])
+E        +    where [] = DeployShim(real_run=<function _run at 0x7efde52556f0>, index_returncode=0, index_calls=[], podman_calls=[['podman', 'c...ct', '--format', '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}', 'lore-odoo_custom']]).index_calls
+
+test_ledger_572.py:451: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_odoo_custom → http://127.0.0.1:9201/mcp
+_ TestProvisionedDecisionFollowsTheMarker.test_the_cold_index_runs_against_this_projects_config[demand_intelligence] _
+[gw4] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestProvisionedDecisionFollowsTheMarker object at 0x7efddbf77950>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw4/test_the_cold_index_runs_again0/proje...pture.CaptureFixture object at 0x7efddb8a88c0>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7efddba20ad0>)
+
+    def test_the_cold_index_runs_against_this_projects_config(self, scene: LedgerScene) -> None:
+        """The index setup runs for an unprovisioned ledger is THIS project's lore.yaml."""
+        scene.record_owner_only()
+    
+        _, shim = scene.setup_reindexes()
+    
+        config_path = str(scene.project / lore_deploy.CONFIG_FILENAME)
+>       assert len(shim.index_calls) == 1 and config_path in shim.index_calls[0], (
+            f"setup must cold-index {config_path}; ran {shim.index_calls}"
+        )
+E       AssertionError: setup must cold-index /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw4/test_the_cold_index_runs_again0/projects/demand_intelligence/lore.yaml; ran []
+E       assert (0 == 1)
+E        +  where 0 = len([])
+E        +    where [] = DeployShim(real_run=<function _run at 0x7efde52556f0>, index_returncode=0, index_calls=[], podman_calls=[['podman', 'c...format', '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}', 'lore-demand_intelligence']]).index_calls
+
+test_ledger_572.py:465: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_demand_intelligence → http://127.0.0.1:9201/mcp
+_ TestStatusShowsNoIndexFactFromTheLedger.test_status_output_does_not_depend_on_the_ledgers_files_table[odoo-custom-owner_only] _
+[gw5] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsNoIndexFactFromTheLedger object at 0x7f2604388d10>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de5/proje...pture.CaptureFixture object at 0x7f260420e8b0>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f260411e150>)
+state = 'owner_only'
+
+    @pytest.mark.parametrize("state", sorted(LEDGER_STATES))
+    def test_status_output_does_not_depend_on_the_ledgers_files_table(
+        self, scene: LedgerScene, state: str
+    ) -> None:
+        """Same ledger, ``files`` table absent / empty / 412 rows / 2917 rows → byte-identical status.
+    
+        Whatever wording a build picks, a status that counts the table (per state, in total, in
+        chunks, or "no files indexed yet" for an empty one), or that reports the table missing
+        ("unreadable"), prints different bytes for at least two of these variants.
+        """
+        LEDGER_STATES[state](scene)
+        renders: dict[str | None, OutcomeOfVerb] = {}
+        for variant in FILES_TABLE_VARIANTS:
+            scene.replace_files_table(variant)
+            renders[variant] = scene.status()
+    
+        for variant, outcome in renders.items():
+            _assert_ok(outcome, f"status over a {state} ledger with files={variant}")
+        baseline = renders[FILES_TABLE_VARIANTS[0]]
+        differing = {
+            variant: (outcome.stdout, outcome.stderr)
+            for variant, outcome in renders.items()
+            if (outcome.stdout, outcome.stderr) != (baseline.stdout, baseline.stderr)
+        }
+>       assert differing == {}, (
+            f"status over a {state} ledger must not read its files table (the index lives in the "
+            f"store); output changed with the table: baseline={baseline.stdout!r} vs {differing!r}"
+        )
+E       AssertionError: status over a owner_only ledger must not read its files table (the index lives in the store); output changed with the table: baseline='status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de5/state/odoo_custom.db → (unreadable: no such table: files)\n' vs {'empty': ('status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de5/state/odoo_custom.db → no files indexed yet\n', ''), 'small': ('status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de5/state/odoo_custom.db → failed=103, indexed=309\n', ''), 'large': ('status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de5/state/odoo_custom.db → failed=729, indexed=2188\n', '')}
+E       assert {'empty': ('s...d=309\n', '')} == {}
+E         
+E         Left contains 3 more items:
+E         {'empty': ('status: lore-odoo_custom container = absent\n'
+E                    'status: manifest '
+E                    '/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_output_does_not_de5/state/odoo_custom.db '
+E                    '→ no files indexed yet\n',
+E                    ''),...
+E         
+E         ...Full output truncated (11 lines hidden), use '-vv' to show
+
+test_ledger_572.py:531: AssertionError
+_ TestStatusShowsNoIndexFactFromTheLedger.test_status_prints_no_count_of_the_legacy_files_rows[demand_intelligence-legacy_pre_p5] _
+[gw5] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsNoIndexFactFromTheLedger object at 0x7f2604388c00>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_prints_no_count_of0/proje...pture.CaptureFixture object at 0x7f260420f460>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f26040e32f0>)
+state = 'legacy_pre_p5'
+
+    @pytest.mark.parametrize("state", sorted(LEDGER_STATES))
+    def test_status_prints_no_count_of_the_legacy_files_rows(
+        self, scene: LedgerScene, state: str
+    ) -> None:
+        """The 2917-file / 20419-chunk legacy population's counts appear nowhere in status."""
+        LEDGER_STATES[state](scene)
+        scene.replace_files_table("large")
+        file_count, chunks_per_file = LEGACY_POPULATIONS["large"]
+        indexed_rows = sum(
+            1 for index in range(file_count) if LEGACY_STATES[index % len(LEGACY_STATES)] == "indexed"
+        )
+        counts = {file_count, file_count * chunks_per_file, indexed_rows, file_count - indexed_rows}
+    
+        outcome = scene.status()
+    
+        _assert_ok(outcome, f"status over a {state} ledger")
+        # Scrub the hermetic tmp paths first: pytest numbers its tmp dirs, and a dir number that
+        # happens to equal a count is not a count.
+        printed = (outcome.stdout + outcome.stderr).replace(str(scene.tmp_root), "<tmp>")
+        leaked = sorted(count for count in counts if str(count) in printed)
+>       assert leaked == [], (
+            f"status must print no file or chunk count from the ledger; found {leaked} in {printed!r}"
+        )
+E       AssertionError: status must print no file or chunk count from the ledger; found [729, 2188] in 'status: lore-demand_intelligence container = absent\nstatus: manifest <tmp>/state/demand_intelligence.db → failed=729, indexed=2188\n'
+E       assert [729, 2188] == []
+E         
+E         Left contains 2 more items, first extra item: 729
+E         Use -v to get more diff
+
+test_ledger_572.py:556: AssertionError
+_ TestProvisionedDecisionFollowsTheMarker.test_the_cold_index_runs_against_this_projects_config[odoo-custom] _
+[gw4] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestProvisionedDecisionFollowsTheMarker object at 0x7efddbf8a030>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw4/test_the_cold_index_runs_again1/proje...pture.CaptureFixture object at 0x7efddb8a9e50>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7efddb9faa90>)
+
+    def test_the_cold_index_runs_against_this_projects_config(self, scene: LedgerScene) -> None:
+        """The index setup runs for an unprovisioned ledger is THIS project's lore.yaml."""
+        scene.record_owner_only()
+    
+        _, shim = scene.setup_reindexes()
+    
+        config_path = str(scene.project / lore_deploy.CONFIG_FILENAME)
+>       assert len(shim.index_calls) == 1 and config_path in shim.index_calls[0], (
+            f"setup must cold-index {config_path}; ran {shim.index_calls}"
+        )
+E       AssertionError: setup must cold-index /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw4/test_the_cold_index_runs_again1/projects/odoo-custom/lore.yaml; ran []
+E       assert (0 == 1)
+E        +  where 0 = len([])
+E        +    where [] = DeployShim(real_run=<function _run at 0x7efde52556f0>, index_returncode=0, index_calls=[], podman_calls=[['podman', 'c...ct', '--format', '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}', 'lore-odoo_custom']]).index_calls
+
+test_ledger_572.py:465: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_odoo_custom → http://127.0.0.1:9201/mcp
+_ TestStatusShowsNoIndexFactFromTheLedger.test_status_prints_no_count_of_the_legacy_files_rows[demand_intelligence-owner_and_marker] _
+[gw5] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsNoIndexFactFromTheLedger object at 0x7f2604408650>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_prints_no_count_of1/proje...pture.CaptureFixture object at 0x7f260411eb50>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f2604145040>)
+state = 'owner_and_marker'
+
+    @pytest.mark.parametrize("state", sorted(LEDGER_STATES))
+    def test_status_prints_no_count_of_the_legacy_files_rows(
+        self, scene: LedgerScene, state: str
+    ) -> None:
+        """The 2917-file / 20419-chunk legacy population's counts appear nowhere in status."""
+        LEDGER_STATES[state](scene)
+        scene.replace_files_table("large")
+        file_count, chunks_per_file = LEGACY_POPULATIONS["large"]
+        indexed_rows = sum(
+            1 for index in range(file_count) if LEGACY_STATES[index % len(LEGACY_STATES)] == "indexed"
+        )
+        counts = {file_count, file_count * chunks_per_file, indexed_rows, file_count - indexed_rows}
+    
+        outcome = scene.status()
+    
+        _assert_ok(outcome, f"status over a {state} ledger")
+        # Scrub the hermetic tmp paths first: pytest numbers its tmp dirs, and a dir number that
+        # happens to equal a count is not a count.
+        printed = (outcome.stdout + outcome.stderr).replace(str(scene.tmp_root), "<tmp>")
+        leaked = sorted(count for count in counts if str(count) in printed)
+>       assert leaked == [], (
+            f"status must print no file or chunk count from the ledger; found {leaked} in {printed!r}"
+        )
+E       AssertionError: status must print no file or chunk count from the ledger; found [729, 2188] in 'status: lore-demand_intelligence container = absent\nstatus: manifest <tmp>/state/demand_intelligence.db → failed=729, indexed=2188\n'
+E       assert [729, 2188] == []
+E         
+E         Left contains 2 more items, first extra item: 729
+E         Use -v to get more diff
+
+test_ledger_572.py:556: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_demand_intelligence → http://127.0.0.1:9201/mcp
+_ TestStatusShowsNoIndexFactFromTheLedger.test_status_prints_no_count_of_the_legacy_files_rows[demand_intelligence-owner_only] _
+[gw5] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsNoIndexFactFromTheLedger object at 0x7f2604408850>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_prints_no_count_of2/proje...pture.CaptureFixture object at 0x7f260411f850>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f260422cd70>)
+state = 'owner_only'
+
+    @pytest.mark.parametrize("state", sorted(LEDGER_STATES))
+    def test_status_prints_no_count_of_the_legacy_files_rows(
+        self, scene: LedgerScene, state: str
+    ) -> None:
+        """The 2917-file / 20419-chunk legacy population's counts appear nowhere in status."""
+        LEDGER_STATES[state](scene)
+        scene.replace_files_table("large")
+        file_count, chunks_per_file = LEGACY_POPULATIONS["large"]
+        indexed_rows = sum(
+            1 for index in range(file_count) if LEGACY_STATES[index % len(LEGACY_STATES)] == "indexed"
+        )
+        counts = {file_count, file_count * chunks_per_file, indexed_rows, file_count - indexed_rows}
+    
+        outcome = scene.status()
+    
+        _assert_ok(outcome, f"status over a {state} ledger")
+        # Scrub the hermetic tmp paths first: pytest numbers its tmp dirs, and a dir number that
+        # happens to equal a count is not a count.
+        printed = (outcome.stdout + outcome.stderr).replace(str(scene.tmp_root), "<tmp>")
+        leaked = sorted(count for count in counts if str(count) in printed)
+>       assert leaked == [], (
+            f"status must print no file or chunk count from the ledger; found {leaked} in {printed!r}"
+        )
+E       AssertionError: status must print no file or chunk count from the ledger; found [729, 2188] in 'status: lore-demand_intelligence container = absent\nstatus: manifest <tmp>/state/demand_intelligence.db → failed=729, indexed=2188\n'
+E       assert [729, 2188] == []
+E         
+E         Left contains 2 more items, first extra item: 729
+E         Use -v to get more diff
+
+test_ledger_572.py:556: AssertionError
+_ TestProvisionedDecisionFollowsTheMarker.test_status_does_not_provision_an_owner_only_ledger[demand_intelligence] _
+[gw4] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestProvisionedDecisionFollowsTheMarker object at 0x7efddbf8a210>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw4/test_status_does_not_provision0/proje...pture.CaptureFixture object at 0x7efddba20ad0>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7efddba35cd0>)
+
+    def test_status_does_not_provision_an_owner_only_ledger(self, scene: LedgerScene) -> None:
+        """The marker is written only by setup: a status run leaves an owner-only ledger unprovisioned."""
+        scene.record_owner_only()
+        _assert_ok(scene.status(), "status over an owner-only ledger")
+    
+        _, shim = scene.setup_reindexes()
+    
+>       assert len(shim.index_calls) == 1, (
+            f"status must not mark the project provisioned; the next setup ran {shim.index_calls}"
+        )
+E       AssertionError: status must not mark the project provisioned; the next setup ran []
+E       assert 0 == 1
+E        +  where 0 = len([])
+E        +    where [] = DeployShim(real_run=DeployShim(real_run=<function _run at 0x7efde52556f0>, index_returncode=0, index_calls=[], podman_...format', '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}', 'lore-demand_intelligence']]).index_calls
+
+test_ledger_572.py:476: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_demand_intelligence → http://127.0.0.1:9201/mcp
+_ TestStatusShowsNoIndexFactFromTheLedger.test_status_prints_no_count_of_the_legacy_files_rows[odoo-custom-legacy_pre_p5] _
+[gw5] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsNoIndexFactFromTheLedger object at 0x7f260747aa80>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_prints_no_count_of3/proje...pture.CaptureFixture object at 0x7f2604146f30>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f260422c830>)
+state = 'legacy_pre_p5'
+
+    @pytest.mark.parametrize("state", sorted(LEDGER_STATES))
+    def test_status_prints_no_count_of_the_legacy_files_rows(
+        self, scene: LedgerScene, state: str
+    ) -> None:
+        """The 2917-file / 20419-chunk legacy population's counts appear nowhere in status."""
+        LEDGER_STATES[state](scene)
+        scene.replace_files_table("large")
+        file_count, chunks_per_file = LEGACY_POPULATIONS["large"]
+        indexed_rows = sum(
+            1 for index in range(file_count) if LEGACY_STATES[index % len(LEGACY_STATES)] == "indexed"
+        )
+        counts = {file_count, file_count * chunks_per_file, indexed_rows, file_count - indexed_rows}
+    
+        outcome = scene.status()
+    
+        _assert_ok(outcome, f"status over a {state} ledger")
+        # Scrub the hermetic tmp paths first: pytest numbers its tmp dirs, and a dir number that
+        # happens to equal a count is not a count.
+        printed = (outcome.stdout + outcome.stderr).replace(str(scene.tmp_root), "<tmp>")
+        leaked = sorted(count for count in counts if str(count) in printed)
+>       assert leaked == [], (
+            f"status must print no file or chunk count from the ledger; found {leaked} in {printed!r}"
+        )
+E       AssertionError: status must print no file or chunk count from the ledger; found [729, 2188] in 'status: lore-odoo_custom container = absent\nstatus: manifest <tmp>/state/odoo_custom.db → failed=729, indexed=2188\n'
+E       assert [729, 2188] == []
+E         
+E         Left contains 2 more items, first extra item: 729
+E         Use -v to get more diff
+
+test_ledger_572.py:556: AssertionError
+_ TestStatusShowsNoIndexFactFromTheLedger.test_status_prints_no_count_of_the_legacy_files_rows[odoo-custom-owner_and_marker] _
+[gw5] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsNoIndexFactFromTheLedger object at 0x7f260747ad50>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_prints_no_count_of4/proje...pture.CaptureFixture object at 0x7f26041306e0>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f26042518b0>)
+state = 'owner_and_marker'
+
+    @pytest.mark.parametrize("state", sorted(LEDGER_STATES))
+    def test_status_prints_no_count_of_the_legacy_files_rows(
+        self, scene: LedgerScene, state: str
+    ) -> None:
+        """The 2917-file / 20419-chunk legacy population's counts appear nowhere in status."""
+        LEDGER_STATES[state](scene)
+        scene.replace_files_table("large")
+        file_count, chunks_per_file = LEGACY_POPULATIONS["large"]
+        indexed_rows = sum(
+            1 for index in range(file_count) if LEGACY_STATES[index % len(LEGACY_STATES)] == "indexed"
+        )
+        counts = {file_count, file_count * chunks_per_file, indexed_rows, file_count - indexed_rows}
+    
+        outcome = scene.status()
+    
+        _assert_ok(outcome, f"status over a {state} ledger")
+        # Scrub the hermetic tmp paths first: pytest numbers its tmp dirs, and a dir number that
+        # happens to equal a count is not a count.
+        printed = (outcome.stdout + outcome.stderr).replace(str(scene.tmp_root), "<tmp>")
+        leaked = sorted(count for count in counts if str(count) in printed)
+>       assert leaked == [], (
+            f"status must print no file or chunk count from the ledger; found {leaked} in {printed!r}"
+        )
+E       AssertionError: status must print no file or chunk count from the ledger; found [729, 2188] in 'status: lore-odoo_custom container = absent\nstatus: manifest <tmp>/state/odoo_custom.db → failed=729, indexed=2188\n'
+E       assert [729, 2188] == []
+E         
+E         Left contains 2 more items, first extra item: 729
+E         Use -v to get more diff
+
+test_ledger_572.py:556: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_odoo_custom → http://127.0.0.1:9201/mcp
+_ TestStatusShowsNoIndexFactFromTheLedger.test_status_prints_no_count_of_the_legacy_files_rows[odoo-custom-owner_only] _
+[gw5] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_ledger_572.TestStatusShowsNoIndexFactFromTheLedger object at 0x7f26043f5b70>
+scene = LedgerScene(project=PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_prints_no_count_of5/proje...pture.CaptureFixture object at 0x7f260422c590>, monkeypatch=<_pytest.monkeypatch.MonkeyPatch object at 0x7f2604209a90>)
+state = 'owner_only'
+
+    @pytest.mark.parametrize("state", sorted(LEDGER_STATES))
+    def test_status_prints_no_count_of_the_legacy_files_rows(
+        self, scene: LedgerScene, state: str
+    ) -> None:
+        """The 2917-file / 20419-chunk legacy population's counts appear nowhere in status."""
+        LEDGER_STATES[state](scene)
+        scene.replace_files_table("large")
+        file_count, chunks_per_file = LEGACY_POPULATIONS["large"]
+        indexed_rows = sum(
+            1 for index in range(file_count) if LEGACY_STATES[index % len(LEGACY_STATES)] == "indexed"
+        )
+        counts = {file_count, file_count * chunks_per_file, indexed_rows, file_count - indexed_rows}
+    
+        outcome = scene.status()
+    
+        _assert_ok(outcome, f"status over a {state} ledger")
+        # Scrub the hermetic tmp paths first: pytest numbers its tmp dirs, and a dir number that
+        # happens to equal a count is not a count.
+        printed = (outcome.stdout + outcome.stderr).replace(str(scene.tmp_root), "<tmp>")
+        leaked = sorted(count for count in counts if str(count) in printed)
+>       assert leaked == [], (
+            f"status must print no file or chunk count from the ledger; found {leaked} in {printed!r}"
+        )
+E       AssertionError: status must print no file or chunk count from the ledger; found [729, 2188] in 'status: lore-odoo_custom container = absent\nstatus: manifest <tmp>/state/odoo_custom.db → failed=729, indexed=2188\n'
+E       assert [729, 2188] == []
+E         
+E         Left contains 2 more items, first extra item: 729
+E         Use -v to get more diff
+
+test_ledger_572.py:556: AssertionError
+_ TestSetupRefusesACorruptLedgerLoudly.test_a_corrupt_ledger_refuses_naming_the_file_and_creates_nothing[text_over_the_file-derived] _
+[gw7] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_scaffold_slug.TestSetupRefusesACorruptLedgerLoudly object at 0x7f4e50096210>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f4e4fe9a2e0>
+tmp_path = PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_a_corrupt_ledger_refuses_0')
+capsys = <_pytest.capture.CaptureFixture object at 0x7f4e50036030>
+door = SlugDoor(label='derived', hand_set_slug=None)
+shape = 'text_over_the_file'
+
+    @pytest.mark.parametrize("shape", sorted(CORRUPT_LEDGER_SHAPES))
+    def test_a_corrupt_ledger_refuses_naming_the_file_and_creates_nothing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        door: SlugDoor,
+        shape: str,
+    ) -> None:
+        """``<slug>.db`` is not SQLite → ``_EXIT_ERROR``, ONE stderr line naming it, nothing created."""
+        scene = CollisionScene.build(tmp_path, door)
+        lore_deploy.MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
+        ledger = lore_deploy.MANIFEST_DIR / f"{door.slug}.db"
+        corrupt = CORRUPT_LEDGER_SHAPES[shape]()
+        ledger.write_bytes(corrupt)
+        _stub_network_probes(monkeypatch)
+        shim = PodmanShim.install(monkeypatch, container_state=None)
+    
+        outcome = _drive_setup(scene.project, scene.env_file, capsys)
+    
+>       _assert_refused_with_exit_error(outcome, f"setup over a corrupt ledger ({shape})")
+
+test_scaffold_slug.py:1227: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+outcome = VerbOutcome(return_code=None, raised=DatabaseError('file is not a database'), stdout='', stderr='')
+what = 'setup over a corrupt ledger (text_over_the_file)'
+
+    def _assert_refused_with_exit_error(outcome: VerbOutcome, what: str) -> None:
+        """F5: a refusal is ``_EXIT_ERROR`` plus a stderr line, never a raise."""
+>       assert outcome.raised is None, (
+            f"{what} must be refused with _EXIT_ERROR and a stderr line, not a raise; "
+            f"raised {outcome.raised!r}"
+        )
+E       AssertionError: setup over a corrupt ledger (text_over_the_file) must be refused with _EXIT_ERROR and a stderr line, not a raise; raised DatabaseError('file is not a database')
+E       assert DatabaseError('file is not a database') is None
+E        +  where DatabaseError('file is not a database') = VerbOutcome(return_code=None, raised=DatabaseError('file is not a database'), stdout='', stderr='').raised
+
+test_scaffold_slug.py:512: AssertionError
+_ TestSetupRefusesACorruptLedgerLoudly.test_a_corrupt_ledger_refuses_naming_the_file_and_creates_nothing[text_over_the_file-hand_set] _
+[gw7] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_scaffold_slug.TestSetupRefusesACorruptLedgerLoudly object at 0x7f4e50096350>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f4e4ff2fee0>
+tmp_path = PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_a_corrupt_ledger_refuses_1')
+capsys = <_pytest.capture.CaptureFixture object at 0x7f4e500118d0>
+door = SlugDoor(label='hand_set', hand_set_slug='odoo')
+shape = 'text_over_the_file'
+
+    @pytest.mark.parametrize("shape", sorted(CORRUPT_LEDGER_SHAPES))
+    def test_a_corrupt_ledger_refuses_naming_the_file_and_creates_nothing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        door: SlugDoor,
+        shape: str,
+    ) -> None:
+        """``<slug>.db`` is not SQLite → ``_EXIT_ERROR``, ONE stderr line naming it, nothing created."""
+        scene = CollisionScene.build(tmp_path, door)
+        lore_deploy.MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
+        ledger = lore_deploy.MANIFEST_DIR / f"{door.slug}.db"
+        corrupt = CORRUPT_LEDGER_SHAPES[shape]()
+        ledger.write_bytes(corrupt)
+        _stub_network_probes(monkeypatch)
+        shim = PodmanShim.install(monkeypatch, container_state=None)
+    
+        outcome = _drive_setup(scene.project, scene.env_file, capsys)
+    
+>       _assert_refused_with_exit_error(outcome, f"setup over a corrupt ledger ({shape})")
+
+test_scaffold_slug.py:1227: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+outcome = VerbOutcome(return_code=None, raised=DatabaseError('file is not a database'), stdout='', stderr='')
+what = 'setup over a corrupt ledger (text_over_the_file)'
+
+    def _assert_refused_with_exit_error(outcome: VerbOutcome, what: str) -> None:
+        """F5: a refusal is ``_EXIT_ERROR`` plus a stderr line, never a raise."""
+>       assert outcome.raised is None, (
+            f"{what} must be refused with _EXIT_ERROR and a stderr line, not a raise; "
+            f"raised {outcome.raised!r}"
+        )
+E       AssertionError: setup over a corrupt ledger (text_over_the_file) must be refused with _EXIT_ERROR and a stderr line, not a raise; raised DatabaseError('file is not a database')
+E       assert DatabaseError('file is not a database') is None
+E        +  where DatabaseError('file is not a database') = VerbOutcome(return_code=None, raised=DatabaseError('file is not a database'), stdout='', stderr='').raised
+
+test_scaffold_slug.py:512: AssertionError
+_ TestSetupRefusesACorruptLedgerLoudly.test_a_corrupt_ledger_refuses_naming_the_file_and_creates_nothing[truncated_sqlite-derived] _
+[gw7] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_scaffold_slug.TestSetupRefusesACorruptLedgerLoudly object at 0x7f4e50086520>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f4e4fee6740>
+tmp_path = PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_a_corrupt_ledger_refuses_2')
+capsys = <_pytest.capture.CaptureFixture object at 0x7f4e50013af0>
+door = SlugDoor(label='derived', hand_set_slug=None), shape = 'truncated_sqlite'
+
+    @pytest.mark.parametrize("shape", sorted(CORRUPT_LEDGER_SHAPES))
+    def test_a_corrupt_ledger_refuses_naming_the_file_and_creates_nothing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        door: SlugDoor,
+        shape: str,
+    ) -> None:
+        """``<slug>.db`` is not SQLite → ``_EXIT_ERROR``, ONE stderr line naming it, nothing created."""
+        scene = CollisionScene.build(tmp_path, door)
+        lore_deploy.MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
+        ledger = lore_deploy.MANIFEST_DIR / f"{door.slug}.db"
+        corrupt = CORRUPT_LEDGER_SHAPES[shape]()
+        ledger.write_bytes(corrupt)
+        _stub_network_probes(monkeypatch)
+        shim = PodmanShim.install(monkeypatch, container_state=None)
+    
+        outcome = _drive_setup(scene.project, scene.env_file, capsys)
+    
+>       _assert_refused_with_exit_error(outcome, f"setup over a corrupt ledger ({shape})")
+
+test_scaffold_slug.py:1227: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+outcome = VerbOutcome(return_code=None, raised=DatabaseError('database disk image is malformed'), stdout='', stderr='')
+what = 'setup over a corrupt ledger (truncated_sqlite)'
+
+    def _assert_refused_with_exit_error(outcome: VerbOutcome, what: str) -> None:
+        """F5: a refusal is ``_EXIT_ERROR`` plus a stderr line, never a raise."""
+>       assert outcome.raised is None, (
+            f"{what} must be refused with _EXIT_ERROR and a stderr line, not a raise; "
+            f"raised {outcome.raised!r}"
+        )
+E       AssertionError: setup over a corrupt ledger (truncated_sqlite) must be refused with _EXIT_ERROR and a stderr line, not a raise; raised DatabaseError('database disk image is malformed')
+E       assert DatabaseError('database disk image is malformed') is None
+E        +  where DatabaseError('database disk image is malformed') = VerbOutcome(return_code=None, raised=DatabaseError('database disk image is malformed'), stdout='', stderr='').raised
+
+test_scaffold_slug.py:512: AssertionError
+_ TestSetupRefusesACorruptLedgerLoudly.test_a_corrupt_ledger_refuses_naming_the_file_and_creates_nothing[truncated_sqlite-hand_set] _
+[gw7] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_scaffold_slug.TestSetupRefusesACorruptLedgerLoudly object at 0x7f4e50086650>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f4e4fee4600>
+tmp_path = PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_a_corrupt_ledger_refuses_3')
+capsys = <_pytest.capture.CaptureFixture object at 0x7f4e4fef6ea0>
+door = SlugDoor(label='hand_set', hand_set_slug='odoo')
+shape = 'truncated_sqlite'
+
+    @pytest.mark.parametrize("shape", sorted(CORRUPT_LEDGER_SHAPES))
+    def test_a_corrupt_ledger_refuses_naming_the_file_and_creates_nothing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        door: SlugDoor,
+        shape: str,
+    ) -> None:
+        """``<slug>.db`` is not SQLite → ``_EXIT_ERROR``, ONE stderr line naming it, nothing created."""
+        scene = CollisionScene.build(tmp_path, door)
+        lore_deploy.MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
+        ledger = lore_deploy.MANIFEST_DIR / f"{door.slug}.db"
+        corrupt = CORRUPT_LEDGER_SHAPES[shape]()
+        ledger.write_bytes(corrupt)
+        _stub_network_probes(monkeypatch)
+        shim = PodmanShim.install(monkeypatch, container_state=None)
+    
+        outcome = _drive_setup(scene.project, scene.env_file, capsys)
+    
+>       _assert_refused_with_exit_error(outcome, f"setup over a corrupt ledger ({shape})")
+
+test_scaffold_slug.py:1227: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+outcome = VerbOutcome(return_code=None, raised=DatabaseError('database disk image is malformed'), stdout='', stderr='')
+what = 'setup over a corrupt ledger (truncated_sqlite)'
+
+    def _assert_refused_with_exit_error(outcome: VerbOutcome, what: str) -> None:
+        """F5: a refusal is ``_EXIT_ERROR`` plus a stderr line, never a raise."""
+>       assert outcome.raised is None, (
+            f"{what} must be refused with _EXIT_ERROR and a stderr line, not a raise; "
+            f"raised {outcome.raised!r}"
+        )
+E       AssertionError: setup over a corrupt ledger (truncated_sqlite) must be refused with _EXIT_ERROR and a stderr line, not a raise; raised DatabaseError('database disk image is malformed')
+E       assert DatabaseError('database disk image is malformed') is None
+E        +  where DatabaseError('database disk image is malformed') = VerbOutcome(return_code=None, raised=DatabaseError('database disk image is malformed'), stdout='', stderr='').raised
+
+test_scaffold_slug.py:512: AssertionError
+_ TestVerbsRefuseAnUnreadableLoreYaml.test_verb_refuses_with_one_readable_remedy_and_touches_no_container[status-schema_invalid_slug] _
+[gw1] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_scaffold_slug.TestVerbsRefuseAnUnreadableLoreYaml object at 0x7f9b466128b0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f9b45f46dd0>
+tmp_path = PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw1/test_verb_refuses_with_one_rea0')
+capsys = <_pytest.capture.CaptureFixture object at 0x7f9b45f95370>
+verb = 'status', config_shape = 'schema_invalid_slug'
+
+    @pytest.mark.parametrize("config_shape", UNREADABLE_CONFIGS)
+    @pytest.mark.parametrize("verb", ["stop", "status"])
+    def test_verb_refuses_with_one_readable_remedy_and_touches_no_container(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        verb: str,
+        config_shape: str,
+    ) -> None:
+        """``_EXIT_ERROR``; stderr names the file and the problem, has no traceback, ends with a remedy.
+    
+        The project's own container is running: a build that guesses the slug from the directory
+        name would stop it, which is the wrong container for any hand-set slug.
+        """
+        project = _project_dir(tmp_path, HEADLINE_NAME)
+        config_path = project / "lore.yaml"
+        text = _write_unreadable_config(project, config_shape)
+        shim = PodmanShim.install(monkeypatch, container_state="running", workspace_source=project)
+    
+        outcome = _drive(lambda: getattr(lore_deploy, f"verb_{verb}")(project), capsys)
+    
+        _assert_refused_with_exit_error(outcome, f"{verb} over an unreadable lore.yaml ({config_shape})")
+        assert _names_path(outcome.stderr, config_path), (
+            f"the refusal must name {config_path}; got {outcome.stderr!r}"
+        )
+        problem = _config_problem(text)
+        assert problem in outcome.stderr, (
+            f"the refusal must name the parse error {problem!r}; got {outcome.stderr!r}"
+        )
+>       assert TRACEBACK_BANNER not in outcome.stderr, (
+            f"the refusal must not be the child interpreter's traceback; got {outcome.stderr!r}"
+        )
+E       AssertionError: the refusal must not be the child interpreter's traceback; got 'status: failed to read \'c.project.slug\' from /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw1/test_verb_refuses_with_one_rea0/projects/odoo-custom/lore.yaml: Traceback (most recent call last):\n  File "<string>", line 1, in <module>\n    import yaml;from pathlib import Path;from loremaster.config import LoreConfig;c=LoreConfig.model_validate(yaml.safe_load(Path(\'/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw1/test_verb_refuses_with_one_rea0/projects/odoo-custom/lore.yaml\').read_text(encoding=\'utf-8\')));print(c.project.slug)\n                                                                                    ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/pydantic/main.py", line 732, in model_validate\n    return cls.__pydantic_validator__.validate_python(\n           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^\n        obj,\n        ^^^^\n    ...<5 lines>...\n        by_name=by_name,\n        ^^^^^^^^^^^^^^^^\n    )\n    ^\npydantic_core._pydantic_core.ValidationError: 1 validation error for LoreConfig\nproject.slug\n  String should match pattern \'^[a-z0-9][a-z0-9_]*$\' [type=string_pattern_mismatch, input_value=\'odoo-custom\', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_pattern_mismatch\n'
+E       assert 'Traceback (...t call last)' not in 'status: fai...n_mismatch\n'
+E         
+E         'Traceback (most recent call last)' is contained here:
+E           ore.yaml: Traceback (most recent call last):
+E             File "<string>", line 1, in <module>
+E               import yaml;from pathlib import Path;from loremaster.config import LoreConfig;c=LoreConfig.model_validate(yaml.safe_load(Path('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw1/test_verb_refuses_with_one_rea0/projects/odoo-custom/lore.yaml').read_text(encoding='utf-8')));print(c.project.slug)
+E                                                                                               ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^...
+E         
+E         ...Full output truncated (15 lines hidden), use '-vv' to show
+
+test_scaffold_slug.py:1404: AssertionError
+_ TestSetupRefusesACorruptLedgerLoudly.test_a_ledger_write_that_fails_refuses_naming_the_file[derived] _
+[gw7] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_scaffold_slug.TestSetupRefusesACorruptLedgerLoudly object at 0x7f4e50099250>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f4e4fee5a20>
+tmp_path = PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_a_ledger_write_that_fails0')
+capsys = <_pytest.capture.CaptureFixture object at 0x7f4e5018a8d0>
+door = SlugDoor(label='derived', hand_set_slug=None)
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+    def test_a_ledger_write_that_fails_refuses_naming_the_file(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        door: SlugDoor,
+    ) -> None:
+        """The WRITE path: the ledger dir is read-only (a uid mismatch) → one line naming the file.
+    
+        The cold index succeeds; the failure is setup's own ledger write after it.
+        """
+        scene = CollisionScene.build(tmp_path, door)
+        lore_deploy.MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
+        lore_deploy.MANIFEST_DIR.chmod(0o555)
+        ledger = lore_deploy.MANIFEST_DIR / f"{door.slug}.db"
+        _stub_network_probes(monkeypatch)
+        PodmanShim.install(monkeypatch, container_state=None)
+        try:
+            outcome = _drive_setup(scene.project, scene.env_file, capsys)
+        finally:
+            lore_deploy.MANIFEST_DIR.chmod(0o755)
+    
+>       _assert_refused_with_exit_error(outcome, "setup whose ledger write fails")
+
+test_scaffold_slug.py:1259: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+outcome = VerbOutcome(return_code=None, raised=OperationalError('unable to open database file'), stdout='setup: scaffolded /var/...e.yaml — REVIEW its include globs.\nsetup: cold-indexing odoo_custom (this is the one expensive step)…\n\n', stderr='')
+what = 'setup whose ledger write fails'
+
+    def _assert_refused_with_exit_error(outcome: VerbOutcome, what: str) -> None:
+        """F5: a refusal is ``_EXIT_ERROR`` plus a stderr line, never a raise."""
+>       assert outcome.raised is None, (
+            f"{what} must be refused with _EXIT_ERROR and a stderr line, not a raise; "
+            f"raised {outcome.raised!r}"
+        )
+E       AssertionError: setup whose ledger write fails must be refused with _EXIT_ERROR and a stderr line, not a raise; raised OperationalError('unable to open database file')
+E       assert OperationalError('unable to open database file') is None
+E        +  where OperationalError('unable to open database file') = VerbOutcome(return_code=None, raised=OperationalError('unable to open database file'), stdout='setup: scaffolded /var/...e.yaml — REVIEW its include globs.\nsetup: cold-indexing odoo_custom (this is the one expensive step)…\n\n', stderr='').raised
+
+test_scaffold_slug.py:512: AssertionError
+_ TestSetupRefusesACorruptLedgerLoudly.test_a_ledger_write_that_fails_refuses_naming_the_file[hand_set] _
+[gw7] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_scaffold_slug.TestSetupRefusesACorruptLedgerLoudly object at 0x7f4e50108490>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f4e4fee5e80>
+tmp_path = PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw7/test_a_ledger_write_that_fails1')
+capsys = <_pytest.capture.CaptureFixture object at 0x7f4e500c71d0>
+door = SlugDoor(label='hand_set', hand_set_slug='odoo')
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+    def test_a_ledger_write_that_fails_refuses_naming_the_file(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        door: SlugDoor,
+    ) -> None:
+        """The WRITE path: the ledger dir is read-only (a uid mismatch) → one line naming the file.
+    
+        The cold index succeeds; the failure is setup's own ledger write after it.
+        """
+        scene = CollisionScene.build(tmp_path, door)
+        lore_deploy.MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
+        lore_deploy.MANIFEST_DIR.chmod(0o555)
+        ledger = lore_deploy.MANIFEST_DIR / f"{door.slug}.db"
+        _stub_network_probes(monkeypatch)
+        PodmanShim.install(monkeypatch, container_state=None)
+        try:
+            outcome = _drive_setup(scene.project, scene.env_file, capsys)
+        finally:
+            lore_deploy.MANIFEST_DIR.chmod(0o755)
+    
+>       _assert_refused_with_exit_error(outcome, "setup whose ledger write fails")
+
+test_scaffold_slug.py:1259: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+outcome = VerbOutcome(return_code=None, raised=OperationalError('unable to open database file'), stdout='setup: cold-indexing odoo (this is the one expensive step)…\n\n', stderr='')
+what = 'setup whose ledger write fails'
+
+    def _assert_refused_with_exit_error(outcome: VerbOutcome, what: str) -> None:
+        """F5: a refusal is ``_EXIT_ERROR`` plus a stderr line, never a raise."""
+>       assert outcome.raised is None, (
+            f"{what} must be refused with _EXIT_ERROR and a stderr line, not a raise; "
+            f"raised {outcome.raised!r}"
+        )
+E       AssertionError: setup whose ledger write fails must be refused with _EXIT_ERROR and a stderr line, not a raise; raised OperationalError('unable to open database file')
+E       assert OperationalError('unable to open database file') is None
+E        +  where OperationalError('unable to open database file') = VerbOutcome(return_code=None, raised=OperationalError('unable to open database file'), stdout='setup: cold-indexing odoo (this is the one expensive step)…\n\n', stderr='').raised
+
+test_scaffold_slug.py:512: AssertionError
+_ TestSetupRecordsAndHonoursItsOwnProjectPath.test_existing_deployment_with_a_legacy_manifest_is_reindexed_and_claimed[odoo_custom] _
+[gw6] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_scaffold_slug.TestSetupRecordsAndHonoursItsOwnProjectPath object at 0x7f2b906462c0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f2b9045a7b0>
+tmp_path = PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_existing_deployment_with_0')
+capsys = <_pytest.capture.CaptureFixture object at 0x7f2b904f9b20>
+configured_slug = 'odoo_custom'
+
+    @pytest.mark.parametrize("configured_slug", CONFIGURED_SLUGS)
+    def test_existing_deployment_with_a_legacy_manifest_is_reindexed_and_claimed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        configured_slug: str,
+    ) -> None:
+        """lore.yaml declares the slug + a legacy ``<slug>.db`` (no row) → re-index, claim, success.
+    
+        Every live manifest predated the row (both on this host, measured 2026-10-31), so
+        re-running setup on an existing deployment must never be refused (directive #18015). It
+        is not provisioned either: its legacy rows describe no index (#572 ruling F-2 (a)), so
+        setup cold-indexes once, records the owner, and the NEXT setup is a no-op.
+        """
+        project = _project_dir(tmp_path, HEADLINE_NAME)
+        _write_operator_config(project, configured_slug)
+        _write_manifest(configured_slug, owner=None)
+        _stub_network_probes(monkeypatch)
+        shim = PodmanShim.install(monkeypatch, container_state=None)
+    
+        outcome = _drive_setup(project, _write_env_file(tmp_path), capsys)
+    
+        assert outcome.raised is None and outcome.return_code == lore_deploy._EXIT_OK, (
+            f"re-running setup on an existing {configured_slug} deployment must not be refused; "
+            f"got rc={outcome.return_code} raised={outcome.raised!r} stderr={outcome.stderr!r}"
+        )
+>       assert len(shim.index_calls) == 1, (
+            f"a legacy manifest is not a provisioned marker: setup must cold-index; ran {shim.index_calls}"
+        )
+E       AssertionError: a legacy manifest is not a provisioned marker: setup must cold-index; ran []
+E       assert 0 == 1
+E        +  where 0 = len([])
+E        +    where [] = PodmanShim(real_run=<function _run at 0x7f2b95a756f0>, container_state=None, workspace_source=None, podman_calls=[['po... '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}', 'lore-odoo_custom']], index_calls=[]).index_calls
+
+test_scaffold_slug.py:1039: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_odoo_custom → http://127.0.0.1:9201/mcp
+_ TestSetupRecordsAndHonoursItsOwnProjectPath.test_existing_deployment_with_a_legacy_manifest_is_reindexed_and_claimed[odoo] _
+[gw6] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_scaffold_slug.TestSetupRecordsAndHonoursItsOwnProjectPath object at 0x7f2b906463f0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f2b904ad0f0>
+tmp_path = PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw6/test_existing_deployment_with_1')
+capsys = <_pytest.capture.CaptureFixture object at 0x7f2b904f9f40>
+configured_slug = 'odoo'
+
+    @pytest.mark.parametrize("configured_slug", CONFIGURED_SLUGS)
+    def test_existing_deployment_with_a_legacy_manifest_is_reindexed_and_claimed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        configured_slug: str,
+    ) -> None:
+        """lore.yaml declares the slug + a legacy ``<slug>.db`` (no row) → re-index, claim, success.
+    
+        Every live manifest predated the row (both on this host, measured 2026-10-31), so
+        re-running setup on an existing deployment must never be refused (directive #18015). It
+        is not provisioned either: its legacy rows describe no index (#572 ruling F-2 (a)), so
+        setup cold-indexes once, records the owner, and the NEXT setup is a no-op.
+        """
+        project = _project_dir(tmp_path, HEADLINE_NAME)
+        _write_operator_config(project, configured_slug)
+        _write_manifest(configured_slug, owner=None)
+        _stub_network_probes(monkeypatch)
+        shim = PodmanShim.install(monkeypatch, container_state=None)
+    
+        outcome = _drive_setup(project, _write_env_file(tmp_path), capsys)
+    
+        assert outcome.raised is None and outcome.return_code == lore_deploy._EXIT_OK, (
+            f"re-running setup on an existing {configured_slug} deployment must not be refused; "
+            f"got rc={outcome.return_code} raised={outcome.raised!r} stderr={outcome.stderr!r}"
+        )
+>       assert len(shim.index_calls) == 1, (
+            f"a legacy manifest is not a provisioned marker: setup must cold-index; ran {shim.index_calls}"
+        )
+E       AssertionError: a legacy manifest is not a provisioned marker: setup must cold-index; ran []
+E       assert 0 == 1
+E        +  where 0 = len([])
+E        +    where [] = PodmanShim(real_run=<function _run at 0x7f2b95a756f0>, container_state=None, workspace_source=None, podman_calls=[['po...ormat', '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}', 'lore-odoo']], index_calls=[]).index_calls
+
+test_scaffold_slug.py:1039: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_odoo → http://127.0.0.1:9201/mcp
+_ TestVerbsRefuseAnUnreadableLoreYaml.test_verb_refuses_with_one_readable_remedy_and_touches_no_container[stop-truncated_yaml] _
+[gw0] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_scaffold_slug.TestVerbsRefuseAnUnreadableLoreYaml object at 0x7f45a8602c10>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f45a86b7f50>
+tmp_path = PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw0/test_verb_refuses_with_one_rea0')
+capsys = <_pytest.capture.CaptureFixture object at 0x7f45a815dd50>
+verb = 'stop', config_shape = 'truncated_yaml'
+
+    @pytest.mark.parametrize("config_shape", UNREADABLE_CONFIGS)
+    @pytest.mark.parametrize("verb", ["stop", "status"])
+    def test_verb_refuses_with_one_readable_remedy_and_touches_no_container(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        verb: str,
+        config_shape: str,
+    ) -> None:
+        """``_EXIT_ERROR``; stderr names the file and the problem, has no traceback, ends with a remedy.
+    
+        The project's own container is running: a build that guesses the slug from the directory
+        name would stop it, which is the wrong container for any hand-set slug.
+        """
+        project = _project_dir(tmp_path, HEADLINE_NAME)
+        config_path = project / "lore.yaml"
+        text = _write_unreadable_config(project, config_shape)
+        shim = PodmanShim.install(monkeypatch, container_state="running", workspace_source=project)
+    
+        outcome = _drive(lambda: getattr(lore_deploy, f"verb_{verb}")(project), capsys)
+    
+        _assert_refused_with_exit_error(outcome, f"{verb} over an unreadable lore.yaml ({config_shape})")
+        assert _names_path(outcome.stderr, config_path), (
+            f"the refusal must name {config_path}; got {outcome.stderr!r}"
+        )
+        problem = _config_problem(text)
+        assert problem in outcome.stderr, (
+            f"the refusal must name the parse error {problem!r}; got {outcome.stderr!r}"
+        )
+>       assert TRACEBACK_BANNER not in outcome.stderr, (
+            f"the refusal must not be the child interpreter's traceback; got {outcome.stderr!r}"
+        )
+E       AssertionError: the refusal must not be the child interpreter's traceback; got 'stop: failed to read \'c.project.slug\' from /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw0/test_verb_refuses_with_one_rea0/projects/odoo-custom/lore.yaml: Traceback (most recent call last):\n  File "<string>", line 1, in <module>\n    import yaml;from pathlib import Path;from loremaster.config import LoreConfig;c=LoreConfig.model_validate(yaml.safe_load(Path(\'/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw0/test_verb_refuses_with_one_rea0/projects/odoo-custom/lore.yaml\').read_text(encoding=\'utf-8\')));print(c.project.slug)\n                                                                                                              ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/__init__.py", line 125, in safe_load\n    return load(stream, SafeLoader)\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/__init__.py", line 81, in load\n    return loader.get_single_data()\n           ~~~~~~~~~~~~~~~~~~~~~~^^\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/constructor.py", line 49, in get_single_data\n    node = self.get_single_node()\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/composer.py", line 36, in get_single_node\n    document = self.compose_document()\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/composer.py", line 55, in compose_document\n    node = self.compose_node(None, None)\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/composer.py", line 84, in compose_node\n    node = self.compose_mapping_node(anchor)\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/composer.py", line 133, in compose_mapping_node\n    item_value = self.compose_node(node, item_key)\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/composer.py", line 82, in compose_node\n    node = self.compose_sequence_node(anchor)\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/composer.py", line 110, in compose_sequence_node\n    while not self.check_event(SequenceEndEvent):\n              ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/parser.py", line 98, in check_event\n    self.current_event = self.state()\n                         ~~~~~~~~~~^^\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/parser.py", line 474, in parse_flow_sequence_first_entry\n    return self.parse_flow_sequence_entry(first=True)\n           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/parser.py", line 495, in parse_flow_sequence_entry\n    return self.parse_flow_node()\n           ~~~~~~~~~~~~~~~~~~~~^^\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/parser.py", line 268, in parse_flow_node\n    return self.parse_node()\n           ~~~~~~~~~~~~~~~^^\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/parser.py", line 369, in parse_node\n    raise ParserError("while parsing a %s node" % node, start_mark,\n            "expected the node content, but found %r" % token.id,\n            token.start_mark)\nyaml.parser.ParserError: while parsing a flow node\nexpected the node content, but found \'<stream end>\'\n  in "<unicode string>", line 63, column 1:\n    \n    ^\n'
+E       assert 'Traceback (...t call last)' not in 'stop: faile...   \n    ^\n'
+E         
+E         'Traceback (most recent call last)' is contained here:
+E           ore.yaml: Traceback (most recent call last):
+E             File "<string>", line 1, in <module>
+E               import yaml;from pathlib import Path;from loremaster.config import LoreConfig;c=LoreConfig.model_validate(yaml.safe_load(Path('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw0/test_verb_refuses_with_one_rea0/projects/odoo-custom/lore.yaml').read_text(encoding='utf-8')));print(c.project.slug)
+E                                                                                                                         ~~~~~~~~~~~~~~^^^^^^^^^^^...
+E         
+E         ...Full output truncated (42 lines hidden), use '-vv' to show
+
+test_scaffold_slug.py:1404: AssertionError
+_ TestVerbsRefuseAnUnreadableLoreYaml.test_verb_refuses_with_one_readable_remedy_and_touches_no_container[stop-schema_invalid_slug] _
+[gw0] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_scaffold_slug.TestVerbsRefuseAnUnreadableLoreYaml object at 0x7f45a8602d50>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f45a8275d30>
+tmp_path = PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw0/test_verb_refuses_with_one_rea1')
+capsys = <_pytest.capture.CaptureFixture object at 0x7f45a8054850>
+verb = 'stop', config_shape = 'schema_invalid_slug'
+
+    @pytest.mark.parametrize("config_shape", UNREADABLE_CONFIGS)
+    @pytest.mark.parametrize("verb", ["stop", "status"])
+    def test_verb_refuses_with_one_readable_remedy_and_touches_no_container(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        verb: str,
+        config_shape: str,
+    ) -> None:
+        """``_EXIT_ERROR``; stderr names the file and the problem, has no traceback, ends with a remedy.
+    
+        The project's own container is running: a build that guesses the slug from the directory
+        name would stop it, which is the wrong container for any hand-set slug.
+        """
+        project = _project_dir(tmp_path, HEADLINE_NAME)
+        config_path = project / "lore.yaml"
+        text = _write_unreadable_config(project, config_shape)
+        shim = PodmanShim.install(monkeypatch, container_state="running", workspace_source=project)
+    
+        outcome = _drive(lambda: getattr(lore_deploy, f"verb_{verb}")(project), capsys)
+    
+        _assert_refused_with_exit_error(outcome, f"{verb} over an unreadable lore.yaml ({config_shape})")
+        assert _names_path(outcome.stderr, config_path), (
+            f"the refusal must name {config_path}; got {outcome.stderr!r}"
+        )
+        problem = _config_problem(text)
+        assert problem in outcome.stderr, (
+            f"the refusal must name the parse error {problem!r}; got {outcome.stderr!r}"
+        )
+>       assert TRACEBACK_BANNER not in outcome.stderr, (
+            f"the refusal must not be the child interpreter's traceback; got {outcome.stderr!r}"
+        )
+E       AssertionError: the refusal must not be the child interpreter's traceback; got 'stop: failed to read \'c.project.slug\' from /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw0/test_verb_refuses_with_one_rea1/projects/odoo-custom/lore.yaml: Traceback (most recent call last):\n  File "<string>", line 1, in <module>\n    import yaml;from pathlib import Path;from loremaster.config import LoreConfig;c=LoreConfig.model_validate(yaml.safe_load(Path(\'/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw0/test_verb_refuses_with_one_rea1/projects/odoo-custom/lore.yaml\').read_text(encoding=\'utf-8\')));print(c.project.slug)\n                                                                                    ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/pydantic/main.py", line 732, in model_validate\n    return cls.__pydantic_validator__.validate_python(\n           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^\n        obj,\n        ^^^^\n    ...<5 lines>...\n        by_name=by_name,\n        ^^^^^^^^^^^^^^^^\n    )\n    ^\npydantic_core._pydantic_core.ValidationError: 1 validation error for LoreConfig\nproject.slug\n  String should match pattern \'^[a-z0-9][a-z0-9_]*$\' [type=string_pattern_mismatch, input_value=\'odoo-custom\', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_pattern_mismatch\n'
+E       assert 'Traceback (...t call last)' not in 'stop: faile...n_mismatch\n'
+E         
+E         'Traceback (most recent call last)' is contained here:
+E           ore.yaml: Traceback (most recent call last):
+E             File "<string>", line 1, in <module>
+E               import yaml;from pathlib import Path;from loremaster.config import LoreConfig;c=LoreConfig.model_validate(yaml.safe_load(Path('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw0/test_verb_refuses_with_one_rea1/projects/odoo-custom/lore.yaml').read_text(encoding='utf-8')));print(c.project.slug)
+E                                                                                               ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^...
+E         
+E         ...Full output truncated (15 lines hidden), use '-vv' to show
+
+test_scaffold_slug.py:1404: AssertionError
+_ TestEveryVerbUsesTheConfiguredSlug.test_status_reads_the_manifest_the_slug_names[odoo_custom] _
+[gw5] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_scaffold_slug.TestEveryVerbUsesTheConfiguredSlug object at 0x7f260438bf00>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f26041094f0>
+tmp_path = PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_reads_the_manifest0')
+capsys = <_pytest.capture.CaptureFixture object at 0x7f26041fbe70>
+configured_slug = 'odoo_custom'
+
+    def test_status_reads_the_manifest_the_slug_names(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        configured_slug: str,
+    ) -> None:
+        """Status reads the configured slug's ledger: its recorded owner shows, and no count does.
+    
+        The project is provisioned by a real setup, so the owner row lives only in
+        ``<configured_slug>.db``; a status reading any other slug's ledger cannot show it. A
+        legacy ``files`` table is added so a status that still counts it is visible (#572).
+        """
+        project = _project_dir(tmp_path, HEADLINE_NAME)
+        _write_operator_config(project, configured_slug)
+        _provision(project, _write_env_file(tmp_path), monkeypatch, capsys)
+        _create_manifest(configured_slug, owner=None, indexed_rows=MANIFEST_INDEXED_ROWS)
+        owner = _manifest_owner(configured_slug)
+        assert owner is not None, "arranging: setup must have recorded the owner"
+        shim = PodmanShim.install(monkeypatch, container_state=None)
+    
+        lore_deploy.verb_status(project)
+    
+        out = capsys.readouterr().out
+>       assert owner in out, (
+            f"status must show the owner recorded in {configured_slug}.db ({owner}); stdout: {out!r}"
+        )
+E       AssertionError: status must show the owner recorded in odoo_custom.db (/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_reads_the_manifest0/projects/odoo-custom); stdout: 'status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_reads_the_manifest0/state/odoo_custom.db → indexed=3\n'
+E       assert '/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_reads_the_manifest0/projects/odoo-custom' in 'status: lore-odoo_custom container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_reads_the_manifest0/state/odoo_custom.db → indexed=3\n'
+
+test_scaffold_slug.py:796: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_odoo_custom → http://127.0.0.1:9201/mcp
+_ TestVerbsRefuseAnUnreadableLoreYaml.test_verb_refuses_with_one_readable_remedy_and_touches_no_container[status-truncated_yaml] _
+[gw0] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_scaffold_slug.TestVerbsRefuseAnUnreadableLoreYaml object at 0x7f45a862e780>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f45a8275860>
+tmp_path = PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw0/test_verb_refuses_with_one_rea2')
+capsys = <_pytest.capture.CaptureFixture object at 0x7f45a84d41d0>
+verb = 'status', config_shape = 'truncated_yaml'
+
+    @pytest.mark.parametrize("config_shape", UNREADABLE_CONFIGS)
+    @pytest.mark.parametrize("verb", ["stop", "status"])
+    def test_verb_refuses_with_one_readable_remedy_and_touches_no_container(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        verb: str,
+        config_shape: str,
+    ) -> None:
+        """``_EXIT_ERROR``; stderr names the file and the problem, has no traceback, ends with a remedy.
+    
+        The project's own container is running: a build that guesses the slug from the directory
+        name would stop it, which is the wrong container for any hand-set slug.
+        """
+        project = _project_dir(tmp_path, HEADLINE_NAME)
+        config_path = project / "lore.yaml"
+        text = _write_unreadable_config(project, config_shape)
+        shim = PodmanShim.install(monkeypatch, container_state="running", workspace_source=project)
+    
+        outcome = _drive(lambda: getattr(lore_deploy, f"verb_{verb}")(project), capsys)
+    
+        _assert_refused_with_exit_error(outcome, f"{verb} over an unreadable lore.yaml ({config_shape})")
+        assert _names_path(outcome.stderr, config_path), (
+            f"the refusal must name {config_path}; got {outcome.stderr!r}"
+        )
+        problem = _config_problem(text)
+        assert problem in outcome.stderr, (
+            f"the refusal must name the parse error {problem!r}; got {outcome.stderr!r}"
+        )
+>       assert TRACEBACK_BANNER not in outcome.stderr, (
+            f"the refusal must not be the child interpreter's traceback; got {outcome.stderr!r}"
+        )
+E       AssertionError: the refusal must not be the child interpreter's traceback; got 'status: failed to read \'c.project.slug\' from /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw0/test_verb_refuses_with_one_rea2/projects/odoo-custom/lore.yaml: Traceback (most recent call last):\n  File "<string>", line 1, in <module>\n    import yaml;from pathlib import Path;from loremaster.config import LoreConfig;c=LoreConfig.model_validate(yaml.safe_load(Path(\'/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw0/test_verb_refuses_with_one_rea2/projects/odoo-custom/lore.yaml\').read_text(encoding=\'utf-8\')));print(c.project.slug)\n                                                                                                              ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/__init__.py", line 125, in safe_load\n    return load(stream, SafeLoader)\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/__init__.py", line 81, in load\n    return loader.get_single_data()\n           ~~~~~~~~~~~~~~~~~~~~~~^^\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/constructor.py", line 49, in get_single_data\n    node = self.get_single_node()\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/composer.py", line 36, in get_single_node\n    document = self.compose_document()\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/composer.py", line 55, in compose_document\n    node = self.compose_node(None, None)\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/composer.py", line 84, in compose_node\n    node = self.compose_mapping_node(anchor)\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/composer.py", line 133, in compose_mapping_node\n    item_value = self.compose_node(node, item_key)\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/composer.py", line 82, in compose_node\n    node = self.compose_sequence_node(anchor)\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/composer.py", line 110, in compose_sequence_node\n    while not self.check_event(SequenceEndEvent):\n              ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/parser.py", line 98, in check_event\n    self.current_event = self.state()\n                         ~~~~~~~~~~^^\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/parser.py", line 474, in parse_flow_sequence_first_entry\n    return self.parse_flow_sequence_entry(first=True)\n           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/parser.py", line 495, in parse_flow_sequence_entry\n    return self.parse_flow_node()\n           ~~~~~~~~~~~~~~~~~~~~^^\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/parser.py", line 268, in parse_flow_node\n    return self.parse_node()\n           ~~~~~~~~~~~~~~~^^\n  File "/home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/yaml/parser.py", line 369, in parse_node\n    raise ParserError("while parsing a %s node" % node, start_mark,\n            "expected the node content, but found %r" % token.id,\n            token.start_mark)\nyaml.parser.ParserError: while parsing a flow node\nexpected the node content, but found \'<stream end>\'\n  in "<unicode string>", line 63, column 1:\n    \n    ^\n'
+E       assert 'Traceback (...t call last)' not in 'status: fai...   \n    ^\n'
+E         
+E         'Traceback (most recent call last)' is contained here:
+E           ore.yaml: Traceback (most recent call last):
+E             File "<string>", line 1, in <module>
+E               import yaml;from pathlib import Path;from loremaster.config import LoreConfig;c=LoreConfig.model_validate(yaml.safe_load(Path('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw0/test_verb_refuses_with_one_rea2/projects/odoo-custom/lore.yaml').read_text(encoding='utf-8')));print(c.project.slug)
+E                                                                                                                         ~~~~~~~~~~~~~~^^^^^^^^^^^...
+E         
+E         ...Full output truncated (42 lines hidden), use '-vv' to show
+
+test_scaffold_slug.py:1404: AssertionError
+_ TestEveryVerbUsesTheConfiguredSlug.test_status_reads_the_manifest_the_slug_names[odoo] _
+[gw5] linux -- Python 3.14.7 /home/ejprice/PycharmProjects/lore/.venv/bin/python3
+
+self = <test_scaffold_slug.TestEveryVerbUsesTheConfiguredSlug object at 0x7f26042fb950>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f2609854cb0>
+tmp_path = PosixPath('/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_reads_the_manifest1')
+capsys = <_pytest.capture.CaptureFixture object at 0x7f260403af70>
+configured_slug = 'odoo'
+
+    def test_status_reads_the_manifest_the_slug_names(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        configured_slug: str,
+    ) -> None:
+        """Status reads the configured slug's ledger: its recorded owner shows, and no count does.
+    
+        The project is provisioned by a real setup, so the owner row lives only in
+        ``<configured_slug>.db``; a status reading any other slug's ledger cannot show it. A
+        legacy ``files`` table is added so a status that still counts it is visible (#572).
+        """
+        project = _project_dir(tmp_path, HEADLINE_NAME)
+        _write_operator_config(project, configured_slug)
+        _provision(project, _write_env_file(tmp_path), monkeypatch, capsys)
+        _create_manifest(configured_slug, owner=None, indexed_rows=MANIFEST_INDEXED_ROWS)
+        owner = _manifest_owner(configured_slug)
+        assert owner is not None, "arranging: setup must have recorded the owner"
+        shim = PodmanShim.install(monkeypatch, container_state=None)
+    
+        lore_deploy.verb_status(project)
+    
+        out = capsys.readouterr().out
+>       assert owner in out, (
+            f"status must show the owner recorded in {configured_slug}.db ({owner}); stdout: {out!r}"
+        )
+E       AssertionError: status must show the owner recorded in odoo.db (/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_reads_the_manifest1/projects/odoo-custom); stdout: 'status: lore-odoo container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_reads_the_manifest1/state/odoo.db → indexed=3\n'
+E       assert '/var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_reads_the_manifest1/projects/odoo-custom' in 'status: lore-odoo container = absent\nstatus: manifest /var/tmp/pytest-of-ejprice/pytest-18321/popen-gw5/test_status_reads_the_manifest1/state/odoo.db → indexed=3\n'
+
+test_scaffold_slug.py:796: AssertionError
+----------------------------- Captured stdout call -----------------------------
+merge_mcp_json: wrote lore_odoo → http://127.0.0.1:9201/mcp
+=========================== short test summary info ============================
+FAILED test_ledger_572.py::TestStatusShowsNoIndexFactFromTheLedger::test_status_names_where_the_index_counts_live[demand_intelligence-None]
+FAILED test_ledger_572.py::TestStatusShowsNoIndexFactFromTheLedger::test_status_names_where_the_index_counts_live[demand_intelligence-legacy_pre_p5]
+FAILED test_ledger_572.py::TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex::test_a_failed_cold_index_over_an_owner_only_ledger_leaves_it_unprovisioned[demand_intelligence]
+FAILED test_ledger_572.py::TestStatusShowsNoIndexFactFromTheLedger::test_status_over_a_meta_only_ledger_reports_nothing_unreadable[odoo-custom-owner_and_marker]
+FAILED test_ledger_572.py::TestProvisionedDecisionFollowsTheMarker::test_status_does_not_provision_an_owner_only_ledger[odoo-custom]
+FAILED test_ledger_572.py::TestStatusShowsTheLedgerAsWhatItIs::test_status_shows_the_recorded_owner_path[demand_intelligence-owner_only]
+FAILED test_ledger_572.py::TestStatusShowsNoIndexFactFromTheLedger::test_status_names_where_the_index_counts_live[demand_intelligence-owner_and_marker]
+FAILED test_ledger_572.py::TestSetupMarksProvisionedOnlyAfterASuccessfulColdIndex::test_a_failed_cold_index_over_an_owner_only_ledger_leaves_it_unprovisioned[odoo-custom]
+FAILED test_ledger_572.py::TestStatusShowsNoIndexFactFromTheLedger::test_status_names_where_the_index_counts_live[demand_intelligence-owner_only]
+FAILED test_ledger_572.py::TestStatusShowsNoIndexFactFromTheLedger::test_status_names_where_the_index_counts_live[odoo-custom-None]
+FAILED test_ledger_572.py::TestStatusShowsNoIndexFactFromTheLedger::test_status_output_does_not_depend_on_the_ledgers_files_table[demand_intelligence-legacy_pre_p5]
+FAILED test_ledger_572.py::TestStatusShowsNoIndexFactFromTheLedger::test_status_names_where_the_index_counts_live[odoo-custom-legacy_pre_p5]
+FAILED test_ledger_572.py::TestStatusShowsTheLedgerAsWhatItIs::test_status_shows_the_recorded_owner_path[demand_intelligence-owner_and_marker]
+FAILED test_ledger_572.py::TestProvisionedDecisionFollowsTheMarker::test_an_owner_only_ledger_is_not_provisioned[demand_intelligence]
+FAILED test_ledger_572.py::TestStatusShowsTheLedgerAsWhatItIs::test_status_shows_the_recorded_owner_path[odoo-custom-owner_only]
+FAILED test_ledger_572.py::TestProvisionedDecisionFollowsTheMarker::test_an_owner_only_ledger_is_not_provisioned[odoo-custom]
+FAILED test_ledger_572.py::TestStatusShowsNoIndexFactFromTheLedger::test_status_names_where_the_index_counts_live[odoo-custom-owner_and_marker]
+FAILED test_ledger_572.py::TestStatusShowsNoIndexFactFromTheLedger::test_status_names_where_the_index_counts_live[odoo-custom-owner_only]
+FAILED test_ledger_572.py::TestStatusShowsTheLedgerAsWhatItIs::test_status_shows_the_recorded_owner_path[odoo-custom-owner_and_marker]
+FAILED test_ledger_572.py::TestStatusShowsNoIndexFactFromTheLedger::test_status_output_does_not_depend_on_the_ledgers_files_table[demand_intelligence-owner_and_marker]
+FAILED test_ledger_572.py::TestProvisionedDecisionFollowsTheMarker::test_an_owner_only_ledger_is_never_a_no_op[demand_intelligence]
+FAILED test_ledger_572.py::TestStatusShowsNoIndexFactFromTheLedger::test_status_over_a_meta_only_ledger_reports_nothing_unreadable[demand_intelligence-owner_only]
+FAILED test_ledger_572.py::TestStatusShowsTheLedgerAsWhatItIs::test_status_tells_provisioned_from_owner_only
+FAILED test_ledger_572.py::TestProvisionedDecisionFollowsTheMarker::test_an_owner_only_ledger_is_never_a_no_op[odoo-custom]
+FAILED test_ledger_572.py::TestStatusShowsNoIndexFactFromTheLedger::test_status_output_does_not_depend_on_the_ledgers_files_table[demand_intelligence-owner_only]
+FAILED test_ledger_572.py::TestStatusShowsNoIndexFactFromTheLedger::test_status_over_a_meta_only_ledger_reports_nothing_unreadable[demand_intelligence-owner_and_marker]
+FAILED test_ledger_572.py::TestProvisionedDecisionFollowsTheMarker::test_a_legacy_ledger_with_indexed_files_is_not_provisioned[demand_intelligence-large]
+FAILED test_ledger_572.py::TestStatusShowsNoIndexFactFromTheLedger::test_status_over_a_meta_only_ledger_reports_nothing_unreadable[odoo-custom-owner_only]
+FAILED test_ledger_572.py::TestStatusShowsNoIndexFactFromTheLedger::test_status_output_does_not_depend_on_the_ledgers_files_table[odoo-custom-legacy_pre_p5]
+FAILED test_ledger_572.py::TestProvisionedDecisionFollowsTheMarker::test_a_legacy_ledger_with_indexed_files_is_not_provisioned[demand_intelligence-small]
+FAILED test_ledger_572.py::TestProvisionedDecisionFollowsTheMarker::test_a_legacy_ledger_with_indexed_files_is_not_provisioned[odoo-custom-large]
+FAILED test_ledger_572.py::TestStatusShowsNoIndexFactFromTheLedger::test_status_output_does_not_depend_on_the_ledgers_files_table[odoo-custom-owner_and_marker]
+FAILED test_ledger_572.py::TestProvisionedDecisionFollowsTheMarker::test_a_legacy_ledger_with_indexed_files_is_not_provisioned[odoo-custom-small]
+FAILED test_ledger_572.py::TestProvisionedDecisionFollowsTheMarker::test_the_cold_index_runs_against_this_projects_config[demand_intelligence]
+FAILED test_ledger_572.py::TestStatusShowsNoIndexFactFromTheLedger::test_status_output_does_not_depend_on_the_ledgers_files_table[odoo-custom-owner_only]
+FAILED test_ledger_572.py::TestStatusShowsNoIndexFactFromTheLedger::test_status_prints_no_count_of_the_legacy_files_rows[demand_intelligence-legacy_pre_p5]
+FAILED test_ledger_572.py::TestProvisionedDecisionFollowsTheMarker::test_the_cold_index_runs_against_this_projects_config[odoo-custom]
+FAILED test_ledger_572.py::TestStatusShowsNoIndexFactFromTheLedger::test_status_prints_no_count_of_the_legacy_files_rows[demand_intelligence-owner_and_marker]
+FAILED test_ledger_572.py::TestStatusShowsNoIndexFactFromTheLedger::test_status_prints_no_count_of_the_legacy_files_rows[demand_intelligence-owner_only]
+FAILED test_ledger_572.py::TestProvisionedDecisionFollowsTheMarker::test_status_does_not_provision_an_owner_only_ledger[demand_intelligence]
+FAILED test_ledger_572.py::TestStatusShowsNoIndexFactFromTheLedger::test_status_prints_no_count_of_the_legacy_files_rows[odoo-custom-legacy_pre_p5]
+FAILED test_ledger_572.py::TestStatusShowsNoIndexFactFromTheLedger::test_status_prints_no_count_of_the_legacy_files_rows[odoo-custom-owner_and_marker]
+FAILED test_ledger_572.py::TestStatusShowsNoIndexFactFromTheLedger::test_status_prints_no_count_of_the_legacy_files_rows[odoo-custom-owner_only]
+FAILED test_scaffold_slug.py::TestSetupRefusesACorruptLedgerLoudly::test_a_corrupt_ledger_refuses_naming_the_file_and_creates_nothing[text_over_the_file-derived]
+FAILED test_scaffold_slug.py::TestSetupRefusesACorruptLedgerLoudly::test_a_corrupt_ledger_refuses_naming_the_file_and_creates_nothing[text_over_the_file-hand_set]
+FAILED test_scaffold_slug.py::TestSetupRefusesACorruptLedgerLoudly::test_a_corrupt_ledger_refuses_naming_the_file_and_creates_nothing[truncated_sqlite-derived]
+FAILED test_scaffold_slug.py::TestSetupRefusesACorruptLedgerLoudly::test_a_corrupt_ledger_refuses_naming_the_file_and_creates_nothing[truncated_sqlite-hand_set]
+FAILED test_scaffold_slug.py::TestVerbsRefuseAnUnreadableLoreYaml::test_verb_refuses_with_one_readable_remedy_and_touches_no_container[status-schema_invalid_slug]
+FAILED test_scaffold_slug.py::TestSetupRefusesACorruptLedgerLoudly::test_a_ledger_write_that_fails_refuses_naming_the_file[derived]
+FAILED test_scaffold_slug.py::TestSetupRefusesACorruptLedgerLoudly::test_a_ledger_write_that_fails_refuses_naming_the_file[hand_set]
+FAILED test_scaffold_slug.py::TestSetupRecordsAndHonoursItsOwnProjectPath::test_existing_deployment_with_a_legacy_manifest_is_reindexed_and_claimed[odoo_custom]
+FAILED test_scaffold_slug.py::TestSetupRecordsAndHonoursItsOwnProjectPath::test_existing_deployment_with_a_legacy_manifest_is_reindexed_and_claimed[odoo]
+FAILED test_scaffold_slug.py::TestVerbsRefuseAnUnreadableLoreYaml::test_verb_refuses_with_one_readable_remedy_and_touches_no_container[stop-truncated_yaml]
+FAILED test_scaffold_slug.py::TestVerbsRefuseAnUnreadableLoreYaml::test_verb_refuses_with_one_readable_remedy_and_touches_no_container[stop-schema_invalid_slug]
+FAILED test_scaffold_slug.py::TestEveryVerbUsesTheConfiguredSlug::test_status_reads_the_manifest_the_slug_names[odoo_custom]
+FAILED test_scaffold_slug.py::TestVerbsRefuseAnUnreadableLoreYaml::test_verb_refuses_with_one_readable_remedy_and_touches_no_container[status-truncated_yaml]
+FAILED test_scaffold_slug.py::TestEveryVerbUsesTheConfiguredSlug::test_status_reads_the_manifest_the_slug_names[odoo]
+57 failed, 362 passed in 35.45s
+EXIT=1

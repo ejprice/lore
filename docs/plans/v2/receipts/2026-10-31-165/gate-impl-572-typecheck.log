@@ -1,0 +1,120 @@
+HEAD=94d3a0dbf2207b75f0ff5159a5cd5f8f9e2b7d6a
+DIRTY_FILES=36
+TREE=49f574fc6097f78d782e3727ea32edc98530127711a9cc9e7d206c21c91d8d5a
+Success: no issues found in 14 source files
+typecheck: lorerunes OK
+Success: no issues found in 27 source files
+typecheck: lorescribe OK
+Success: no issues found in 35 source files
+typecheck: loresigil OK
+loremaster/tests/test_task_guarded_shell_58.py:59: error: "type[TaskLedger]" has no attribute "_guarded_append_fragment"  [attr-defined]
+loremaster/tests/test_supersede_reanchor_58.py:305: error: Module "loremaster.tasks" has no attribute "SupersedeResult"  [attr-defined]
+loremaster/tests/test_supersede_reanchor_58.py:592: error: "TaskLedger" has no attribute "max_reanchor_dependents"  [attr-defined]
+loremaster/tests/test_supersede_reanchor_58.py:607: error: "TaskLedger" has no attribute "max_reanchor_dependents"  [attr-defined]
+loremaster/tests/test_supersede_reanchor_58.py:608: error: "type[TaskLedger]" has no attribute "_guarded_append_fragment"  [attr-defined]
+loremaster/tests/test_supersede_reanchor_58.py:616: error: "TaskLedger" has no attribute "max_reanchor_dependents"  [attr-defined]
+loremaster/tests/test_supersede_reanchor_58.py:629: error: "TaskLedger" has no attribute "max_reanchor_dependents"  [attr-defined]
+loremaster/tests/test_supersede_reanchor_58.py:646: error: "TaskLedger" has no attribute "max_reanchor_dependents"  [attr-defined]
+loremaster/tests/test_reanchor_58_r3_relate.py:51: error: "type[TaskLedger]" has no attribute "_reanchor_stragglers"  [attr-defined]
+loremaster/tests/test_reanchor_58_r3_probes.py:60: error: Module "loremaster.tasks" has no attribute "StragglerHealPackerError"  [attr-defined]
+loremaster/tests/test_reanchor_58_r3_convergence.py:87: error: Module "loremaster.tasks" has no attribute "StragglerHealPackerError"  [attr-defined]
+loremaster/tests/test_reanchor_58_r3_cas_seam.py:88: error: "type[TaskLedger]" has no attribute "_guarded_append_fragment"  [attr-defined]
+loremaster/tests/test_reanchor_58_r3_cas_seam.py:93: error: "type[FindingLedger]" has no attribute "_run_guarded"  [attr-defined]
+loremaster/tests/test_reanchor_58_r3_am6.py:45: error: Module "loremaster.store._txn" has no attribute "TxnCasLostError"  [attr-defined]
+loremaster/tests/test_reanchor_58_r3_am6.py:91: error: Module has no attribute "_ROLLBACK_LOG_TIERS"  [attr-defined]
+loremaster/tests/test_reanchor_58_r2_scale.py:34: error: "TaskLedger" has no attribute "max_reanchor_dependents"  [attr-defined]
+loremaster/tests/test_reanchor_58_r2_am2.py:72: error: "TaskLedger" has no attribute "max_reanchor_dependents"  [attr-defined]
+loremaster/tests/test_reanchor_58_r2_am2.py:94: error: "TaskLedger" has no attribute "max_reanchor_dependents"  [attr-defined]
+loremaster/tests/test_exhaustion_fates.py:65: error: "type[TaskLedger]" has no attribute "_guarded_append_fragment"  [attr-defined]
+loremaster/tests/test_reanchor_58_r2_rulings.py:155: error: "TaskLedger" has no attribute "max_reanchor_dependents"  [attr-defined]
+loremaster/tests/test_reanchor_58_r2_rulings.py:157: error: "TaskLedger" has no attribute "max_reanchor_dependents"  [attr-defined]
+loremaster/tests/test_reanchor_58_r2_rulings.py:188: error: "TaskLedger" has no attribute "max_reanchor_dependents"  [attr-defined]
+loremaster/tests/test_reanchor_58_r2_rulings.py:231: error: "TaskLedger" has no attribute "max_reanchor_dependents"  [attr-defined]
+loremaster/tests/test_reanchor_58_r2_rulings.py:233: error: "TaskLedger" has no attribute "max_reanchor_dependents"  [attr-defined]
+loremaster/tests/test_reanchor_58_r2_probes.py:124: error: "TaskLedger" has no attribute "max_reanchor_dependents"  [attr-defined]
+loremaster/tests/test_reanchor_58_r2_probes.py:343: error: "TaskLedger" has no attribute "max_reanchor_dependents"  [attr-defined]
+loremaster/tests/test_reanchor_58_r2_probes.py:345: error: "TaskLedger" has no attribute "max_reanchor_dependents"  [attr-defined]
+loremaster/tests/test_reanchor_58_r4_state.py:77: error: "type[TaskLedger]" has no attribute "_reanchor_stragglers"  [attr-defined]
+loremaster/tests/test_reanchor_58_r4_state.py:77: error: "type[FindingLedger]" has no attribute "_run_guarded"  [attr-defined]
+loremaster/tests/test_reanchor_58_r4_lease_fates.py:53: error: "type[TaskLedger]" has no attribute "_guarded_append_fragment"  [attr-defined]
+loremaster/tests/test_blocks_edge.py:347: error: Module "loremaster.tasks" has no attribute "SupersedeResult"  [attr-defined]
+loremaster/tests/test_task_claimable_partition_58.py:54: error: Module "loremaster.tasks" has no attribute "SupersedeResult"  [attr-defined]
+loremaster/tests/test_reanchor_58_r3_tiers.py:66: error: Module "loremaster.store._txn" has no attribute "_ROLLBACK_LOG_TIERS"  [attr-defined]
+loremaster/tests/test_governed_substrate_64b.py:71: error: Module "loremaster.governed" has no attribute "GovernedInvisible"  [attr-defined]
+loremaster/tests/test_governed_substrate_64b.py:71: error: Module "loremaster.governed" has no attribute "classify_zero_row_cas"  [attr-defined]
+loremaster/tests/test_governed_substrate_64b.py:71: error: Module "loremaster.governed" has no attribute "resource_from_row"  [attr-defined]
+loremaster/tests/test_governed_substrate_64b.py:99: error: "GuardedPlan" has no attribute "guard"  [attr-defined]
+loremaster/tests/test_governed_substrate_64b.py:100: error: "GuardedPlan" has no attribute "compose"  [attr-defined]
+loremaster/tests/test_governed_substrate_64b.py:101: error: "FindingLedger" has no attribute "handle"  [attr-defined]
+loremaster/tests/test_governed_substrate_64b.py:101: error: "FindingLedger" has no attribute "audit_store"  [attr-defined]
+loremaster/tests/test_governed_substrate_64b.py:103: error: Unexpected keyword argument "number" for "authorize_guarded"  [call-arg]
+loremaster/tests/test_governed_substrate_64b.py:103: note: "authorize_guarded" defined in "loremaster.governed"
+loremaster/tests/test_governed_substrate_64b.py:103: error: Unexpected keyword argument "projection" for "authorize_guarded"  [call-arg]
+loremaster/tests/test_governed_substrate_64b.py:103: error: Unexpected keyword argument "target_scope" for "authorize_guarded"  [call-arg]
+loremaster/tests/test_governed_substrate_64b.py:116: error: Unexpected keyword argument "params" for "guarded_write"  [call-arg]
+loremaster/tests/test_governed_substrate_64b.py:116: note: "guarded_write" defined in "loremaster.governed"
+loremaster/tests/test_governed_substrate_64b.py:116: error: Unexpected keyword argument "target_scope" for "guarded_write"  [call-arg]
+loremaster/tests/test_findings_system_writer_64b.py:71: error: "FindingLedger" has no attribute "report_system"  [attr-defined]
+loremaster/tests/test_findings_system_writer_64b.py:94: error: "FindingLedger" has no attribute "report_system"  [attr-defined]
+loremaster/tests/test_findings_system_writer_64b.py:196: error: "type[FindingLedger]" has no attribute "report_system"  [attr-defined]
+loremaster/tests/test_findings_signatures_64b.py:46: error: Unexpected keyword argument "title" for "report" of "FindingLedger"  [call-arg]
+loremaster/tests/test_findings_signatures_64b.py:46: note: "report" defined in "loremaster.findings"
+loremaster/tests/test_findings_signatures_64b.py:46: error: Argument "subject" to "report" of "FindingLedger" has incompatible type "Subject"; expected "str"  [arg-type]
+loremaster/tests/test_findings_signatures_64b.py:47: error: Unexpected keyword argument "subject" for "resolve" of "FindingLedger"  [call-arg]
+loremaster/tests/test_findings_signatures_64b.py:47: note: "resolve" defined in "loremaster.findings"
+loremaster/tests/test_findings_signatures_64b.py:48: error: Unexpected keyword argument "subject" for "wontfix" of "FindingLedger"  [call-arg]
+loremaster/tests/test_findings_signatures_64b.py:48: note: "wontfix" defined in "loremaster.findings"
+loremaster/tests/test_findings_schema_64b.py:70: error: Unexpected keyword argument "title" for "report" of "FindingLedger"  [call-arg]
+loremaster/tests/test_findings_schema_64b.py:70: note: "report" defined in "loremaster.findings"
+loremaster/tests/test_findings_schema_64b.py:70: error: Unexpected keyword argument "scope" for "report" of "FindingLedger"  [call-arg]
+loremaster/tests/test_findings_schema_64b.py:71: error: Argument "subject" to "report" of "FindingLedger" has incompatible type "Subject"; expected "str"  [arg-type]
+loremaster/tests/test_findings_governance_64b.py:63: error: Module "loremaster.governed" has no attribute "classify_zero_row_cas"  [attr-defined]
+loremaster/tests/test_findings_governance_64b.py:82: error: "FindingLedger" has no attribute "set_scope"  [attr-defined]
+loremaster/tests/test_findings_governance_64b.py:83: error: Unexpected keyword argument "subject" for "acknowledge" of "FindingLedger"  [call-arg]
+loremaster/tests/test_findings_governance_64b.py:83: note: "acknowledge" defined in "loremaster.findings"
+loremaster/tests/test_findings_governance_64b.py:84: error: Unexpected keyword argument "subject" for "annotate" of "FindingLedger"  [call-arg]
+loremaster/tests/test_findings_governance_64b.py:84: note: "annotate" defined in "loremaster.findings"
+loremaster/tests/test_mcp_server.py:7778: error: Unexpected keyword argument "subject" for "resolve" of "FakeFindingLedger"  [call-arg]
+loremaster/tests/test_mcp_server.py:7778: note: "resolve" defined in "_finding_fakes"
+loremaster/tests/test_mcp_server.py:7786: error: Unexpected keyword argument "subject" for "acknowledge" of "FakeFindingLedger"  [call-arg]
+loremaster/tests/test_mcp_server.py:7786: note: "acknowledge" defined in "_finding_fakes"
+loremaster/tests/test_mcp_server.py:7796: error: Module "_finding_fakes" has no attribute "arm_finding_identity"  [attr-defined]
+loremaster/tests/test_mcp_server.py:7796: error: Module "_finding_fakes" has no attribute "armed_agent_row"  [attr-defined]
+loremaster/tests/test_mcp_server.py:7798: error: Returning Any from function declared to return "str"  [no-any-return]
+loremaster/tests/test_mcp_server.py:7923: error: Unexpected keyword argument "subject" for "resolve" of "FakeFindingLedger"  [call-arg]
+loremaster/tests/test_mcp_server.py:7923: note: "resolve" defined in "_finding_fakes"
+loremaster/tests/test_task_read_surface.py:233: error: Module "loremaster.tasks" has no attribute "SupersedeResult"  [attr-defined]
+loremaster/tests/test_findings_migrate_64b.py:90: error: Module "loremaster.principals" has no attribute "_migrate_finding_scope"  [attr-defined]
+loremaster/tests/test_findings_scope_domain_64b.py:75: error: Module "lorerunes.pdp" has no attribute "scope_shape_ok"  [attr-defined]
+loremaster/tests/test_findings_classes_64b.py:87: error: Unexpected keyword argument "principal_id" for "list_keeps_for_member" of "KeepStore"  [call-arg]
+loremaster/tests/test_findings_classes_64b.py:87: note: "list_keeps_for_member" defined in "loremaster.keeps"
+loremaster/tests/test_findings_classes_64b.py:88: error: Unexpected keyword argument "principal_id" for "resolve_visible_keeps"  [call-arg]
+loremaster/tests/test_findings_classes_64b.py:88: note: "resolve_visible_keeps" defined in "loremaster.visible_keeps"
+loremaster/tests/test_findings_classes_64b.py:472: error: Module has no attribute "resource_from_row"  [attr-defined]
+loremaster/tests/test_findings_adversary_pins_64b.py:48: error: Unexpected keyword argument "scope" for "findings" of "AppContext"  [call-arg]
+loremaster/tests/test_findings_adversary_pins_64b.py:48: note: "findings" defined in "loremaster.server"
+loremaster/tests/test_findings_adversary_pins_64b.py:48: error: Unexpected keyword argument "capability" for "findings" of "AppContext"  [call-arg]
+loremaster/tests/test_findings_identity_64b.py:52: error: Module "loremaster.server" has no attribute "_RETIRED_IDENTITY_ARGS_TEACHING"  [attr-defined]
+loremaster/tests/test_findings_identity_64b.py:52: error: Module "loremaster.server" has no attribute "GovernedVerbSpec"  [attr-defined]
+loremaster/tests/test_findings_identity_64b.py:52: error: Module "loremaster.server" has no attribute "_requires_capability"  [attr-defined]
+loremaster/tests/test_findings_identity_64b.py:69: error: Type of variable becomes "Any" due to an unfollowed import  [no-any-unimported]
+loremaster/tests/test_findings_identity_64b.py:72: error: "AppContext" has no attribute "_resolve_identity"; maybe "_result_identity"?  [attr-defined]
+loremaster/tests/test_findings_identity_64b.py:73: error: Unexpected keyword argument "capability" for "findings" of "AppContext"  [call-arg]
+loremaster/tests/test_findings_identity_64b.py:73: note: "findings" defined in "loremaster.server"
+loremaster/tests/test_findings_identity_64b.py:73: error: Unexpected keyword argument "scope" for "findings" of "AppContext"  [call-arg]
+loremaster/tests/test_findings_enforcement_64b.py:65: error: "FindingLedger" has no attribute "set_scope"  [attr-defined]
+loremaster/tests/test_comms_footer.py:4233: error: Module "_finding_fakes" has no attribute "arm_finding_identity"  [attr-defined]
+Found 82 errors in 31 files (checked 324 source files)
+typecheck: loremaster FAILED
+Success: no issues found in 18 source files
+typecheck: skills OK
+Success: no issues found in 2 source files
+typecheck: docs/eval OK
+scripts/test_forgery_door_sweep.py:42: error: Module "loremaster.tasks" has no attribute "SupersedeResult"  [attr-defined]
+Found 1 error in 1 file (checked 63 source files)
+typecheck: scripts FAILED
+Success: no issues found in 1 source file
+typecheck: conftest.py OK
+typecheck: shellcheck OK (7 tracked .sh)
+typecheck: one or more legs failed
+EXIT=1

@@ -1,0 +1,189 @@
+diff --git a/skills/lore-deploy/scripts/lore_deploy.py b/skills/lore-deploy/scripts/lore_deploy.py
+index 0d15a94..e11557d 100755
+--- a/skills/lore-deploy/scripts/lore_deploy.py
++++ b/skills/lore-deploy/scripts/lore_deploy.py
+@@ -33,6 +33,7 @@ import os
+ import shlex
+ import shutil
+ import socket
++import datetime
+ import sqlite3
+ import subprocess
+ import sys
+@@ -461,7 +462,12 @@ def _read_config_field(config_path: Path, expr: str) -> str:
+     be set. Raises ``RuntimeError`` on a parse/validation error so a malformed
+     config fails loud.
+     """
+-    code = f"{_schema_load_snippet(config_path)};print({expr})"
++    code = (
++        "import sys\ntry:\n"
++        f"    {_schema_load_snippet(config_path)};print({expr})\n"
++        "except Exception as error:\n"
++        "    sys.exit(f'{type(error).__name__}: {error}')\n"
++    )
+     result = _run([_loremaster_python(), "-c", code], check=False, capture=True)
+     if result.returncode != 0:
+         raise RuntimeError(
+@@ -513,6 +519,8 @@ CONFIG_FILENAME = "lore.yaml"
+ CONTAINER_WORKSPACE = "/workspace"
+ #: The manifest ``meta`` key ``setup`` records the owning project path under (F4b).
+ PROJECT_PATH_META_KEY = "project_path"
++#: The ledger ``meta`` key ``setup`` writes only after a successful cold index (#572).
++PROVISIONED_META_KEY = "provisioned_at"
+ #: The ``meta`` DDL of the historical SQLite manifest (``loremaster.index.manifest._SCHEMA``,
+ #: the documented origin; the loremaster side no longer executes it). ``CREATE TABLE IF NOT
+ #: EXISTS`` so a manifest that already has the table keeps it untouched.
+@@ -595,6 +603,10 @@ def _manifest_path(slug: str) -> Path:
+     return MANIFEST_DIR / f"{slug}.db"
+ 
+ 
++class LedgerError(RuntimeError):
++    """The ledger file cannot be read or written (one line, names the file)."""
++
++
+ class ManifestOwner:
+     """The ``project_path`` ``meta`` row of one slug's manifest: who owns the slug (F4b).
+ 
+@@ -611,26 +623,56 @@ class ManifestOwner:
+         """Whether the manifest file exists."""
+         return self.manifest.exists()
+ 
+-    def recorded_path(self) -> str | None:
+-        """The recorded owning project path, or ``None`` (no manifest, or a legacy one)."""
++    def _meta(self, key: str) -> str | None:
+         if not self.manifest.exists():
+             return None
+         try:
+             connection = sqlite3.connect(f"file:{self.manifest}?mode=ro", uri=True)
+             try:
+-                row = connection.execute(
+-                    "SELECT v FROM meta WHERE k = ?", (PROJECT_PATH_META_KEY,)
+-                ).fetchone()
++                row = connection.execute("SELECT v FROM meta WHERE k = ?", (key,)).fetchone()
+             finally:
+                 connection.close()
+-        except sqlite3.OperationalError:
+-            # No ``meta`` table: a manifest that predates every meta row is ownerless.
+-            return None
++        except sqlite3.OperationalError as error:
++            if "no such table" in str(error):
++                return None
++            raise LedgerError(f"ledger {self.manifest} is unreadable: {error}") from error
++        except sqlite3.DatabaseError as error:
++            raise LedgerError(f"ledger {self.manifest} is unreadable: {error}") from error
+         return None if row is None else str(row[0])
+ 
++    def recorded_path(self) -> str | None:
++        """The recorded owning project path, or ``None`` (no manifest, or a legacy one)."""
++        return self._meta(PROJECT_PATH_META_KEY)
++
++    def provisioned_at(self) -> str | None:
++        """When setup's cold index last succeeded, or ``None`` (never provisioned)."""
++        return self._meta(PROVISIONED_META_KEY)
++
++    def mark_provisioned(self, project: Path) -> None:
++        """Record the owner and the provisioned marker (only after a successful cold index)."""
++        self.record(project)
++        try:
++            connection = sqlite3.connect(self.manifest)
++            try:
++                with connection:
++                    connection.execute(
++                        "INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)",
++                        (PROVISIONED_META_KEY, datetime.datetime.now(datetime.UTC).isoformat()),
++                    )
++            finally:
++                connection.close()
++        except sqlite3.Error as error:
++            raise LedgerError(f"cannot write ledger {self.manifest}: {error}") from error
++
+     def record(self, project: Path) -> None:
+         """Record ``project`` as the slug's owner (creating the file/table when absent)."""
+         MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
++        try:
++            self._record(project)
++        except sqlite3.Error as error:
++            raise LedgerError(f"cannot write ledger {self.manifest}: {error}") from error
++
++    def _record(self, project: Path) -> None:
+         connection = sqlite3.connect(self.manifest)
+         try:
+             with connection:  # one transaction: the table and the row land together
+@@ -1105,17 +1147,19 @@ def verb_setup(project: Path, env_file: Path) -> int:  # noqa: PLR0911 - P8e rew
+     except RuntimeError as error:
+         print(f"setup: {error}", file=sys.stderr)
+         return _EXIT_ERROR
+-    if (refusal := _slug_collision(project, slug)) is not None:
++    try:
++        refusal = _slug_collision(project, slug)
++        owner = ManifestOwner(slug)
++        already = config_path.exists() and owner.provisioned_at() is not None
++    except LedgerError as error:
++        print(f"setup: refused: {error}", file=sys.stderr)
++        return _EXIT_ERROR
++    if refusal is not None:
+         print(f"setup: refused: {refusal}", file=sys.stderr)
+         return _EXIT_ERROR
+-    owner = ManifestOwner(slug)
+ 
+     # 1. Detect an existing deployment → no-op the expensive parts.
+-    already = config_path.exists() and owner.exists()
+     if already:
+-        if owner.recorded_path() is None:
+-            # A legacy manifest this project's own lore.yaml declares: claim it (F4b).
+-            owner.record(project)
+         print(f"setup: {slug} already provisioned (config + manifest present) — no-op.")
+         # Still re-merge the .mcp.json (cheap, idempotent) so wiring is current.
+         _merge_mcp_from_config(project, slug, config_path)
+@@ -1164,7 +1208,11 @@ def verb_setup(project: Path, env_file: Path) -> int:  # noqa: PLR0911 - P8e rew
+     if cold.returncode != 0:
+         print(f"setup: cold index reported failures:\n{cold.stderr.strip()}", file=sys.stderr)
+         return _EXIT_ERROR
+-    owner.record(project)
++    try:
++        owner.mark_provisioned(project)
++    except LedgerError as error:
++        print(f"setup: {error}", file=sys.stderr)
++        return _EXIT_ERROR
+ 
+     # 8. Merge .mcp.json.
+     _merge_mcp_from_config(project, slug, config_path)
+@@ -1381,6 +1429,8 @@ def verb_stop(project: Path) -> int:
+         slug = _project_slug(project)
+     except RuntimeError as error:
+         print(f"stop: {error}", file=sys.stderr)
++        print(f"stop: fix {project / CONFIG_FILENAME}, or stop the container by hand: "
++              f"podman stop lore-<slug>", file=sys.stderr)
+         return _EXIT_ERROR
+     state = _container_state(f"lore-{slug}")
+     if state is None:
+@@ -1406,6 +1456,8 @@ def verb_status(project: Path) -> int:
+         slug = _project_slug(project)
+     except RuntimeError as error:
+         print(f"status: {error}", file=sys.stderr)
++        print(f"status: fix {project / CONFIG_FILENAME}, or stop the container by hand: "
++              f"podman stop lore-<slug>", file=sys.stderr)
+         return _EXIT_ERROR
+     container_name = f"lore-{slug}"
+     config_path = project / CONFIG_FILENAME
+@@ -1423,11 +1475,16 @@ def verb_status(project: Path) -> int:
+                 f"status: {container_name} image: STALE — newer {IMAGE} exists; "
+                 f"run `start` to recreate"
+             )
+-    if manifest.exists():
+-        counts = _manifest_counts(manifest)
+-        print(f"status: manifest {manifest} → {counts}")
++    ledger = ManifestOwner(slug)
++    if ledger.exists():
++        try:
++            print(f"status: ledger {str(manifest)!r} owner={ledger.recorded_path()!r} "
++                  f"provisioned_at={ledger.provisioned_at()!r}")
++        except LedgerError as error:
++            print(f"status: {error}")
+     else:
+-        print(f"status: no manifest at {manifest} (not yet set up).")
++        print(f"status: no ledger at {str(manifest)!r} (not yet set up).")
++    print("status: index counts live in the store — call lore_index() for them.")
+     if running:
+         if config_path.exists():
+             try:
