@@ -32,7 +32,8 @@ The contract, from the operator's side:
   container mounting it, or a manifest recording it) is refused with ``_EXIT_ERROR``, naming
   the slug, this path and the holder's path. A legacy manifest without the row is refused as
   an unknown owner on a FRESH setup (no lore.yaml); a project whose lore.yaml declares the slug
-  owns it, so setup BACKFILLS the row and proceeds (directive #18015). One rule for both
+  owns it, so setup is not refused (directive #18015): it re-indexes and records the row, because
+  index state is never inferred from the ledger (#572 ruling F-2). One rule for both
   doors: a directory-derived slug and a hand-set lore.yaml slug. A refusal creates,
   rewrites and removes nothing. The same project re-running ``setup`` is not refused.
 * **No existing deployment changes.** An already-valid directory name derives itself, and an
@@ -46,6 +47,7 @@ Run from this directory::
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -122,11 +124,11 @@ CONFIGURED_SLUGS: tuple[str, ...] = (HEADLINE_SLUG, HAND_EDITED_SLUG)
 #: The scaffold always emits ``root: .``; a forged name must not change it.
 SCAFFOLD_PROJECT_ROOT = "."
 
-#: Rows in the synthetic manifest ``status`` reads (a state → count rollup).
+#: Rows in a synthetic legacy manifest's ``files`` table (pre-P5 shape; #572: never counted).
 MANIFEST_INDEXED_ROWS = 3
 MANIFEST_STATE = "indexed"
 
-#: The manifest schema the indexer creates (measured 2026-10-31 on
+#: The PRE-P5 manifest schema (measured 2026-10-31 on
 #: ``~/.local/state/lore/{lore,demand_intelligence}.db``): ``meta`` is a key/value table.
 MANIFEST_SCHEMA: tuple[str, ...] = (
     """CREATE TABLE IF NOT EXISTS files (
@@ -242,7 +244,9 @@ class PodmanShim:
     ``lore-demand_intelligence`` 2026-10-31), with or without ``--format``. ``image exists`` and
     the mutating verbs succeed and are recorded. Any OTHER podman command raises, so a query
     the shim does not model fails loudly instead of reading as "absent". The cold index
-    (``-m loremaster.index``) is recorded and answered as success. EVERY OTHER command
+    (``-m loremaster.index``) is recorded and answered as success, and like the real indexer
+    since P5 it writes NOTHING to the host ``<slug>.db`` (RULING-572-ledger.md, S1): whatever
+    that file holds afterwards, ``setup`` wrote. EVERY OTHER command
     delegates to the real ``_run``, so config reads, the normaliser and ``merge_mcp_json.py`` run
     for real and the ``.mcp.json`` on disk is the observable outcome.
     """
@@ -262,20 +266,8 @@ class PodmanShim:
             return self._answer_podman(cmd)
         if "loremaster.index" in cmd:
             self.index_calls.append(list(cmd))
-            self._index_like_the_real_indexer(cmd)
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         return self.real_run(cmd, check=check, capture=capture)
-
-    @staticmethod
-    def _index_like_the_real_indexer(cmd: list[str]) -> None:
-        """Create the manifest the real cold index creates: ``<slug>.db`` with its schema.
-
-        ``CREATE TABLE IF NOT EXISTS`` and no ``project_path`` row: the indexer never writes
-        the owner (``setup`` does), and a row ``setup`` wrote before indexing survives.
-        """
-        config_path = Path(cmd[cmd.index("--config") + 1])
-        slug = yaml.safe_load(config_path.read_text(encoding="utf-8"))["project"]["slug"]
-        _create_manifest(slug, owner=None, indexed_rows=MANIFEST_INDEXED_ROWS)
 
     def _inspect_document(self, name: str) -> dict[str, Any]:
         mounts: list[dict[str, Any]] = []
@@ -435,6 +427,26 @@ def _create_manifest(slug: str, *, owner: Path | None, indexed_rows: int) -> Pat
 def _write_manifest(slug: str, *, owner: Path | None) -> Path:
     """A provisioned project's manifest for ``slug``; ``owner=None`` is a legacy manifest."""
     return _create_manifest(slug, owner=owner, indexed_rows=MANIFEST_INDEXED_ROWS)
+
+
+def _provision(
+    project: Path,
+    env_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Provision ``project`` through the REAL ``setup`` (probes passing, cold index succeeding).
+
+    The only door to a provisioned ledger (#572): a hand-written owner row is not one.
+    """
+    _stub_network_probes(monkeypatch)
+    shim = PodmanShim.install(monkeypatch, container_state=None)
+    outcome = _drive_setup(project, env_file, capsys)
+    assert outcome.raised is None and outcome.return_code == lore_deploy._EXIT_OK, (
+        f"arranging: setup must provision {project}; rc={outcome.return_code} "
+        f"raised={outcome.raised!r} stderr={outcome.stderr!r}"
+    )
+    assert len(shim.index_calls) == 1, f"arranging: setup must cold-index once; ran {shim.index_calls}"
 
 
 def _manifest_owner(slug: str) -> str | None:
@@ -764,18 +776,28 @@ class TestEveryVerbUsesTheConfiguredSlug:
         capsys: pytest.CaptureFixture[str],
         configured_slug: str,
     ) -> None:
-        """A provisioned project's manifest (``<slug>.db``) is found and summarised."""
+        """Status reads the configured slug's ledger: its recorded owner shows, and no count does.
+
+        The project is provisioned by a real setup, so the owner row lives only in
+        ``<configured_slug>.db``; a status reading any other slug's ledger cannot show it. A
+        legacy ``files`` table is added so a status that still counts it is visible (#572).
+        """
         project = _project_dir(tmp_path, HEADLINE_NAME)
         _write_operator_config(project, configured_slug)
-        manifest = _write_manifest(configured_slug, owner=project)
+        _provision(project, _write_env_file(tmp_path), monkeypatch, capsys)
+        _create_manifest(configured_slug, owner=None, indexed_rows=MANIFEST_INDEXED_ROWS)
+        owner = _manifest_owner(configured_slug)
+        assert owner is not None, "arranging: setup must have recorded the owner"
         shim = PodmanShim.install(monkeypatch, container_state=None)
 
         lore_deploy.verb_status(project)
 
         out = capsys.readouterr().out
-        assert f"{MANIFEST_STATE}={MANIFEST_INDEXED_ROWS}" in out, (
-            f"status must summarise the manifest at {manifest} "
-            f"({MANIFEST_STATE}={MANIFEST_INDEXED_ROWS}); stdout: {out!r}"
+        assert owner in out, (
+            f"status must show the owner recorded in {configured_slug}.db ({owner}); stdout: {out!r}"
+        )
+        assert f"{MANIFEST_STATE}={MANIFEST_INDEXED_ROWS}" not in out, (
+            f"status must print no file count from the ledger (#572); stdout: {out!r}"
         )
         assert set(shim.container_names()) == {f"lore-{configured_slug}"}, (
             f"status must inspect lore-{configured_slug}; addressed {shim.container_names()}"
@@ -788,15 +810,16 @@ class TestEveryVerbUsesTheConfiguredSlug:
         capsys: pytest.CaptureFixture[str],
         configured_slug: str,
     ) -> None:
-        """Config + ``<slug>.db`` present → no-op success, no re-index, .mcp.json ``lore_<slug>``.
+        """Provisioned by a real setup → re-run is a no-op success, no re-index, .mcp.json rewired.
 
-        The env-file is deliberately ABSENT: a setup that looks for the manifest under any
-        other slug misses the provisioned project, falls through to the env-file check and
-        fails, instead of re-running the expensive cold index.
+        The env-file is deliberately ABSENT on the re-run, and the .mcp.json is removed first: a
+        setup that looks for the ledger under any other slug misses the provisioned project,
+        falls through to the env-file check and fails; one that skips the wiring leaves no key.
         """
         project = _project_dir(tmp_path, HEADLINE_NAME)
         _write_operator_config(project, configured_slug)
-        _write_manifest(configured_slug, owner=project)
+        _provision(project, _write_env_file(tmp_path), monkeypatch, capsys)
+        (project / ".mcp.json").unlink()
         shim = PodmanShim.install(monkeypatch, container_state=None)
 
         outcome = _drive_setup(project, tmp_path / "absent.env", capsys)
@@ -987,49 +1010,57 @@ class TestSetupRecordsAndHonoursItsOwnProjectPath:
         assert manifest.read_bytes() == manifest_bytes, "a refused setup must not touch the manifest"
 
     @pytest.mark.parametrize("configured_slug", CONFIGURED_SLUGS)
-    def test_existing_deployment_backfills_its_legacy_manifest_and_proceeds(
+    def test_existing_deployment_with_a_legacy_manifest_is_reindexed_and_claimed(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
         capsys: pytest.CaptureFixture[str],
         configured_slug: str,
     ) -> None:
-        """lore.yaml declares the slug + a legacy ``<slug>.db`` (no row) → backfill, no-op success.
+        """lore.yaml declares the slug + a legacy ``<slug>.db`` (no row) → re-index, claim, success.
 
         Every live manifest predated the row (both on this host, measured 2026-10-31), so
-        re-running setup on an existing deployment must never be refused (directive #18015).
-        No container (a stopped deployment) and an ABSENT env-file: a build that refuses, or that
-        falls through past the provisioned check, fails here.
+        re-running setup on an existing deployment must never be refused (directive #18015). It
+        is not provisioned either: its legacy rows describe no index (#572 ruling F-2 (a)), so
+        setup cold-indexes once, records the owner, and the NEXT setup is a no-op.
         """
         project = _project_dir(tmp_path, HEADLINE_NAME)
         _write_operator_config(project, configured_slug)
         _write_manifest(configured_slug, owner=None)
+        _stub_network_probes(monkeypatch)
         shim = PodmanShim.install(monkeypatch, container_state=None)
 
-        outcome = _drive_setup(project, tmp_path / "absent.env", capsys)
+        outcome = _drive_setup(project, _write_env_file(tmp_path), capsys)
 
         assert outcome.raised is None and outcome.return_code == lore_deploy._EXIT_OK, (
             f"re-running setup on an existing {configured_slug} deployment must not be refused; "
             f"got rc={outcome.return_code} raised={outcome.raised!r} stderr={outcome.stderr!r}"
         )
+        assert len(shim.index_calls) == 1, (
+            f"a legacy manifest is not a provisioned marker: setup must cold-index; ran {shim.index_calls}"
+        )
         owner = _manifest_owner(configured_slug)
         assert owner is not None and Path(owner).resolve() == project.resolve(), (
-            f"setup must backfill {PROJECT_PATH_META_KEY} = {project} into the legacy "
+            f"setup must record {PROJECT_PATH_META_KEY} = {project} in the legacy "
             f"{configured_slug}.db; got {owner!r}"
         )
-        assert shim.index_calls == [], "a provisioned project must not be re-indexed"
         assert shim.mutating_calls() == [], f"setup must touch no container; ran {shim.mutating_calls()}"
         assert _mcp_server_keys(project) == [f"lore_{configured_slug}"]
+        again = PodmanShim.install(monkeypatch, container_state=None)
+        rerun = _drive_setup(project, tmp_path / "absent.env", capsys)
+        assert rerun.return_code == lore_deploy._EXIT_OK and again.index_calls == [], (
+            f"after that cold index the deployment is provisioned; rc={rerun.return_code} "
+            f"ran {again.index_calls} stderr={rerun.stderr!r}"
+        )
 
     def test_same_project_rerun_with_its_running_container_is_not_refused(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """Its own lore.yaml, manifest (owner = THIS path) and container → provisioned no-op."""
+        """Provisioned by a real setup, its own container running → provisioned no-op."""
         project = _project_dir(tmp_path, HEADLINE_NAME)
         _write_operator_config(project, HEADLINE_SLUG)
-        _write_manifest(HEADLINE_SLUG, owner=project)
         env_file = _write_env_file(tmp_path)
-        _stub_network_probes(monkeypatch)
+        _provision(project, env_file, monkeypatch, capsys)
         shim = PodmanShim.install(monkeypatch, container_state="running", workspace_source=project)
 
         outcome = _drive_setup(project, env_file, capsys)
@@ -1091,4 +1122,293 @@ class TestAnExistingLoreYamlIsNeverRewritten:
         assert config_path.read_bytes() == before, (
             "setup rewrote an existing lore.yaml; the scaffold (and any slug normaliser) "
             "must run only when lore.yaml is absent"
+        )
+
+
+# ---------------------------------------------------------------------------
+# #568 audit, routed into the #572 contract (RULING-572-addendum-568-audit.md, C1–C6).
+# ---------------------------------------------------------------------------
+#: Corrupt ledgers a real host can hold: text redirected over the file, and a SQLite file cut
+#: short (the first 100 bytes of a real one: a valid header with no pages). Both raise
+#: ``sqlite3.DatabaseError`` (probed 2026-10-31: "file is not a database" / "database disk image
+#: is malformed"), which is NOT an ``OperationalError``.
+#: The child interpreter's traceback banner; never an operator-facing refusal.
+TRACEBACK_BANNER = "Traceback (most recent call last)"
+#: Umasks a host plausibly runs under, and the lore.yaml mode each must give (0666 & ~umask).
+UMASK_TO_SCAFFOLD_MODE: dict[int, int] = {0o022: 0o644, 0o027: 0o640, 0o002: 0o664}
+#: Unreadable lore.yaml shapes (C6): an editor-truncated file (YAML syntax) and an operator's
+#: hand edit that breaks the schema (a hyphenated slug, the #568 mistake itself).
+#: The schema door is the production-shaped document with ONLY the slug wrong, so the slug's
+#: pattern error is the one the loader reports.
+UNREADABLE_CONFIGS: tuple[str, ...] = ("truncated_yaml", "schema_invalid_slug")
+
+
+def _write_unreadable_config(project: Path, shape: str) -> str:
+    """Write an unreadable lore.yaml of ``shape`` into ``project``; return its text."""
+    config_path = project / "lore.yaml"
+    if shape == "schema_invalid_slug":
+        document = realistic_config_document(slug=HEADLINE_SLUG)
+        document["project"]["slug"] = HEADLINE_NAME
+        write_config_document(document, config_path)
+    else:
+        valid = write_config_document(realistic_config_document(slug=HEADLINE_SLUG), config_path)
+        # An editor crash mid-save: the file is cut inside a flow sequence.
+        config_path.write_text(valid.read_text(encoding="utf-8") + "include: [\n", encoding="utf-8")
+    return config_path.read_text(encoding="utf-8")
+
+
+def _truncated_sqlite_bytes() -> bytes:
+    """The first 100 bytes of a real ledger: the SQLite header, no pages."""
+    with sqlite3.connect(":memory:") as memory:
+        memory.execute("CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)")
+        image = memory.serialize()
+    return bytes(image[:100])
+
+
+def _text_over_the_file() -> bytes:
+    """Status-shaped text redirected over the ledger."""
+    return b"status: lore-odoo_custom container = absent\n" * 40
+
+
+CORRUPT_LEDGER_SHAPES: dict[str, Callable[[], bytes]] = {
+    "text_over_the_file": _text_over_the_file,
+    "truncated_sqlite": _truncated_sqlite_bytes,
+}
+
+
+def _nonblank_lines(text: str) -> list[str]:
+    return [line for line in text.splitlines() if line.strip()]
+
+
+def _config_problem(text: str) -> str:
+    """The parse/validation problem the config loader itself reports for ``text`` (the oracle).
+
+    YAML syntax: PyYAML's ``problem``. Schema: pydantic's first error message. Both libraries are
+    what ``_schema_load_snippet`` runs, so this is the error text an honest refusal can name.
+    """
+    from loremaster.config import LoreConfig  # noqa: PLC0415 - the oracle, imported where used
+    from pydantic import ValidationError  # noqa: PLC0415
+
+    try:
+        document = yaml.safe_load(text)
+    except yaml.MarkedYAMLError as error:
+        return str(error.problem)
+    try:
+        LoreConfig.model_validate(document)
+    except ValidationError as error:
+        return str(error.errors()[0]["msg"])
+    raise AssertionError(f"fixture {text!r} must be unreadable")
+
+
+@pytest.mark.parametrize("door", SLUG_DOORS, ids=lambda door: door.label)
+class TestSetupRefusesACorruptLedgerLoudly:
+    """C1 (F5): a ledger sqlite cannot read or write is a refusal line, never a traceback."""
+
+    @pytest.mark.parametrize("shape", sorted(CORRUPT_LEDGER_SHAPES))
+    def test_a_corrupt_ledger_refuses_naming_the_file_and_creates_nothing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        door: SlugDoor,
+        shape: str,
+    ) -> None:
+        """``<slug>.db`` is not SQLite → ``_EXIT_ERROR``, ONE stderr line naming it, nothing created."""
+        scene = CollisionScene.build(tmp_path, door)
+        lore_deploy.MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
+        ledger = lore_deploy.MANIFEST_DIR / f"{door.slug}.db"
+        corrupt = CORRUPT_LEDGER_SHAPES[shape]()
+        ledger.write_bytes(corrupt)
+        _stub_network_probes(monkeypatch)
+        shim = PodmanShim.install(monkeypatch, container_state=None)
+
+        outcome = _drive_setup(scene.project, scene.env_file, capsys)
+
+        _assert_refused_with_exit_error(outcome, f"setup over a corrupt ledger ({shape})")
+        lines = _nonblank_lines(outcome.stderr)
+        assert len(lines) == 1 and _names_path(lines[0], ledger), (
+            f"a corrupt ledger must be ONE stderr line naming {ledger}; got {outcome.stderr!r}"
+        )
+        assert TRACEBACK_BANNER not in outcome.stderr + outcome.stdout
+        scene.assert_nothing_created(shim)
+        assert ledger.read_bytes() == corrupt, "a refused setup must not touch the ledger"
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+    def test_a_ledger_write_that_fails_refuses_naming_the_file(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        door: SlugDoor,
+    ) -> None:
+        """The WRITE path: the ledger dir is read-only (a uid mismatch) → one line naming the file.
+
+        The cold index succeeds; the failure is setup's own ledger write after it.
+        """
+        scene = CollisionScene.build(tmp_path, door)
+        lore_deploy.MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
+        lore_deploy.MANIFEST_DIR.chmod(0o555)
+        ledger = lore_deploy.MANIFEST_DIR / f"{door.slug}.db"
+        _stub_network_probes(monkeypatch)
+        PodmanShim.install(monkeypatch, container_state=None)
+        try:
+            outcome = _drive_setup(scene.project, scene.env_file, capsys)
+        finally:
+            lore_deploy.MANIFEST_DIR.chmod(0o755)
+
+        _assert_refused_with_exit_error(outcome, "setup whose ledger write fails")
+        lines = _nonblank_lines(outcome.stderr)
+        assert len(lines) == 1 and _names_path(lines[0], ledger), (
+            f"a failed ledger write must be ONE stderr line naming {ledger}; got {outcome.stderr!r}"
+        )
+        assert TRACEBACK_BANNER not in outcome.stderr + outcome.stdout
+        assert not ledger.exists()
+
+
+class TestCollisionReadsBothHolders:
+    """C2 / C3 (F4 "manifest OR container", the addendum literal): a matching container is not a pass."""
+
+    @pytest.mark.parametrize("door", SLUG_DOORS, ids=lambda door: door.label)
+    def test_refuses_when_the_container_is_ours_but_the_manifest_records_another_project(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        door: SlugDoor,
+    ) -> None:
+        """C2: ``lore-<slug>`` mounts THIS path, the ledger records ANOTHER → refuse, naming it."""
+        scene = CollisionScene.build(tmp_path, door)
+        manifest = _write_manifest(door.slug, owner=scene.other_project)
+        manifest_bytes = manifest.read_bytes()
+        _stub_network_probes(monkeypatch)
+        shim = PodmanShim.install(monkeypatch, container_state="running", workspace_source=scene.project)
+
+        outcome = _drive_setup(scene.project, scene.env_file, capsys)
+
+        scene.assert_refusal_names(outcome, holder=scene.other_project)
+        scene.assert_nothing_created(shim)
+        assert manifest.read_bytes() == manifest_bytes, "a refused setup must not touch the manifest"
+
+    def test_refuses_an_ownerless_manifest_without_a_lore_yaml_even_when_the_container_is_ours(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """C3: container mounts THIS path, legacy ledger (no owner), no lore.yaml → unknown owner."""
+        scene = CollisionScene.build(tmp_path, SLUG_DOORS[0])
+        manifest = _write_manifest(HEADLINE_SLUG, owner=None)
+        manifest_bytes = manifest.read_bytes()
+        _stub_network_probes(monkeypatch)
+        shim = PodmanShim.install(monkeypatch, container_state="running", workspace_source=scene.project)
+
+        outcome = _drive_setup(scene.project, scene.env_file, capsys)
+
+        scene.assert_refusal_names(outcome, holder=None)
+        scene.assert_nothing_created(shim)
+        assert manifest.read_bytes() == manifest_bytes, "a refused setup must not touch the manifest"
+
+
+class TestScaffoldKeepsTheUmaskMode:
+    """C4 (the A3 fix): a scaffolded lore.yaml has the mode a plain write gives, 0666 & ~umask."""
+
+    @pytest.mark.parametrize("umask", sorted(UMASK_TO_SCAFFOLD_MODE), ids=lambda m: f"umask{m:03o}")
+    def test_scaffolded_lore_yaml_has_the_umask_default_mode(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        umask: int,
+    ) -> None:
+        """Three umasks, so a hard-coded 0644 (or the staged 0600) is caught."""
+        project = _project_dir(tmp_path, HEADLINE_NAME)
+        _stub_network_probes(monkeypatch)
+        PodmanShim.install(monkeypatch, container_state=None)
+        previous = os.umask(umask)
+        try:
+            outcome = _drive_setup(project, _write_env_file(tmp_path), capsys)
+        finally:
+            os.umask(previous)
+
+        assert outcome.raised is None and outcome.return_code == lore_deploy._EXIT_OK, (
+            f"setup must scaffold and provision; rc={outcome.return_code} stderr={outcome.stderr!r}"
+        )
+        mode = (project / "lore.yaml").stat().st_mode & 0o777
+        assert mode == UMASK_TO_SCAFFOLD_MODE[umask], (
+            f"under umask {umask:03o} lore.yaml must be {UMASK_TO_SCAFFOLD_MODE[umask]:03o}; got {mode:03o}"
+        )
+
+
+class TestVerbsWithoutALoreYamlUseTheDerivedSlug:
+    """C5: no lore.yaml → ``stop`` / ``status`` act on the DERIVED slug, never the raw name."""
+
+    @pytest.mark.parametrize("verb", ["stop", "status"])
+    def test_verb_addresses_the_derived_slugs_container(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        verb: str,
+    ) -> None:
+        """``odoo-custom`` with no lore.yaml → every podman call addresses ``lore-odoo_custom``.
+
+        ``stop`` runs against a running container (so it stops one); ``status`` against an
+        exited one, which still inspects it by name but skips the image-currency query.
+        """
+        project = _project_dir(tmp_path, HEADLINE_NAME)
+        state = "running" if verb == "stop" else "exited"
+        shim = PodmanShim.install(monkeypatch, container_state=state, workspace_source=project)
+
+        outcome = _drive(lambda: getattr(lore_deploy, f"verb_{verb}")(project), capsys)
+
+        assert outcome.raised is None and outcome.return_code == lore_deploy._EXIT_OK, (
+            f"{verb} must succeed; rc={outcome.return_code} stderr={outcome.stderr!r}"
+        )
+        assert shim.container_names() and set(shim.container_names()) == {f"lore-{HEADLINE_SLUG}"}, (
+            f"{verb} must address lore-{HEADLINE_SLUG}; addressed {shim.container_names()}"
+        )
+        if verb == "stop":
+            assert any(cmd[1] == "stop" for cmd in shim.podman_calls), "stop must stop the container"
+
+
+class TestVerbsRefuseAnUnreadableLoreYaml:
+    """C6 (directive #18018): an unreadable lore.yaml makes the slug unknowable → refuse, never guess."""
+
+    @pytest.mark.parametrize("config_shape", UNREADABLE_CONFIGS)
+    @pytest.mark.parametrize("verb", ["stop", "status"])
+    def test_verb_refuses_with_one_readable_remedy_and_touches_no_container(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        verb: str,
+        config_shape: str,
+    ) -> None:
+        """``_EXIT_ERROR``; stderr names the file and the problem, has no traceback, ends with a remedy.
+
+        The project's own container is running: a build that guesses the slug from the directory
+        name would stop it, which is the wrong container for any hand-set slug.
+        """
+        project = _project_dir(tmp_path, HEADLINE_NAME)
+        config_path = project / "lore.yaml"
+        text = _write_unreadable_config(project, config_shape)
+        shim = PodmanShim.install(monkeypatch, container_state="running", workspace_source=project)
+
+        outcome = _drive(lambda: getattr(lore_deploy, f"verb_{verb}")(project), capsys)
+
+        _assert_refused_with_exit_error(outcome, f"{verb} over an unreadable lore.yaml ({config_shape})")
+        assert _names_path(outcome.stderr, config_path), (
+            f"the refusal must name {config_path}; got {outcome.stderr!r}"
+        )
+        problem = _config_problem(text)
+        assert problem in outcome.stderr, (
+            f"the refusal must name the parse error {problem!r}; got {outcome.stderr!r}"
+        )
+        assert TRACEBACK_BANNER not in outcome.stderr, (
+            f"the refusal must not be the child interpreter's traceback; got {outcome.stderr!r}"
+        )
+        remedy = _nonblank_lines(outcome.stderr)[-1]
+        assert "lore.yaml" in remedy and "podman stop" in remedy, (
+            f"stderr must END with the remedy (fix lore.yaml, or `podman stop lore-<slug>` by hand); "
+            f"last line: {remedy!r}"
+        )
+        assert shim.mutating_calls() == [], (
+            f"an unknowable slug must not be guessed; ran {shim.mutating_calls()}"
         )
