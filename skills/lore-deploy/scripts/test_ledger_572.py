@@ -220,8 +220,8 @@ class LedgerScene:
 
     # -- ledger arrangements (each through the writer production uses, or the measured shape)
     def record_owner_only(self) -> None:
-        """An owner row and no marker: what the #568 backfill (``ManifestOwner.record``) leaves."""
-        lore_deploy.ManifestOwner(self.slug).record(self.project)
+        """An owner row and no marker: what the #568 backfill (``Ledger.record``) leaves."""
+        lore_deploy.Ledger(self.slug).record(self.project)
 
     def write_legacy_ledger(self, population: str) -> None:
         """A pre-P5 ledger: the measured schema, legacy meta, ``files`` rows, NO owner row."""
@@ -602,7 +602,7 @@ class TestStatusShowsTheLedgerAsWhatItIs:
         outcome = scene.status()
 
         _assert_ok(outcome, f"status over a {state} ledger")
-        owner = lore_deploy.ManifestOwner(scene.slug).recorded_path()
+        owner = lore_deploy.Ledger(scene.slug).recorded_path()
         assert owner is not None, f"arranging: the {state} ledger must record an owner"
         assert owner in outcome.stdout, (
             f"status must show the ledger's owner path {owner}; stdout: {outcome.stdout!r}"
