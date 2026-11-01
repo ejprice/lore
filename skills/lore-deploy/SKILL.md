@@ -29,9 +29,11 @@ manages that container's lifecycle for one project.
 The lifecycle is **on-demand, not always-on** (plan A1.11/D12): lore runs only
 while ≥1 Claude is working the project and is stopped otherwise, so no idle
 container holds the embedder pool. The expensive cold index is paid **once** at
-`setup`; thereafter the SurrealDB store's data and the SQLite manifest **persist
-across stop/start**, so a restart is a cheap delta-reconcile (re-index only what
-changed since last run), never a cold rebuild.
+`setup`; thereafter the SurrealDB store's data (the index, its manifest and code
+graph) and the host state dir `~/.local/state/lore/` (setup's `<slug>.db` ledger,
+the server's `<slug>.memory.db`) **persist across stop/start**, so a restart is a
+cheap delta-reconcile (re-index only what changed since last run), never a cold
+rebuild.
 
 **Every verb is idempotent and safe to re-run.** That is the whole contract:
 running `setup` twice is a no-op; `start` on an already-running container is a
@@ -48,16 +50,16 @@ python3 ~/.claude/skills/lore-deploy/scripts/lore_deploy.py <verb> --project <ab
 
 | Verb | What it does (idempotent) |
 |---|---|
-| `setup` | Once per project. Scaffold `lore.yaml`, verify env keys, **hard-probe `/embed`**, **pre-flight the SurrealDB store's `/health`**, build the image if missing, **cold-index**, merge `.mcp.json`. Re-running detects the existing config + manifest and **no-ops** (never re-scaffolds, never nukes the index). |
+| `setup` | Once per project. Scaffold `lore.yaml`, verify env keys, **hard-probe `/embed`**, **pre-flight the SurrealDB store's `/health`**, build the image if missing, **cold-index**, merge `.mcp.json`. Only a cold index that exits 0 writes the provisioned marker into the host ledger `~/.local/state/lore/<slug>.db`. Re-running **no-ops** when `lore.yaml` exists and the ledger carries that marker (never re-scaffolds, never nukes the index). A ledger without the marker (a failed index, or one written before #572) is not provisioned: setup cold-indexes again. |
 | `start` | Launch the container (delta-reconcile runs on startup) + merge `.mcp.json`. It **refuses first, before any teardown**, when a declared static tier is unmaterialised on the host (absent, empty or not a directory), and prints the cold-index command to fix it. On success it **waits for the MCP port to actually accept connections** before declaring success — a "running" container can still be mid-boot delta-reconcile with the port unbound (see "Port-probe / wait-for-bind" below). Already-running-and-bound ⇒ fast no-op. |
-| `stop` | Stop + remove the container. Collections + manifest **persist**. Not-running ⇒ no-op. |
-| `status` | Report running/stopped + `index_status()` freshness (in-flight/failed files), AND **probes the live MCP port** to report `ACCEPTING`/`NOT ACCEPTING` — container state alone does not prove the server is reachable. For a stopped container it reads the manifest directly and skips the probe. |
+| `stop` | Stop + remove the container. The store's data and the host state dir (ledger included) **persist**. Not-running ⇒ no-op. |
+| `status` | Report running/stopped, the host ledger's recorded owner path and provisioned marker, AND **probes the live MCP port** to report `ACCEPTING`/`NOT ACCEPTING` — container state alone does not prove the server is reachable. It prints **no index count**: the index lives in the store, so it names the `lore_index()` MCP tool as where to read the counts (the server must be running). For a stopped container it skips the probe. |
 | `conform` | **Post-build, NOT on `start`.** Runs the **baked** pytest inside the deployed image against this repo mounted `:ro`, gated by a provenance guard that asserts the members import the BAKED artifact, not the mount — the instrument for #139 (*the test env is a fiction*: a suite green on the dev host proves the source, never the deployed artifact). Takes **no `--project`** (it gates the IMAGE); `--image` overrides `localhost/lore:latest`. Run it after `podman build`, before deploying (~3 min). |
 
 Read `references/lifecycle.md` for the precise step sequence, the persistence
 guarantees, and the failure/STOP conditions of each verb. Read
 `references/server-interface.md` for the live server contract (entrypoint,
-healthcheck, manifest/state layout, `.mcp.json` shape).
+healthcheck, state-dir layout, `.mcp.json` shape).
 
 ## Port-probe / wait-for-bind — "running" ≠ "accepting connections"
 
@@ -248,10 +250,11 @@ context).
 - **STOP if `/embed` is unreachable or returns the wrong dimension.** A RAG
   server with no embedder is useless; fail loud at `setup`/`start`, not later as
   an opaque error.
-- **The store + manifest persist across `stop`/`start`.** `stop` removes only
-  the lore container. The `~/.local/state/lore/<slug>.db` manifest and the
-  SurrealDB store's data (the separate, always-on `lore-surreal` container)
-  survive, which is what makes restart a cheap delta-reconcile.
+- **The store + the host state dir persist across `stop`/`start`.** `stop`
+  removes only the lore container. The SurrealDB store's data (the index, in the
+  separate, always-on `lore-surreal` container) survives, which is what makes
+  restart a cheap delta-reconcile; so does `~/.local/state/lore/` (setup's
+  `<slug>.db` ledger, which holds no index state).
 
 ## Deferred (do not attempt here)
 
@@ -272,14 +275,14 @@ the server itself**. The FastMCP server advertises a substantial `instructions` 
 plus a behavioral description + per-parameter schema on every tool, covering: when to
 use which of the ten tools, the `[SOURCE:file:line]` + stable `Key:` citation
 convention, the freshness / read-your-writes model (live inotify watch ~seconds;
-periodic reconcile ~10 min backstop; `search_code(..., wait_for_fresh=True)` for the
-edit-then-query race; `reindex(tier=...)` to force a whole tier), and the
+periodic reconcile ~10 min backstop; `lore_search(..., wait_for_fresh=True)` for the
+edit-then-query race; `lore_index(reconcile=True, tier=...)` to force a whole tier), and the
 project-memory stance. A connecting agent gets all of that automatically — there is
 nothing to relay from this skill.
 
-Operator-relevant freshness note only: a `status` run surfaces `index_status()`
-(indexed / in-flight / failed counts) so you can confirm a deploy's index is current
-and healthy. Everything else about querying belongs to the consumer and lives in the
+Operator-relevant freshness note only: `status` does not read index counts. Call the
+`lore_index()` MCP tool (files indexed / in-flight / failed, last sync and sweep ages)
+to confirm a deploy's index is current and healthy; `status` only names it. Everything else about querying belongs to the consumer and lives in the
 server's own `instructions`.
 
 ## Helper scripts

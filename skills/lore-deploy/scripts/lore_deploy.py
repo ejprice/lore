@@ -11,9 +11,9 @@ embedding-dimension ownership now live entirely in the loremaster server.
 
 The container runs the SHARED image ``localhost/lore:latest`` with the project
 identity supplied entirely at run time (``-v <project>:/workspace:ro`` +
-``--env-file`` + ``-e LORE_CONFIG``). The SurrealDB store data + the SQLite
-manifest persist on the host across stop/start, so ``start`` is a cheap
-delta-reconcile, never a cold rebuild.
+``--env-file`` + ``-e LORE_CONFIG``). The SurrealDB store data (the index) + the
+host state dir (``setup``'s ``<slug>.db`` ledger) persist across stop/start, so
+``start`` is a cheap delta-reconcile, never a cold rebuild.
 
 Unix philosophy: structured status line on stdout, loud (non-zero exit) on
 failure. See ``../references/lifecycle.md`` for the per-verb spec and
@@ -83,10 +83,10 @@ MANIFEST_DIR = Path.home() / ".local" / "state" / "lore"
 _SNAPSHOT_SUBPATH = PurePosixPath("docker", "mcp", "lore-snapshot")
 SNAPSHOT_ROOT = Path.home() / _SNAPSHOT_SUBPATH
 
-# The image's non-root ``lore`` user HOME. loremaster writes the manifest +
-# ``<slug>.graph.db`` under ``$HOME/.local/state/lore`` (Path.home()), so the host
-# manifest dir must mount THERE — not ``/state`` — for the container server to read
-# the same manifest + code-graph the host cold-index wrote.
+# The image's non-root ``lore`` user HOME. loremaster keeps its state files
+# (``<slug>.memory.db``, the calibration cache) under ``$HOME/.local/state/lore``
+# (Path.home()), so the host state dir must mount THERE — not ``/state`` — for them
+# to persist across stop/start. The index itself lives in the SurrealDB store.
 CONTAINER_HOME = "/home/lore"
 CONTAINER_STATE_DIR = f"{CONTAINER_HOME}/.local/state/lore"
 # Where the host snapshot is bound in the container: the server's default snapshot
@@ -534,7 +534,7 @@ def _read_server_block(config_path: Path) -> tuple[str, int, str]:
 CONFIG_FILENAME = "lore.yaml"
 #: The container path ``_launch_container`` bind-mounts the project at.
 CONTAINER_WORKSPACE = "/workspace"
-#: The manifest ``meta`` key ``setup`` records the owning project path under (F4b).
+#: The ledger ``meta`` key ``setup`` records the owning project path under (F4b).
 PROJECT_PATH_META_KEY = "project_path"
 #: The ledger ``meta`` key ``setup`` writes only after a SUCCESSFUL cold index (#572); its value
 #: is that moment in UTC. "Already provisioned" means this row exists, nothing else.
@@ -544,7 +544,7 @@ PROVISIONED_META_KEY = "provisioned_at"
 _LEDGER_HAS_META_SQL = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'"
 #: The ``meta`` DDL of the historical SQLite manifest (``loremaster.index.manifest._SCHEMA``,
 #: the documented origin; the loremaster side no longer executes it). ``CREATE TABLE IF NOT
-#: EXISTS`` so a manifest that already has the table keeps it untouched.
+#: EXISTS`` so a ledger that already has the table keeps it untouched.
 _MANIFEST_META_DDL = "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)"
 #: Runs ``loremaster.config.derive_project_slug`` (the ONE normaliser) on ``argv[1]`` in the
 #: loremaster interpreter; a refusal exits non-zero with the normaliser's message on stderr
@@ -620,7 +620,7 @@ def _project_slug(project: Path) -> str:
 
 
 def _manifest_path(slug: str) -> Path:
-    """The host manifest file for ``slug``."""
+    """The host ledger file ``<slug>.db`` for ``slug`` (named for its pre-P5 role as the manifest)."""
     return MANIFEST_DIR / f"{slug}.db"
 
 
@@ -681,7 +681,12 @@ class ManifestOwner:
         return self.meta().get(PROVISIONED_META_KEY)
 
     def record(self, project: Path) -> None:
-        """Record ``project`` as the slug's owner, without the provisioned marker."""
+        """Record ``project`` as the slug's owner, without the provisioned marker.
+
+        No production verb calls this since #572 (``setup`` writes the owner only through
+        :meth:`mark_provisioned`). It still writes the owner-only shape the #568 backfill left on
+        disk, which the #572 contract arranges through it; delete it with that arrangement.
+        """
         self._write_meta({PROJECT_PATH_META_KEY: str(project.resolve())})
 
     def mark_provisioned(self, project: Path) -> None:
@@ -732,11 +737,11 @@ def _container_workspace_source(container_name: str) -> str | None:
 def _slug_collision(project: Path, slug: str) -> str | None:
     """Why ``project`` may not use ``slug``, or ``None`` when it may (F4 + addendum).
 
-    A slug is ONE store database, manifest, container and secrets file, so a slug held by a
+    A slug is ONE store database, ledger, container and secrets file, so a slug held by a
     DIFFERENT project path is refused, however this project arrived at it (derived or
     hand-set: the class lift). The holder is read from the ``lore-<slug>`` container's
-    workspace mount and from the manifest's recorded ``project_path``; either naming another
-    path refuses. A legacy manifest (no recorded path) belongs to this project when its
+    workspace mount and from the ledger's recorded ``project_path``; either naming another
+    path refuses. A legacy ledger (no recorded path) belongs to this project when its
     lore.yaml exists (setup records the row after its cold index); on a FRESH setup it is an
     unknown owner. Raises :class:`LedgerError` when the ledger cannot be read (C1).
     """
@@ -1073,9 +1078,9 @@ def _launch_container(project: Path, config_path: Path, env_file: Path) -> None:
     """Launch the lore container for ``project`` (the proven host pattern).
 
     Runs as the host ``uid:gid`` (with ``--userns=keep-id`` that maps 1:1, so the
-    bind-mounted manifest dir is writable) and sets ``HOME`` to the image's lore
-    home, so loremaster's manifest + code-graph land in the mounted state dir and
-    survive stop/start.
+    bind-mounted state dir is writable) and sets ``HOME`` to the image's lore
+    home, so loremaster's state files land in the mounted state dir and survive
+    stop/start.
 
     When the config declares a ``static`` root, the host ``SNAPSHOT_ROOT`` is bound
     read-only at ``CONTAINER_SNAPSHOT_ROOT``, the server's default snapshot root

@@ -19,20 +19,22 @@ deploy artifacts depend on; the running server is the source of truth.
 - serves FastMCP **streamable-http** on `config.server.{host,port,path}`
   (e.g. `127.0.0.1:9201/mcp`).
 
-**Healthcheck rule (load-bearing):** "container up" + "manifest indexed=N" is NOT
-proof the endpoint serves — verify `/mcp` answers. A live MCP streamable-http
+**Healthcheck rule (load-bearing):** "container up" + "the ledger says
+provisioned" is NOT proof the endpoint serves — verify `/mcp` answers. A live MCP streamable-http
 server returns **HTTP 406** to a bare `GET /mcp` (it wants a POST with an MCP
 `Accept` header); 406 = alive. `start` must check the endpoint, not just that the
 container is running. Under `--network=host` the real listening port is
 `config.server.port`; `podman ps` shows only the image metadata, not the bound
 port — confirm with `ss -ltn` or the `Uvicorn running on …` log line.
 
-## 2. Manifest + code-graph location (RESOLVED empirically)
+## 2. State-dir location (RESOLVED empirically)
 
-The batch indexer and the server BOTH default the manifest to
-`Path.home()/.local/state/lore/<slug>.db` and the code-graph to
-`…/<slug>.graph.db` (`mkdir -p`'d). **The resolved, verified wiring** (from the
-live demand_intelligence + lore deploys) is:
+Since P5 the index, its manifest and its code graph live in the SurrealDB store,
+not on the host. The host state dir `Path.home()/.local/state/lore/` holds
+`setup`'s ledger `<slug>.db` (the owning project path and the provisioned
+marker; no index state), the server's `<slug>.memory.db`, and the calibration
+cache. **The resolved, verified wiring** (from the live demand_intelligence +
+lore deploys) is:
 
 - `--user $(id -u):$(id -g)` (with `--userns=keep-id`) so the process runs as the
   host user and can write the host bind — bare keep-id runs as the image's `lore`
@@ -40,18 +42,20 @@ live demand_intelligence + lore deploys) is:
 - `-e HOME=/home/lore` so `Path.home()` resolves to the image's lore home.
 - `-v ~/.local/state/lore:/home/lore/.local/state/lore` — the host state dir
   mounted **exactly at `$HOME/.local/state/lore`**, where loremaster reads/writes
-  it. The old `/state` mount was a dead path the server never reads (graph tools
-  empty, manifest lost on restart). One source of truth for the state dir, both
-  processes — the host cold-index and the container server share it.
+  it. The old `/state` mount was a dead path the server never reads. One state
+  dir for both sides: the host `setup` writes its ledger there, and the container
+  server keeps its state files there.
 
-## 3. `index_status()` exposure for `status` / healthcheck
+## 3. Index counts come from `lore_index()`, never from `status`
 
-The skill's `status` verb and the healthcheck want `index_status()` — total
-points, in-flight (`dirty`/`embedding`) files, `files_failed`. This is a live MCP
-tool on the server. For a **stopped** container `status` falls back to reading the
-SQLite manifest directly (`~/.local/state/lore/<slug>.db`, table `files`, column
-`state`) — the correct stopped-state path, since a stopped container has no MCP
-endpoint to query.
+The index counts (files indexed / in-flight / failed, last sync and sweep ages)
+live in the store and are served by the `lore_index()` MCP tool; with no
+arguments it is a cheap status read that never sweeps. The skill's `status` verb
+does not read them: it prints the ledger's owner path and provisioned marker and
+names `lore_index()` as where the counts live. A **stopped** container has no MCP
+endpoint, so its index counts are unavailable until `start`; the host ledger
+holds none (a pre-P5 ledger's `files` table describes an index nothing has
+written since P5, and `status` does not read it).
 
 ## 4. `.mcp.json` transport + auth header
 

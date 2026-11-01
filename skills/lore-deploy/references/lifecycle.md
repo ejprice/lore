@@ -11,9 +11,13 @@ step needs manual intervention.
 - **Collections:** `lore_<slug>` (code/docs) + `lore_<slug>_memory` (project
   memory). Both `size=dim`, `distance=cosine`, with the base payload indexes
   (`tier`, `file_path`, `content_hash`, `chunk_type`).
-- **Manifest:** `~/.local/state/lore/<slug>.db` (SQLite, WAL). The authority on
-  per-file/per-tier index state. **Persists across stop/start** — it lives on
-  the host and is bind-mounted into the container.
+- **Ledger:** `~/.local/state/lore/<slug>.db` (SQLite) — lore-deploy's own file,
+  written only by `setup`: the owning `project_path` and, after a cold index that
+  exits 0, the provisioned marker (`provisioned_at`). It holds **no index state**:
+  since P5 the index, its manifest and code graph live in the SurrealDB store
+  (read their counts with the `lore_index()` MCP tool). The same host state dir
+  holds the server's `<slug>.memory.db` and calibration cache. **Persists across
+  stop/start** — it lives on the host and is bind-mounted into the container.
 - **Snapshot dir (static tiers only):** `~/docker/mcp/lore-snapshot/<tier>/…`,
   bind-mounted `:ro` at `/home/lore/docker/mcp/lore-snapshot`. With
   `HOME=/home/lore` that is exactly `loremaster.server._DEFAULT_SNAPSHOT_ROOT`, the
@@ -47,10 +51,14 @@ step needs manual intervention.
 
 ## `setup` — once per project (idempotent; expensive parts no-op on re-run)
 
-1. **Detect an existing deployment.** If `lore.yaml` exists AND the manifest
-   (`~/.local/state/lore/<slug>.db`) is present → print
-   `setup: already provisioned (no-op)` and exit 0. (Do NOT re-scaffold, do NOT
-   re-index, do NOT touch the store.)
+1. **Detect an existing deployment.** If `lore.yaml` exists AND the ledger
+   (`~/.local/state/lore/<slug>.db`) carries the provisioned marker → print
+   `setup: <slug> already provisioned (ledger … marks the cold index done at …) — no-op.`,
+   re-merge `.mcp.json`, and exit 0. (Do NOT re-scaffold, do NOT re-index, do NOT
+   touch the store.) The ledger file existing, an owner row, or a pre-P5 ledger's
+   `files` rows is NOT provisioned: setup continues to the cold index. A ledger
+   sqlite cannot read refuses before anything is created (exit 2, one stderr line
+   naming the file), as does a slug held by another project path.
 2. **Scaffold `lore.yaml`** (only if absent): slug from the dir name, `root: .`,
    the embedding block (tei / voyage-4-nano / dim 2048 / 8192 / batch 32 /
    concurrency 2 / `truncate: false` / `connect_timeout_s: 5` /
@@ -92,6 +100,9 @@ step needs manual intervention.
    from the lore repo root uses the same `.venv`. Not in-container: that run
    cannot write the `:ro` snapshot (#166). This is the expensive step paid once,
    and it materialises the static tiers that `start`'s snapshot refusal checks.
+   Only when it exits 0 does setup write the ledger's owner path and provisioned
+   marker (one transaction); a non-zero exit fails setup and leaves the project
+   unprovisioned, so the next setup cold-indexes again.
 8. **Merge `.mcp.json`** (`scripts/merge_mcp_json.py`).
 9. Report status.
 
@@ -186,25 +197,26 @@ podman run -d --name lore-<slug> \
   via the host netns.
 - `--userns=keep-id` **+ `--user $(id -u):$(id -g)`** — pins the container
   process to the host `uid:gid`, which keep-id maps 1:1, so the bind-mounted
-  manifest dir (owned by the host user) is **writable**. Bare `--userns=keep-id`
+  state dir (owned by the host user) is **writable**. Bare `--userns=keep-id`
   alone runs as the image's `lore` user (UID 999) → `Permission denied` on the
   host bind. **VERIFIED empirically** on the demand_intelligence + lore deploys.
-- `-e HOME=/home/lore` — loremaster resolves the manifest + `<slug>.graph.db`
-  under `Path.home()/.local/state/lore`; this pins `$HOME` to the image's lore
-  home so those land in the mounted state dir (not an unwritable/ephemeral path).
+- `-e HOME=/home/lore` — loremaster resolves its state dir (`<slug>.memory.db`,
+  the calibration cache) under `Path.home()/.local/state/lore`; this pins `$HOME`
+  to the image's lore home so those land in the mounted state dir (not an
+  unwritable/ephemeral path).
 - `-v ~/.local/state/lore:/home/lore/.local/state/lore` — mounts the host state
   dir **exactly where loremaster reads it** (`$HOME/.local/state/lore`), so the
-  container server reads the **same manifest + code-graph the host cold-index
-  wrote**, and both persist across stop/start. (The old `/state` mount was wrong:
-  the server never reads `/state`, so the graph tools came up empty and a restart
-  lost the manifest.)
+  server's state files persist across stop/start. The index itself (manifest +
+  code graph) lives in the SurrealDB store, not in this dir. (The old `/state`
+  mount pointed at a path the server never reads.)
 
 ## `stop` — end the session (idempotent)
 
 1. **Not running?** `podman container exists lore-<slug>` is false → print
    `stop: not running (no-op)` and exit 0.
 2. **Stop + remove the container** (`podman stop lore-<slug>` then
-   `podman rm lore-<slug>`). The collections and the manifest are untouched.
+   `podman rm lore-<slug>`). The store's data and the host state dir (ledger
+   included) are untouched.
 3. Optionally leave the `.mcp.json` entry in place (a stopped server's entry is
    harmless — the next `start` re-uses it). Report status.
 
@@ -220,12 +232,15 @@ podman run -d --name lore-<slug> \
    alone is NOT sufficient to call the server up — this is exactly the gap
    that let a "running, healthy-looking" `status` coexist with a refused MCP
    connection for ~4 minutes.
-4. If running, query `index_status()` (via the MCP endpoint or the server's
-   status command) for freshness: total points, in-flight (`dirty`/`embedding`)
-   files, `files_failed`. Report `files_failed == 0` as healthy.
-5. If stopped, report the last manifest state (read `~/.local/state/lore/
-   <slug>.db` counts) so the user knows the index is preserved. **Skip the port
-   probe entirely** — there is nothing to probe.
+4. Running or not, print the ledger line: its recorded owner path and whether
+   setup's provisioned marker is set (or that there is no ledger yet). Both are
+   `repr`-quoted stored text. It prints **no index count** — the ledger holds
+   none. A ledger sqlite cannot read is reported on stderr, naming the file, and
+   `status` still exits 0.
+5. Name `lore_index()` as where the index counts live (files indexed /
+   in-flight / failed): they are in the store, readable only through the running
+   server. If stopped, **skip the port probe entirely** — there is nothing to
+   probe.
 
 ## `conform` — in-image artifact conformance (post-build, NOT on `start`)
 
