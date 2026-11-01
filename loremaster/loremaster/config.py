@@ -55,7 +55,6 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from slugify import slugify
 
 from lorerunes import is_blank
 
@@ -133,6 +132,10 @@ def derive_project_slug(directory_name: str) -> str:
             punctuation). The message names the directory, the field and the file the
             operator can set by hand instead.
     """
+    # Lazy: only the host deploy path (lore_deploy.py's scaffold) calls the normaliser, so
+    # the server's boot-time ``import loremaster.config`` must not require python-slugify.
+    from slugify import slugify
+
     slug = slugify(directory_name, separator=SLUG_SEPARATOR)
     if re.fullmatch(SLUG_PATTERN, slug) is None:
         raise ValueError(

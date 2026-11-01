@@ -533,6 +533,8 @@ _WORKSPACE_SOURCE_FORMAT = (
     f'{{{{range .Mounts}}}}{{{{if eq .Destination "{CONTAINER_WORKSPACE}"}}}}'
     f"{{{{.Source}}}}{{{{end}}}}{{{{end}}}}"
 )
+#: The mode ``open()`` creates a file with before the umask applies (the scaffold's lore.yaml).
+_PLAIN_WRITE_MODE = 0o666
 #: The remedy every slug refusal ends with.
 _SLUG_REMEDY = f"set a different project.slug by hand in {CONFIG_FILENAME}, or rename the directory."
 
@@ -860,6 +862,11 @@ server:
     ) as staged:
         staged.write(content)
     staged_path = Path(staged.name)
+    # NamedTemporaryFile creates 0600; give lore.yaml the mode a plain write gives
+    # (0666 minus the umask), as it had before the scaffold was staged.
+    umask = os.umask(0)
+    os.umask(umask)
+    os.chmod(staged_path, _PLAIN_WRITE_MODE & ~umask)
     try:
         # Fail loud if the scaffold does not parse against the real model. Schema-only
         # (LoreConfig.model_validate, NOT load_config): the scaffold emits env-var
@@ -1924,8 +1931,6 @@ def _env_file_kv(env_file: Path) -> list[str]:
 
 def _manifest_counts(manifest: Path) -> str:
     """Summarise the manifest's per-state file counts (read-only, safe when stopped)."""
-    import sqlite3
-
     try:
         connection = sqlite3.connect(f"file:{manifest}?mode=ro", uri=True)
         try:
@@ -1954,7 +1959,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--project", default=None,
         help=(
-            "Absolute path to the project directory (its name is the slug). Required for "
+            "Absolute path to the project directory (its slug is its lore.yaml's "
+            "project.slug, else derived from its name). Required for "
             "setup/start/stop/status; `conform` gates the IMAGE artifact and takes none."
         ),
     )
