@@ -102,3 +102,10 @@ Guard at the repo root · fix #568 this wave · acceptance last · F4 refuse lou
 - #573 filed: wire_test_*.memory.db strays in the real ~/.local/state/lore (2026-09-26); ask operator whether in scope.
 - A7 accepted residual (goes into the LOWs finding).
 - Residual-finding additions: `_validate_config_schema` child traceback (builder flag 1); permission-denied ledger READ unpinned (flag 3); F-2 re-index cost unmeasured (operator).
+
+## ACCEPTANCE (2026-11-01, lead-165): PASS
+- `lore_deploy.py stop` at 01:01:17Z exited 0. `start` at 01:01:2xZ on image 4312207128bb (CURRENT, not rebuilt). CreateCommand captured before stop (/var/tmp/claude-1000/accept165/createcommand.txt).
+- Mounts: `~/docker/mcp/lore-snapshot -> /home/lore/docker/mcp/lore-snapshot` (ONE snapshot bind, no /source), the state dir and /workspace. Restarts 0.
+- Boot: index.tier.skip ×3 (surrealdb-docs, surrealql-tests, spectron-docs). reconcile.summary: files_indexed 35, failed 1 (#383, test_comms_tool.py 5113 > 5000 statements), skipped 1478, purged 33 (the moved REPORT paths), duration 602 s. Uvicorn bound 127.0.0.1:9202 at 01:12:00Z.
+- `lore_index()` smoke over HTTP MCP: files_indexed 4067, files_failed 1.
+- Bound, stated: `start`'s 600 s bind wait expired 9 s before the bind (START_EXIT=2). The delta re-index of this wave's ~50 freshly committed receipts took ~10 min at 2–100 s/file. A boot after a large commit can therefore exceed start's default wait. This is not #355 (no whole-tier purge of unchanged files: 1478 were skipped).
