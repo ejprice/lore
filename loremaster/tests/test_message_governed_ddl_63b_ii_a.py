@@ -43,6 +43,7 @@ from _governed_contract import (
     apply_ddl,
     explain,
     field_statement,
+    index_served,
     index_statement,
     member,
     operators,
@@ -298,7 +299,7 @@ class TestTheMessageReadIndexFires:
         plan = await explain(
             connection, f"SELECT id FROM {_MESSAGE_TABLE} WHERE body = $b", {"b": "x"}
         )
-        assert scans_table(plan, _MESSAGE_TABLE) and "IndexScan" not in operators(plan), (
+        assert scans_table(plan, _MESSAGE_TABLE) and not index_served(plan), (
             f"the unindexed control did not TableScan — the walker is blind. ops={operators(plan)}"
         )
 
@@ -366,10 +367,11 @@ class TestTheMessageReadIndexFires:
         self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811
     ) -> None:
         """⚠ RED at HEAD — probe P3: the REAL emitted member READ predicate for a ≥2-keep subject (IN
-        EXPANDED to per-keep equalities, #413) is an IndexScan (UnionIndexScan) with NO message
-        TableScan. This is the store proof the §4.F index set serves the WHOLE PDP filter on the real
-        message table. At HEAD the governed columns are absent → TableScan. The fragment must carry NO
-        literal ``IN`` (the #413 IN-in-OR trap — probe F-3 confirmed the emitter expands keeps)."""
+        EXPANDED to per-keep equalities, #413) is index-served (3.2: UnionIndexScan > IndexScan; 3.3:
+        BitmapOr > BitmapIndexScan — ``index_served``) with NO message TableScan. This is the store
+        proof the §4.F index set serves the WHOLE PDP filter on the real message table. At HEAD the
+        governed columns are absent → TableScan. The fragment must carry NO literal ``IN`` (the
+        #413 IN-in-OR trap — probe F-3 confirmed the emitter expands keeps)."""
         connection, env = admin_db
         await apply_ddl(connection, _message_ddl(), url=env.url)
         subject = member(
@@ -384,4 +386,4 @@ class TestTheMessageReadIndexFires:
             f"the full member READ filter TABLESCANS message — the §4.F read indexes are unwired. "
             f"ops={operators(plan)}"
         )
-        assert "IndexScan" in operators(plan), f"expected an IndexScan. ops={operators(plan)}"
+        assert index_served(plan), f"expected an index-served plan. ops={operators(plan)}"

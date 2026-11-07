@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from _governed_contract import index_served, operators, scans_table  # the shared EXPLAIN walker
 from _surreal_harness import (  # the shared real-SurrealDB harness (env-driven topology)
     connect_admin,
     drop_database,
@@ -474,53 +475,9 @@ class TestAbsentOwnerRowsAgree:
 # =========================================================================== #
 
 
-def _operators(plan: Any) -> list[str]:
-    """Every ``operator``/``operation`` string in an EXPLAIN plan tree (the shipped
-    ``test_keeps_schema.TestTheKeeperIndexFires`` / ``probe_read_filter_61b`` walker)."""
-    found: list[str] = []
-
-    def walk(node: Any) -> None:
-        if isinstance(node, dict):
-            for key in ("operator", "operation"):
-                op = node.get(key)
-                if isinstance(op, str):
-                    found.append(op)
-            for child in node.values():
-                walk(child)
-        elif isinstance(node, list):
-            for child in node:
-                walk(child)
-
-    walk(plan)
-    return found
-
-
-def _scans_table(plan: Any, table: str) -> bool:
-    found = False
-
-    def walk(node: Any) -> None:
-        nonlocal found
-        if isinstance(node, dict):
-            attributes = node.get("attributes")
-            if (
-                node.get("operator") == "TableScan"
-                and isinstance(attributes, dict)
-                and attributes.get("table") == table
-            ):
-                found = True
-            for child in node.values():
-                walk(child)
-        elif isinstance(node, list):
-            for child in node:
-                walk(child)
-
-    walk(plan)
-    return found
-
-
 async def _explain_operators(connection: Any, statement: str, params: dict[str, Any]) -> list[str]:
     plan = await connection.query(f"{statement} EXPLAIN", params)
-    return _operators(plan)
+    return operators(plan)
 
 
 async def _explain_plan(connection: Any, statement: str, params: dict[str, Any]) -> Any:
@@ -540,8 +497,8 @@ class TestTheReadEmitterIndexScans:
         plan = await _explain_plan(
             oracle_connection, f"SELECT id FROM {_GOV} WHERE note = $n", {"n": "n_r1"}
         )
-        assert _scans_table(plan, _GOV) and "IndexScan" not in _operators(plan), (
-            f"unindexed control did not TableScan — the walker is blind. ops={_operators(plan)}"
+        assert scans_table(plan, _GOV) and not index_served(plan), (
+            f"unindexed control did not TableScan — the walker is blind. ops={operators(plan)}"
         )
 
     async def test_positive_control_literal_IN_inside_OR_tablescans(
@@ -555,17 +512,18 @@ class TestTheReadEmitterIndexScans:
             f"SELECT id FROM {_GOV} WHERE scope = 'server' OR scope IN $keeps",
             {"keeps": ["keep:k1", "keep:k9"]},
         )
-        assert _scans_table(plan, _GOV), (
+        assert scans_table(plan, _GOV), (
             f"expected the literal `IN`-inside-OR to TableScan (#413) — if it no longer does, "
-            f"the engine changed and the expansion rationale must be re-probed. ops={_operators(plan)}"
+            f"the engine changed and the expansion rationale must be re-probed. ops={operators(plan)}"
         )
 
     async def test_member_read_emitter_with_TWO_keeps_indexscans_no_tablescan(
         self, oracle_connection: Any
     ) -> None:
         """F1: the ACTUAL emitted member READ predicate for a ≥2-keep subject (IN expanded to
-        ``scope=$k0 OR scope=$k1``, type::record owners) is an IndexScan with NO TableScan of
-        ``gov``. This is the store proof that the expansion WORKS at the scale where it matters:
+        ``scope=$k0 OR scope=$k1``, type::record owners) is index-served (``index_served``: 3.2
+        IndexScan, 3.3 BitmapIndexScan) with NO TableScan of ``gov``. This is the store proof that
+        the expansion WORKS at the scale where it matters:
         the literal 2-element ``IN`` inside the OR TableScans (the control below), while THIS
         expanded form IndexScans. A 1-keep subject can't tell them apart (1-element IN IndexScans)."""
         pdp = _pdp()
@@ -582,12 +540,13 @@ class TestTheReadEmitterIndexScans:
         plan = await _explain_plan(
             oracle_connection, f"SELECT id FROM {_GOV} WHERE {fragment}", params
         )
-        assert not _scans_table(plan, _GOV), (
+        assert not scans_table(plan, _GOV), (
             f"the 2-keep member READ emitter TABLESCANS `gov` — the #107 shape (green on a small "
-            f"DB, wrong on a large one). fragment={fragment!r} ops={_operators(plan)}"
+            f"DB, wrong on a large one). fragment={fragment!r} ops={operators(plan)}"
         )
-        assert "IndexScan" in _operators(plan), (
-            f"expected an IndexScan for the emitted 2-keep READ predicate. ops={_operators(plan)}"
+        assert index_served(plan), (
+            f"expected an index-served plan for the emitted 2-keep READ predicate. "
+            f"ops={operators(plan)}"
         )
 
 

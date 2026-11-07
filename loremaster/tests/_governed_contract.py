@@ -155,6 +155,33 @@ def scans_table(plan: Any, table: str) -> bool:
     return found
 
 
+# The operators that READ A NAMED INDEX — an ALLOWLIST of the safe set, never a list of forbidden
+# shapes. Derived (2026-11-07) from the engine's own CI-verified EXPLAIN specs, by one rule: an
+# operator whose plan node carries an ``index`` attribute. Union over both engine lines:
+#   - surrealdb/surrealdb ``language-tests/tests`` at tag v3.2.0 (5bebfcd): IndexScan,
+#     FullTextScan, KnnScan;
+#   - the same path at tag v3.3.5 (5c3383f; lore tier ``surrealql-tests``): IndexScan,
+#     BitmapIndexScan, BitmapFullTextScan, FullTextScan, KnnScan.
+# Live EXPLAINs agreed: a multi-``OR`` equality filter over indexed columns plans as
+# ``UnionIndexScan > IndexScan×n`` on 3.2.4 and ``BitmapResolve > BitmapOr > BitmapIndexScan×n``
+# on 3.3.5 (3.3's bitmap OR fusion); only the leaf scans carry ``index``. The wrappers
+# (UnionIndexScan, BitmapResolve, BitmapOr) are deliberately absent — they never read an index
+# themselves, so their presence proves nothing. RecordIdScan / IndexCountScan / CountScan /
+# EmptyScan carry no ``index`` attribute and are absent too.
+INDEX_SCAN_OPERATORS: frozenset[str] = frozenset(
+    {"IndexScan", "BitmapIndexScan", "FullTextScan", "BitmapFullTextScan", "KnnScan"}
+)
+
+
+def index_served(plan: Any) -> bool:
+    """True iff some node of the EXPLAIN plan reads a named index (an ``INDEX_SCAN_OPERATORS``
+    operator). Engine-version-neutral across 3.2 (IndexScan) and 3.3 (BitmapIndexScan).
+
+    This is ONE leg of "the filter is index-served": it does not rule out a TableScan elsewhere in
+    the same plan — pair it with ``not scans_table(plan, table)``."""
+    return any(operator in INDEX_SCAN_OPERATORS for operator in operators(plan))
+
+
 async def explain(connection: SurrealConnection, statement: str, params: dict[str, Any]) -> Any:
     """The EXPLAIN plan tree for ``statement`` (the shipped walker's ``… EXPLAIN`` idiom)."""
     return await run(connection, f"{statement} EXPLAIN", params)

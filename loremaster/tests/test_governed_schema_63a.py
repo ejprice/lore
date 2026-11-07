@@ -35,6 +35,7 @@ from _governed_contract import (
     apply_ddl,
     explain,
     field_statement,
+    index_served,
     index_statement,
     member,
     operators,
@@ -254,7 +255,7 @@ class TestTheReadIndexFires:
         connection, env = admin_db
         await apply_ddl(connection, _memory_ddl(), url=env.url)
         plan = await explain(connection, f"SELECT id FROM {MEMORY_TABLE} WHERE kind = $k", {"k": "fact"})
-        assert scans_table(plan, MEMORY_TABLE) and "IndexScan" not in operators(plan), (
+        assert scans_table(plan, MEMORY_TABLE) and not index_served(plan), (
             f"the unindexed control did not TableScan — the walker is blind. ops={operators(plan)}"
         )
 
@@ -295,9 +296,10 @@ class TestTheReadIndexFires:
         self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811
     ) -> None:
         """⚠ RED at HEAD — probe-63 P2: the REAL emitted member READ predicate for a ≥2-keep
-        subject (IN expanded to per-keep equalities, #413) is an IndexScan (UnionIndexScan) with NO
-        memory TableScan. This is the store proof the §4.1 index set serves the WHOLE PDP filter on
-        the real HNSW/FULLTEXT-co-resident table. At HEAD the governed columns are absent → TableScan."""
+        subject (IN expanded to per-keep equalities, #413) is index-served (3.2: UnionIndexScan >
+        IndexScan; 3.3: BitmapOr > BitmapIndexScan — ``index_served``) with NO memory TableScan.
+        This is the store proof the §4.1 index set serves the WHOLE PDP filter on the real
+        HNSW/FULLTEXT-co-resident table. At HEAD the governed columns are absent → TableScan."""
         connection, env = admin_db
         await apply_ddl(connection, _memory_ddl(), url=env.url)
         subject = member(
@@ -312,7 +314,7 @@ class TestTheReadIndexFires:
             f"the full member READ filter TABLESCANS memory — the §4.1 read indexes are unbuilt. "
             f"ops={operators(plan)}"
         )
-        assert "IndexScan" in operators(plan), f"expected an IndexScan. ops={operators(plan)}"
+        assert index_served(plan), f"expected an index-served plan. ops={operators(plan)}"
 
 
 # =========================================================================== #
