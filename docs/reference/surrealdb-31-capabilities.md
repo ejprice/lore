@@ -1,20 +1,17 @@
 # SurrealDB — the canonical reference for this project
 
-**Engine: `surrealdb-3.2.4`** (both stores run the **floating** tag `docker.io/surrealdb/surrealdb:v3.2`,
-image id `6e2f7f0134c7`, version-stamped `surrealdb-3.2.4+20260803.93ab219`). History: **migrated off
-3.1.5 on 2026-07-22 to 3.2.1** (both stores; prod data byte-identical, full suite regression-free, #107
-fact re-probed — receipts in [§0](#0-the-321-migration-receipts)), then the floating `v3.2` tag carried
-both stores forward to **3.2.4** (measured host-side 2026-08-08 — finding #336). Python SDK
-`surrealdb>=2.0` (installed: 2.0.0; officially supports servers 2.0.0–3.2.0 — the running 3.2.4 sits
-ABOVE that stated ceiling, as 3.2.1 already did; §0 measured the SDK unaffected, no code change). Server
+**Engine: `surrealdb-3.3.5`** (both stores, since **2026-11-07**; quadlets pin the EXACT tag
+`docker.io/surrealdb/surrealdb:v3.3.5`, image id `d4330a269f11`). History: 3.1.5 → **3.2.1** on
+2026-07-22 ([§0](#0-the-321-migration-receipts)); the floating `v3.2` tag then carried both stores to
+**3.2.4** (finding #336); **3.2.4 → 3.3.5** on 2026-11-07, in place, forward-only (receipts in
+[§0a](#0a-the-335-migration-receipts)). Python SDK `surrealdb>=2.0` (installed: 2.0.0, which no vendor
+statement covers against 3.3; §0a measured it working — the full suite shows no SDK regression). Server
 floor ≥3.1.0 (CVE-2026-49997).
 
-> **⚠ FLOATING TAG (finding #336):** the quadlets pin `v3.2`, NOT a patch — so any container recreate or
-> `podman pull` can carry the running engine forward WITHOUT anyone deciding (this is how 3.2.1 → 3.2.4
-> happened, silently). The store version is whatever `v3.2` last resolved to; re-read it host-side
-> (`podman ps`, `connection.version()`) before depending on a version-sensitive fact. Pinning the tag to
-> an exact patch is an open infra decision surfaced on #336, deliberately NOT made in packet 05a-i (a
-> docs-truth pass).
+> **FLOATING TAG (finding #336) — CLOSED for the stores by the 3.3.5 migration:** both quadlets now pin
+> `v3.3.5`, so a recreate or `podman pull` can no longer move the engine without a quadlet edit. (While
+> they pinned `v3.2`, that tag had silently re-pointed to the one-way **3.2.6** by 2026-11-07.) Still
+> re-read the version host-side (`curl :<port>/version`) before depending on a version-sensitive fact.
 >
 > **Version-provenance honesty:** most facts below were `[PROBED]` on **3.1.5** and are dated as such; a
 > set was re-probed on **3.2.1** (§0) and a further set on **3.2.4** (the await build-probe, 2026-08-05 —
@@ -64,6 +61,63 @@ probe is worthless; that is exactly how we got here.**
 | **[UNVERIFIED]** | We do **not** know. Probe before depending on it. |
 
 ---
+
+## 0a. The 3.3.5 migration receipts
+
+Both stores moved **3.2.4 → 3.3.5 on 2026-11-07, in place** (no export/import; the vendor guide
+`build/migrating/from-old-surrealdb-versions/32-to-33.mdx`, now in the `surrealdb-docs` tier, says a 3.2
+datastore opens on 3.3 directly). **FORWARD-ONLY:** per the same guide a 3.2 binary started on a migrated
+store *"reads it wrongly"* rather than refusing it. The ONLY way back is a cold copy:
+`/backups/lore/surreal-pre-3.3.5-cutover-20261107T135252Z` (prod, taken at the cutover) and
+`/backups/lore/surreal-pre-3.3.5-20261107T122016Z/` (both stores, earlier that morning) — each verified
+byte-identical with `diff -rq`. Restore = stop the unit, swap the dir, set the quadlet image to
+`v3.2.4` (never `v3.2`, which now means the one-way 3.2.6). **Do not plan a rollback via a 3.2.x
+`import` of a dump:** 3.2.x's ENFORCED-relation import drops edges whose endpoint table sorts later
+(`member_of`), fixed only in 3.3.0 (engine language test `reproductions/828_enforced_relation_import_order.surql`).
+
+- **[MEASURED] Data integrity.** On boot 3.3.5 applied three startup data migrations (copy sequence
+  definitions out of the table band; re-key module definitions; rebuild forward doc-ID mappings) and
+  recorded `version=3.3.5`; `/ready` answered 200 in ~4 s. Prod inventory before vs after (every ns/db,
+  per-table `count()` + HNSW index DDL): **45 tables, 2,700,624 rows, zero differences.** Positive
+  control: the same diff over two inventories taken 90 minutes apart reported the 4 tables that grew.
+- **[MEASURED] kNN duplicate-vector exposure: none.** The 3.2.x HNSW bug drops the 10th+ record sharing
+  one identical vector. Counting `GROUP BY crypto::md5(<string> embedding)` groups with n > 9 over all
+  four HNSW indexes (`chunk`/`memory` × `lore`/`demand_intelligence`) gave **0** (control: a 10-copy
+  fixture → 1 at n > 9, 0 at n > 10). No `REBUILD INDEX` was needed for correctness; 3.3 serves
+  3.2-built indexes on their old layout (a rebuild would only add 3.3's bitmap / pre-filtered kNN).
+- **[MEASURED] Full suite, attributed.** On the 3.3.5 test store: 534 failed / 13759 passed. Rerunning
+  every file containing a failure against a throwaway 3.2.4 RocksDB store (via `LORE_TEST_SURREAL_URL`;
+  provenance: the control store gained the `lore_test` namespace) gave 530 failed / 1475 passed —
+  **530 failures are identical on both engines** (pre-existing RED contracts). Of the 4 that failed only
+  on 3.3.5, one (`test_harness_database_lifecycle_486` reap bound) passed 3/3 in isolation on 3.3.5
+  (load-sensitive under `-n 12`, not engine). **Three fail deterministically (3/3) on 3.3.5 and pass
+  3/3 on 3.2.4**, and are the same instrument defect — see the next bullet.
+- **[MEASURED] EXPLAIN operator names changed for multi-`OR` index plans (bitmap fusion, 3.3.0).** The
+  member READ filter (`scope = … OR scope = … OR …`, #413's expanded form) now plans as
+  `Filter → BitmapResolve → BitmapOr → BitmapIndexScan ×N` — still fully index-served, **no
+  TableScan** — where 3.2.4's operator list contained an `IndexScan` element. Pins that assert the
+  literal `"IndexScan" in operators(plan)` go red on a correct, index-served plan. The property is
+  "index-served, no TableScan"; assert it through an allowlist of index-scan operators, not one name.
+  Single-index plans still render `IndexScan`: no other `IndexScan` pin joined the 3.3.5-only failure
+  set (pins inside the 530 pre-existing reds were not separately checked).
+- **[PROBED 2026-11-07, 3.3.5 vs a 3.2.4 control, identical script]** unchanged on 3.3.5:
+  - #107: `DEFINE FIELD IF NOT EXISTS` over an existing field is still a **silent no-op**; `OVERWRITE`
+    still migrates it (§1.1 / §6.1 hold).
+  - §5 CAS shape: matching `WHERE` updates; stale `WHERE` → `[]`; missing id → `[]`. A data clause
+    that would fail coercion on a `WHERE`-excluded row returns `[]` with no error on **both** engines.
+  - §6.6 #14 still holds, and has a second face: with a plain `DEFINE INDEX … FIELDS tags`,
+    `WHERE tags = 'x'` → `[]` **and whole-array `WHERE tags = ['x','y']` → `[]` too**, while the same
+    queries on an UNINDEXED table return the row for the whole-array form — **adding the index changes
+    the answer**, on 3.2.4 and 3.3.5 alike. `CONTAINS` is correct either way.
+- **[PROBED 2026-11-07] CHANGED on 3.3.5: `DEFINE SEQUENCE OVERWRITE` resets the counter** (§1.1
+  SEQUENCE row). Production declares sequences `IF NOT EXISTS`, so no live path is affected.
+- **Correction to §0 below:** SurrealDB **does** now tag patch releases (`v3.2.1`–`v3.2.4` were tagged
+  retroactively on 2026-08-17; `v3.2.5`, `v3.2.6`, `v3.3.0`–`v3.3.5` exist).
+- **[VENDOR, not probed here] Other 3.3 changes that touch this file** (32-to-33 guide): `UPDATE`/`UPSERT`
+  evaluate `WHERE` before the data clause from one pre-write image; field clauses run in dependency
+  order with `ASSERT` as a second pass (error ORDER may change — §6.6 #3); `POST /import` answers
+  **422** for a partial import (§6.7 rows 2–4 describe 3.2.4); `/health` is 200 during startup — **use
+  `/ready`**; sequence export/import fixes (3.2.5/3.3.0).
 
 ## 0. The 3.2.1 migration receipts
 
@@ -122,7 +176,7 @@ The single most expensive area in this file. Read all of it before changing any 
 | **ANALYZER** | **`IF NOT EXISTS`** | `OVERWRITE` lands the definition but does **not** re-tokenise built indexes → silent recall bug. |
 | **TABLE (plain)** | **`IF NOT EXISTS`** | `OVERWRITE` is *safe* (probed, see below) but plain table clauses never change. Nothing to migrate. |
 | **TABLE (RELATION)** | **`OVERWRITE`** | ⚠ **The only clause that lands a changed `IN`/`OUT`/`ENFORCED`.** `IF NOT EXISTS` is a **silent no-op** on an existing edge table [PROBED 2026-07-19] — #107's shape, and invisible to every virgin-DB fixture. Safe: preserves fields, indexes and rows, and does **not** rebuild. |
-| **SEQUENCE** | **`IF NOT EXISTS`** | A **bare** `DEFINE SEQUENCE` **RAISES** *"The sequence 'x' already exists"* — and `ensure_ready()` re-applies the DDL every boot, so a bare DEFINE is a **boot-time crash**, exactly the INDEX failure mode. ⚠ Residual: like ANALYZER/INDEX, a changed `BATCH`/`START` then **never migrates** onto an existing store ([#146](#146)). Verified: **no** variant (`IF NOT EXISTS` *or* `OVERWRITE`) resets the counter — the catastrophic case (re-issuing numbers from zero at every boot) is ruled out. [PROBED 2026-07-19] |
+| **SEQUENCE** | **`IF NOT EXISTS`** | A **bare** `DEFINE SEQUENCE` **RAISES** *"The sequence 'x' already exists"* — and `ensure_ready()` re-applies the DDL every boot, so a bare DEFINE is a **boot-time crash**, exactly the INDEX failure mode. ⚠ Residual: like ANALYZER/INDEX, a changed `BATCH`/`START` then **never migrates** onto an existing store ([#146](#146)). Verified on 3.1.5–3.2.4: **no** variant (`IF NOT EXISTS` *or* `OVERWRITE`) resets the counter [PROBED 2026-07-19]. ⚠ **CHANGED ON 3.3.5: `DEFINE SEQUENCE OVERWRITE` now RESETS the counter to its `START`** (`START 10` → nextval 10; `OVERWRITE … START 100` → nextval **100**, where 3.2.4 returned 11) [PROBED 2026-11-07, 3.3.5 vs a 3.2.4 control, [§0a](#0a-the-335-migration-receipts)]. So `OVERWRITE` on a sequence that `ensure_ready()` re-applies every boot **would re-issue numbers at every boot** — the catastrophic case is ruled out only because the clause here is `IF NOT EXISTS` (which still neither resets nor migrates `START`: nextval 101 after `IF NOT EXISTS … START 500`). Never switch this row to `OVERWRITE`. |
 
 [CODE] `loremaster/store/surreal_schema.py` — `_define_field` (:637–671, `OVERWRITE`),
 `_define_index`/`_hnsw_index`/`_analyzer_statement`/`_define_table` (all `IF NOT EXISTS`).
@@ -855,8 +909,10 @@ they are the ones an engine upgrade could silently invalidate, with nothing upst
    `kind: Internal` with `details: None`; the recursion-depth rejection (#66) as `kind: Validation`
    with `details: None` — for these, text may pick a teaching LABEL, never the class or the retry
    (packet 63c-i-a amendment 37 §1).
-4. **Re-`DEFINE SEQUENCE` semantics** — bare `DEFINE` raises; no variant resets the counter;
-   `BATCH`/`START` never migrate (#146).
+4. **Re-`DEFINE SEQUENCE` semantics** — bare `DEFINE` raises; `BATCH`/`START` never migrate under
+   `IF NOT EXISTS` (#146). Through 3.2.4 no variant reset the counter; **on 3.3.5 `OVERWRITE` resets
+   it to `START`** (§1.1 SEQUENCE row, [§0a](#0a-the-335-migration-receipts)) — the first fact on this
+   list an engine upgrade has actually invalidated.
 5. `TYPE RELATION IN/OUT` rejects a **wrong-table** endpoint by field coercion — mechanism and
    error text are ours.
 6. `RELATE $expr.field->…` is a **parse error** (§7); a bare `str` endpoint is rejected loudly (§4).
