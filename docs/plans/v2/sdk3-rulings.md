@@ -198,3 +198,23 @@ columns and audit.target_row are empty in prod, so the zero is vacuous there) �
   text**; `.table_name + ":" + .id` only where no persisted comparison exists.
 - **F16 — all ~31 parser sites (3 families) are deleted under R7**, not only the four R7 named.
 - **F17 — bare text with no `:` maps to `RecordID(<that API's table>, text)`.**
+
+## R9 — after adversary round 1: lead decisions under the autonomy grant (2026-11-07; operator MAY OVERTURN)
+Grant (operator, verbatim): *"3 more contract and two more adversary rounds approved. Work autonomously and finish
+the SDK migration."* Adversary round 1 graded `d84cd6c` **INSUFFICIENT**: MP1 (F12's rider dropped — the reference
+keeps the statement cap live and passes), MP2 (F14 pinned only on CREATE/BEGIN — a verb-sniffing build survives),
+MP3 (R5's named overrides pinned on one owner only — `PrincipalStore.ensure_ready` and an index `apply` time out at
+30 s on the reference). These go to contract round 4. The adversary raised three decisions; the lead ruled them:
+- **D1 — R5 rider 2 ("never as a plain failure") covers SERVED surfaces.** `server.py`'s finding batch-resolve
+  renders any `SurrealConnectionError` — so every `SurrealOutcomeUnknownError` — as "ABORTED … retry these": a
+  resolve whose commit may have landed is served as aborted and the agent is told to re-apply it (a Leg-2 false
+  clear; F14 widens it to every transport failure). In scope; round 4 pins it ∀ served catch sites of
+  `SurrealConnectionError` (prior art: `principal_keys._mint_fault_note`, `_txn.proven_no_key`).
+- **D2 — `TXN_STATEMENT_WARN_THRESHOLD` (800) becomes a ROW warn.** F12 makes rows the one strain measure; a
+  statement-count warn beside it is a second source of truth. Low stakes (a log line).
+- **D3 — the ~40 pre-existing tests that encode retired rulings (statement cap, KeyError-as-transport,
+  `_RETRYABLE_CONFLICT_KIND`) are CONTRACT SURFACE.** Round 4's author rewrites them, not the builder (§R3.10's
+  hand-off to the builder crossed the implementer → test-author role boundary). Each verdict is confirmed by a run
+  (the adversary's TRAP list was 2/4 wrong on `test_surreal_apply`).
+Raised to the operator, NOT decided: RS9 — drop row #22 (`retry_on_conflict`, K) was kept without checking
+`tenacity` (installed, the global default for retries); changing an approved K row is the operator's call.
