@@ -272,9 +272,9 @@ class TestTheReadIndexFires:
             f"SELECT id FROM {MEMORY_TABLE} WHERE owner_agent = type::record('agent', $a)",
             {"a": "ag_a"},
         )
-        assert scans_table(plan, MEMORY_TABLE), (
+        assert scans_table(plan, MEMORY_TABLE) and not index_served(plan), (
             f"owner_agent=… alone must TableScan (unindexed at 63, §4.1) — a build that indexed it "
-            f"IndexScans and reddens here. ops={operators(plan)}"
+            f"is index-served and reddens here. ops={operators(plan)}"
         )
 
     async def test_P1_scope_equality_indexscans(
@@ -290,7 +290,9 @@ class TestTheReadIndexFires:
             f"memory.scope equality TABLESCANS — the §4.1 scope index is unbuilt (the #107 shape: "
             f"green on a virgin DB, a full scan on a large dirty store). ops={operators(plan)}"
         )
-        assert "IndexScan" in operators(plan), f"expected an IndexScan on memory_scope. ops={operators(plan)}"
+        assert index_served(plan, index=f"{MEMORY_TABLE}_scope"), (
+            f"expected an index-served plan reading {MEMORY_TABLE}_scope. ops={operators(plan)}"
+        )
 
     async def test_P2_the_full_member_read_filter_indexscans_no_tablescan(
         self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811
@@ -367,8 +369,8 @@ class TestKeepKeyColumnAndIndex:
         plan = await explain(
             connection, f"SELECT id FROM {_KEEP_TABLE} WHERE key = $k", {"k": "project:lore"}
         )
-        assert not scans_table(plan, _KEEP_TABLE) and "IndexScan" in operators(plan), (
-            f"keep.key lookup must IndexScan keep_key (SF-63-4). ops={operators(plan)}"
+        assert not scans_table(plan, _KEEP_TABLE) and index_served(plan, index=f"{_KEEP_TABLE}_key"), (
+            f"keep.key lookup must be index-served by {_KEEP_TABLE}_key (SF-63-4). ops={operators(plan)}"
         )
 
     async def test_a_duplicate_non_none_key_is_rejected(

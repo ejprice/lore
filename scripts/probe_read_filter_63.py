@@ -30,13 +30,11 @@ exits non-zero.
 
 METHOD (store-law discipline: §2 IndexScan-vs-TableScan-via-EXPLAIN + the C1
 "a probe NEEDS a positive control" rule). Every scan claim is a live EXPLAIN plan
-on the REAL 3.2.4 engine, classified by the SAME plan-walker the shipped packet-60
-pin uses (``test_keeps_schema.py::TestTheKeeperIndexFires`` — ``operator ==
-'IndexScan'`` / ``'TableScan'`` with ``attributes.table``). The walker + the
-``explain``/``_require`` harness are MIRRORED from ``probe_read_filter_61b.py`` and
-CITED, not forked into shared code: this is instrument parsing, not production
-policy — the same stance 61b took re-expressing ``test_keeps_schema``'s walker
-(ROUTING-IS-NOT-SHARING does not demand two throwaway probe scripts share a walker).
+on the REAL engine (written against 3.2.4; re-run on 3.3.5 2026-11-07), classified by
+the ONE shared plan-walker every EXPLAIN pin uses (``loremaster/tests/_governed_contract.py``
+— ``index_served`` for an index read on either engine line, ``scans_table`` for a
+``TableScan`` with ``attributes.table``). ``_classify`` below is the ONE probe
+classifier; the other EXPLAIN probes import it from here.
 
 The DDL under test is applied through the REAL top-level generators
 (``generate_memory_ddl`` / ``generate_message_ddl`` / ``generate_keep_ddl`` — the
@@ -65,7 +63,8 @@ WHAT EACH PROBE EXPECTS (§4.4 table P1–P6 + C+ controls):
         -> REPORT the plan; a TableScan of ``message`` names the per-id
            ``type::record`` fallback (NOT an exit failure — it is a fallback trigger).
   * P5  ``scope IS NONE`` (the §2.3 boot count) on both tables
-        -> REPORTED as a TableScan (expected; so nobody reads the boot count as index-served).
+        -> REPORT the plan (the design once expected a TableScan; measured index-served on
+           3.2.4 and again on 3.3.5 2026-11-07 — the P5 verdict block prints which).
   * P6  keep ``key = $k`` after SF-63-4's UNIQUE index, >=2 NONE-key keeps present
         -> REQUIRE IndexScan (``keep_key``); the two NONE-key rows COEXIST (§1.8).
   * C+  un-indexed equality -> TableScan; ``owner_agent = $a`` alone -> TableScan
@@ -101,8 +100,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from loremaster.store._txn import (
@@ -153,54 +154,19 @@ def unique_database() -> str:
 
 
 # --------------------------------------------------------------------------- #
-# EXPLAIN plan classification — MIRRORED from ``probe_read_filter_61b.py`` (itself
-# re-expressing ``test_keeps_schema.py::TestTheKeeperIndexFires``), CITED not forked:
-# instrument parsing, not production policy.
+# EXPLAIN plan classification. The plan WALKER is the ONE shared implementation in
+# ``loremaster/tests/_governed_contract.py`` (``operators`` / ``scans_table`` /
+# ``index_served`` — operator ruling 2026-11-07: every EXPLAIN walker routes through it, so an
+# engine plan-format change is fixed once; 3.3's bitmap OR fusion was that change). Reached the
+# house way (``scripts/restore_prod_dump.py::_test_helpers``): ``loremaster/tests`` is a plain
+# directory, so its helpers import as top-level modules once it is on ``sys.path``. ``_classify``
+# below is the ONE probe classifier — ``probe_read_filter_61b`` / ``probe_dnd_defense_objects`` /
+# ``probe_drain_read_63b_ii_b`` / ``probe_governed_63c`` all import it from here.
 # --------------------------------------------------------------------------- #
-
-
-def _operators(plan: Any) -> list[str]:
-    """Every ``operator``/``operation`` string anywhere in the EXPLAIN plan tree."""
-    found: list[str] = []
-
-    def walk(node: Any) -> None:
-        if isinstance(node, dict):
-            for key in ("operator", "operation"):
-                op = node.get(key)
-                if isinstance(op, str):
-                    found.append(op)
-            for child in node.values():
-                walk(child)
-        elif isinstance(node, list):
-            for child in node:
-                walk(child)
-
-    walk(plan)
-    return found
-
-
-def _scans_table(plan: Any, table: str) -> bool:
-    """True iff the plan carries a ``TableScan`` node targeting ``table``."""
-    found = False
-
-    def walk(node: Any) -> None:
-        nonlocal found
-        if isinstance(node, dict):
-            attributes = node.get("attributes")
-            if (
-                node.get("operator") == "TableScan"
-                and isinstance(attributes, dict)
-                and attributes.get("table") == table
-            ):
-                found = True
-            for child in node.values():
-                walk(child)
-        elif isinstance(node, list):
-            for child in node:
-                walk(child)
-
-    walk(plan)
-    return found
+_TESTS_DIRECTORY = str(Path(__file__).resolve().parent.parent / "loremaster" / "tests")
+if _TESTS_DIRECTORY not in sys.path:
+    sys.path.insert(0, _TESTS_DIRECTORY)
+from _governed_contract import index_served, operators, scans_table  # noqa: E402
 
 
 @dataclass
@@ -231,28 +197,32 @@ class ProbeReport:
 def _classify(plan: Any, table: str) -> tuple[list[str], bool, bool, str]:
     """Return ``(operators, has_index_scan, scans_target, classification)``.
 
-    Priority: a ``TableScan`` of the target with no ``IndexScan`` is a whole-table
-    scan (the hazard); both present is ``MIXED`` (a scan still happens); an
-    ``IndexScan`` with no target TableScan is ``IndexScan`` (covers ``IN`` served as
-    a ``UnionIndexScan`` of ``IndexScan`` children, and same-column ``OR``);
-    ``EmptyScan`` proves zero rows and reads nothing; anything else is
-    ``UNCLASSIFIED`` — a plan shape this instrument cannot read, so no honest verdict
-    is possible (we never guess an IndexScan).
+    ``has_index_scan`` is the shared ``index_served(plan)`` — SOME node reads a named index, on
+    either engine line (3.2: ``IndexScan``, ``UnionIndexScan > IndexScan`` for ``IN``/OR; 3.3:
+    also ``BitmapOr > BitmapIndexScan`` for a multi-index OR). The classification LABEL
+    ``IndexScan`` therefore means INDEX-SERVED, not the literal 3.2 operator name — the printed
+    ``operators=`` line beside every verdict carries the real operators.
+
+    Priority: a ``TableScan`` of the target with no index read is a whole-table scan (the
+    hazard); both present is ``MIXED`` (a scan still happens); an index read with no target
+    TableScan is ``IndexScan``; ``EmptyScan`` proves zero rows and reads nothing; anything else
+    is ``UNCLASSIFIED`` — a plan shape this instrument cannot read, so no honest verdict is
+    possible (we never guess an index read).
     """
-    operators = _operators(plan)
-    has_index_scan = "IndexScan" in operators
-    scans_target = _scans_table(plan, table)
+    plan_operators = operators(plan)
+    has_index_scan = index_served(plan)
+    scans_target = scans_table(plan, table)
     if scans_target and not has_index_scan:
         classification = "TableScan"
     elif scans_target and has_index_scan:
         classification = "MIXED(index+table)"
     elif has_index_scan:
         classification = "IndexScan"
-    elif "EmptyScan" in operators:
+    elif "EmptyScan" in plan_operators:
         classification = "EmptyScan"
     else:
         classification = "UNCLASSIFIED"
-    return operators, has_index_scan, scans_target, classification
+    return plan_operators, has_index_scan, scans_target, classification
 
 
 async def explain(
@@ -590,7 +560,7 @@ async def probe(connection: Any) -> ProbeReport:  # noqa: PLR0915 — a flat, li
     _require(report, ctrl_msg_scope, "IndexScan",
              "message_scope must IndexScan or the walker is blind on message.")
     # §4.F ships TWO governed indexes on message: scope AND owner_principal. The member READ
-    # filter (P3) drives its UnionIndexScan off message_scope ALONE — owner_principal rides as a
+    # filter (P3) drives its index reads off message_scope ALONE — owner_principal rides as a
     # residual Filter inside each scope-keyed disjunct (store-ref §2: leading-column disjunction) —
     # so NO other probe here ever index-scans message_owner_principal. This dedicated single-column
     # equality is the ONLY receipt that the SECOND §4.F index is live and not mis-defined (a wrong
@@ -651,7 +621,7 @@ async def probe(connection: Any) -> ProbeReport:  # noqa: PLR0915 — a flat, li
     )
     _require(report, p2, "IndexScan",
              "#413 fact-3 on the REAL memory table: the emitted flat OR (keeps EXPANDED, not IN) "
-             "must UnionIndexScan with NO TableScan of memory.")
+             "must be index-served (3.2 UnionIndexScan, 3.3 BitmapOr) with NO TableScan of memory.")
 
     print("\n=== P3 — message FULL emitter READ fragment over legacy(NONE)+migrated rows ===")
     p3 = await explain(
@@ -858,7 +828,7 @@ async def main() -> int:
         for surprise in report.surprises:
             print(f"  - {surprise}")
         return 1
-    print("All controls held; P1–P3 + P6 IndexScanned; NONE keys coexisted; every required")
+    print("All controls held; P1–P3 + P6 index-served; NONE keys coexisted; every required")
     print("plan was classifiable. The §4.4 probe table's verdicts are established BY CONSTRUCTION.")
     return 0
 

@@ -66,6 +66,7 @@ from typing import Any, cast
 
 import pytest
 import pytest_asyncio
+from _governed_contract import index_served, operators  # the shared EXPLAIN walker
 from _surreal_harness import (
     TIER_A,
     TIER_B,
@@ -1157,8 +1158,8 @@ class TestBlastRadiusModuleTarget:
 # NOT pushed through ``name_value`` (``EXPLAIN`` shows a full ``TableScan``,
 # ``pre_decode_filter: no (unsupported predicate)``); the equivalent half-open
 # range ``value >= $lo AND value < $hi`` (``$hi`` = the prefix with its LAST
-# codepoint incremented by one) IS pushed through it (``EXPLAIN`` shows
-# ``IndexScan`` on ``name_value``), with an IDENTICAL result set for every
+# codepoint incremented by one) IS pushed through it (``EXPLAIN`` shows an index
+# read of ``name_value``), with an IDENTICAL result set for every
 # ordinary AND boundary prefix tried here (independently live-verified against
 # the raw engine before this file was written).
 #
@@ -1166,27 +1167,11 @@ class TestBlastRadiusModuleTarget:
 # they must stay GREEN both BEFORE and AFTER the rewrite (they GUARD it, they do
 # not pin it). Only the final ``EXPLAIN`` test is the load-bearing RED: it
 # references ``SurrealCodeGraph._prefix_range_query`` (new in the rewrite) and
-# asserts the plan shape, so it fails until the range predicate lands.
+# asserts the plan shape, so it fails until the range predicate lands. Plans are read by
+# the shared walker (``_governed_contract``: ``operators`` / ``index_served``), which walks
+# the WHOLE tree regardless of nesting depth — the pin depends only on "some node reads
+# name_value" / "no node IS a TableScan", the two properties ledger #30 cares about.
 # ===========================================================================
-
-
-def _plan_operators(node: Any) -> list[dict[str, Any]]:
-    """Flatten an ``EXPLAIN`` plan tree into every node's own attribute dict,
-    recursing through ``children``.
-
-    SurrealDB nests the actual scan step under a ``ProjectValue`` (or similar)
-    parent operator, so asserting against a literal top-level shape would be
-    brittle across even a patch-level engine change; this walks the WHOLE tree
-    regardless of nesting depth so the pin depends only on "some node in the
-    plan IS an IndexScan on name_value" / "no node IS a TableScan" — the two
-    properties ledger #30 actually cares about.
-    """
-    if not isinstance(node, dict):
-        return []
-    operators = [node]
-    for child in node.get("children", []) or []:
-        operators.extend(_plan_operators(child))
-    return operators
 
 
 class TestNamesWithValuePrefixRangeRewrite:
@@ -1299,7 +1284,7 @@ class TestNamesWithValuePrefixRangeRewrite:
         self, demo_graph: tuple[SurrealCodeGraph, SurrealEnv, Path]
     ) -> None:
         """LOAD-BEARING RED (ledger #30): the rewritten query's ``EXPLAIN`` plan
-        must show an ``IndexScan`` on ``name_value`` and NEVER a ``TableScan``.
+        must be index-served by ``name_value`` (``index_served``) and NEVER a ``TableScan``.
 
         Probe-verified live against 3.1.5 (see the section banner): the OLD
         ``string::starts_with`` arm plans as a ``TableScan`` with
@@ -1311,14 +1296,10 @@ class TestNamesWithValuePrefixRangeRewrite:
         graph, _env, _root = demo_graph
         statement, params = SurrealCodeGraph._prefix_range_query(["pkg.a."])
         plan = await graph._query(f"{statement} EXPLAIN", params)
-        operators = _plan_operators(plan)
-        scan_kinds = {operator.get("operator") for operator in operators}
-        assert "TableScan" not in scan_kinds, f"plan still table-scans: {plan!r}"
-        index_scans = [
-            operator for operator in operators if operator.get("operator") == "IndexScan"
-        ]
-        assert index_scans, f"no IndexScan step in plan: {plan!r}"
-        assert index_scans[0]["attributes"]["index"] == f"{NAME_TABLE}_value"
+        assert "TableScan" not in operators(plan), f"plan still table-scans: {plan!r}"
+        assert index_served(plan, index=f"{NAME_TABLE}_value"), (
+            f"no index read of {NAME_TABLE}_value in plan: {plan!r}"
+        )
 
 
 # ===========================================================================

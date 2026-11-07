@@ -40,10 +40,12 @@ column of the packet-60 ``UNIQUE(in, out)`` index), never an arrow traversal.  S
       TableScan (proving leading-vs-trailing discrimination, store-law §2)?
 
 METHOD (store-law discipline, §2 IndexScan-vs-TableScan-via-EXPLAIN + §4 "a probe
-NEEDS a positive control"). Each scan claim is a live EXPLAIN plan on the REAL 3.2.4
-engine, classified by the SAME plan-walker the shipped packet-60 pin uses
-(``test_keeps_schema.py::TestTheKeeperIndexFires`` — ``operator == 'IndexScan'`` /
-``'TableScan'`` with ``attributes.table``).  Every discovery is bracketed by POSITIVE
+NEEDS a positive control"). Each scan claim is a live EXPLAIN plan on the REAL engine
+(written against 3.2.4; re-run on 3.3.5 2026-11-07), classified by the ONE probe
+classifier (``probe_read_filter_63._classify``) over the ONE shared plan-walker
+(``loremaster/tests/_governed_contract.py`` — ``index_served`` for an index read on either
+engine line, ``scans_table`` for a ``TableScan`` with ``attributes.table``); the
+classification label ``IndexScan`` means index-served.  Every discovery is bracketed by POSITIVE
 CONTROLS: a ``WHERE scope = 'x'`` the walker MUST classify IndexScan, and a
 ``WHERE <unindexed col> = 'x'`` (and an unindexed OR) it MUST classify TableScan — so
 an instrument that could not SEE a TableScan is caught, not trusted (store-ref §4:
@@ -81,6 +83,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -123,56 +126,15 @@ def unique_database() -> str:
 
 
 # --------------------------------------------------------------------------- #
-# EXPLAIN plan classification — the SAME walker the shipped packet-60 pin uses
-# (``test_keeps_schema.py::TestTheKeeperIndexFires``).  Re-expressed here (a probe
-# is a self-contained ``scripts/`` script — the precedent ``probe_unique_nullable_48``
-# hand-rolls its own helpers rather than importing test scaffolds) and CITED, not
-# forked into shared code: this is instrument parsing, not production policy.
+# EXPLAIN plan classification — the ONE probe classifier, ``probe_read_filter_63._classify``,
+# which reads plans through the ONE shared walker (``loremaster/tests/_governed_contract.py``:
+# ``operators`` / ``scans_table`` / ``index_served``; operator ruling 2026-11-07). This probe
+# used to carry its own copy of both; 3.3's bitmap OR fusion (``BitmapOr > BitmapIndexScan``)
+# made every copy keyed on the literal 3.2 ``IndexScan`` misclassify an index-served OR.
+# Same-directory import, inserted defensively (the ``probe_drain_read_63b_ii_b`` idiom).
 # --------------------------------------------------------------------------- #
-
-
-def _operators(plan: Any) -> list[str]:
-    """Every ``operator``/``operation`` string anywhere in the EXPLAIN plan tree."""
-    found: list[str] = []
-
-    def walk(node: Any) -> None:
-        if isinstance(node, dict):
-            for key in ("operator", "operation"):
-                op = node.get(key)
-                if isinstance(op, str):
-                    found.append(op)
-            for child in node.values():
-                walk(child)
-        elif isinstance(node, list):
-            for child in node:
-                walk(child)
-
-    walk(plan)
-    return found
-
-
-def _scans_table(plan: Any, table: str) -> bool:
-    """True iff the plan carries a ``TableScan`` node targeting ``table``."""
-    found = False
-
-    def walk(node: Any) -> None:
-        nonlocal found
-        if isinstance(node, dict):
-            attributes = node.get("attributes")
-            if (
-                node.get("operator") == "TableScan"
-                and isinstance(attributes, dict)
-                and attributes.get("table") == table
-            ):
-                found = True
-            for child in node.values():
-                walk(child)
-        elif isinstance(node, list):
-            for child in node:
-                walk(child)
-
-    walk(plan)
-    return found
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from probe_read_filter_63 import _classify  # noqa: E402
 
 
 @dataclass
@@ -198,40 +160,6 @@ class ProbeReport:
             if obs.label == label:
                 return obs
         raise KeyError(label)
-
-
-def _classify(plan: Any, table: str) -> tuple[list[str], bool, bool, str]:
-    """Return ``(operators, has_index_scan, scans_target, classification)``.
-
-    Classifications, in priority order:
-
-    * ``TableScan`` — a ``TableScan`` node targets ``table`` and no ``IndexScan`` is
-      present (a whole-table scan — the perf hazard).
-    * ``MIXED(index+table)`` — BOTH an ``IndexScan`` and a ``TableScan`` of the target
-      appear (a scan still happens — NOT fully index-served).
-    * ``IndexScan`` — an ``IndexScan`` node is present with no TableScan of the target.
-      This covers ``IN`` (served as a ``UnionIndexScan`` whose children are ``IndexScan``
-      nodes) and same-column ``OR`` — the engine unions per-value index scans.
-    * ``EmptyScan`` — an ``EmptyScan`` node with no scan at all (e.g. ``scope IN []``):
-      the engine PROVES zero rows and reads nothing.  Ideal, and explicitly NOT a
-      TableScan — a valid, safe plan, not an unreadable one.
-    * ``UNCLASSIFIED`` — none of the above: a plan shape this instrument cannot read,
-      so no honest verdict is possible (we never guess an IndexScan).
-    """
-    operators = _operators(plan)
-    has_index_scan = "IndexScan" in operators
-    scans_target = _scans_table(plan, table)
-    if scans_target and not has_index_scan:
-        classification = "TableScan"
-    elif scans_target and has_index_scan:
-        classification = "MIXED(index+table)"
-    elif has_index_scan:
-        classification = "IndexScan"
-    elif "EmptyScan" in operators:
-        classification = "EmptyScan"
-    else:
-        classification = "UNCLASSIFIED"
-    return operators, has_index_scan, scans_target, classification
 
 
 async def explain(
@@ -495,7 +423,7 @@ async def probe(connection: Any) -> ProbeReport:
         select="id", table=GOV, where="scope = 'server' OR scope = 'agent-private'",
     )
     _require(report, same_column_or, "IndexScan",
-             "a same-column OR must be an index-served UnionIndexScan, else the probe "
+             "a same-column OR must be index-served (3.2 UnionIndexScan, 3.3 BitmapOr), else the probe "
              "cannot SEE an index-served OR and the E3 TableScan verdict is untrustworthy.")
     # The general trap, isolated: an OR across TWO DIFFERENT indexed columns.
     await explain(
@@ -533,7 +461,7 @@ async def probe(connection: Any) -> ProbeReport:
         params={"p": _ALICE}, dump=True,
     )
     # bound-E: bound-C's semantics with the `IN` EXPANDED to explicit equalities.  If
-    # THIS IndexScans while bound-C (identical rows, but via `IN`) TableScans, it PROVES
+    # THIS is index-served while bound-C (identical rows, but via `IN`) TableScans, it PROVES
     # the defeating ingredient is `IN`-inside-OR, and expanding the keep set to equality
     # disjuncts is the fix.
     await explain(
@@ -547,7 +475,7 @@ async def probe(connection: Any) -> ProbeReport:
         select="id", table=GOV, where=_READ_PREDICATE, params=_READ_PARAMS, dump=True,
     )
     # The decisive EMITTER probe: the FULL READ predicate with the keep-set `IN`
-    # EXPANDED to per-keep equality disjuncts (bound params).  If IndexScan, the emitter
+    # EXPANDED to per-keep equality disjuncts (bound params).  If index-served, the emitter
     # can stay a FLAT OR by expanding `scope IN $keeps` — no UNION-of-queries needed.
     await explain(
         report, connection, label="E3 FULL OR with IN expanded to equalities (EMITTER candidate)",

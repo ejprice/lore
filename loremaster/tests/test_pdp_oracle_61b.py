@@ -26,9 +26,9 @@ Two more live pins here:
   * THE READ EMITTER INDEXSCANS (finding #413 / store-ref §2). The member READ predicate,
     with ``scope IN $my_keeps`` EXPANDED to per-keep equality disjuncts and the ``owner_*``
     equalities as ``type::record('principal', $p)`` (bare-string param — lorerunes is
-    stdlib-only, no RecordID import), EXPLAINs as an IndexScan with NO TableScan of ``gov`` —
-    with positive controls (an unindexed predicate TableScans; a literal ``scope IN $set``
-    inside an OR TableScans — the trap the expansion avoids). Separate indexes on ``scope``
+    stdlib-only, no RecordID import), EXPLAINs as index-served (``index_served``) with NO
+    TableScan of ``gov`` — with positive controls (an unindexed predicate TableScans; a literal
+    ``scope IN $set`` inside an OR TableScans — the trap the expansion avoids). Separate indexes on ``scope``
     AND ``owner_principal`` (probe E2 — a single composite is leading-column only).
   * THE AUDIT CARVE-OUT ORACLE (Fork G). ``authorize_filter(admin, {mutating}, 'audit')``
     selects ZERO audit rows (the ``NoRows`` node → ``WHERE false``), while the Python
@@ -257,7 +257,7 @@ def _no_keep_member(pdp: Any) -> Any:
 def _two_keep_member(pdp: Any) -> Any:
     """A member with ≥2 keeps — the ONLY subject that actually exercises the #413 IN-EXPANSION
     (F1): ``scope IN $my_keeps`` expands to ``scope=$k0 OR scope=$k1``. A 1-keep monoculture
-    can't discriminate the expanded OR (IndexScan) from a literal 2-element IN (TableScan) —
+    can't discriminate the expanded OR (index-served) from a literal 2-element IN (TableScan) —
     a 1-element ``IN`` IndexScans, so the trap is invisible at N=1."""
     return pdp.Subject(
         principal_id="alice",
@@ -471,13 +471,8 @@ class TestAbsentOwnerRowsAgree:
 
 
 # =========================================================================== #
-# Finding #413 / store-ref §2 — the READ emitter INDEXSCANS (no TableScan)
+# Finding #413 / store-ref §2 — the READ emitter is INDEX-SERVED (no TableScan)
 # =========================================================================== #
-
-
-async def _explain_operators(connection: Any, statement: str, params: dict[str, Any]) -> list[str]:
-    plan = await connection.query(f"{statement} EXPLAIN", params)
-    return operators(plan)
 
 
 async def _explain_plan(connection: Any, statement: str, params: dict[str, Any]) -> Any:
@@ -525,7 +520,7 @@ class TestTheReadEmitterIndexScans:
         IndexScan, 3.3 BitmapIndexScan) with NO TableScan of ``gov``. This is the store proof that
         the expansion WORKS at the scale where it matters:
         the literal 2-element ``IN`` inside the OR TableScans (the control below), while THIS
-        expanded form IndexScans. A 1-keep subject can't tell them apart (1-element IN IndexScans)."""
+        expanded form is index-served. A 1-keep subject can't tell them apart (1-element IN IndexScans)."""
         pdp = _pdp()
         predicate = pdp.authorize_filter(_two_keep_member(pdp), pdp.Action.READ, _GOV)
         fragment, params = predicate.to_surql()

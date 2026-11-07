@@ -38,6 +38,7 @@ import loremaster.keeps as keeps_module
 import pytest
 import pytest_asyncio
 from _enforced_relations_scaffold import ghost_id
+from _governed_contract import index_served, operators, scans_table  # the shared EXPLAIN walker
 from _surreal_harness import (
     PRODUCTION_DIM,
     SurrealEnv,
@@ -954,53 +955,6 @@ class TestKeepStoreWrapsEngineRejections:
 # =========================================================================== #
 
 
-def _explain_operators(plan: Any) -> list[str]:
-    """Every ``operator``/``operation`` string anywhere in an EXPLAIN plan tree (the
-    ``test_brief_ledger`` walker idiom — an EXPLAIN plan is a nested dict/list of nodes)."""
-    found: list[str] = []
-
-    def walk(node: Any) -> None:
-        if isinstance(node, dict):
-            for key in ("operator", "operation"):
-                op = node.get(key)
-                if isinstance(op, str):
-                    found.append(op)
-            for child in node.values():
-                walk(child)
-        elif isinstance(node, list):
-            for child in node:
-                walk(child)
-
-    walk(plan)
-    return found
-
-
-def _explain_scans_table(plan: Any, table: str) -> bool:
-    """True iff the plan carries a ``TableScan`` node targeting ``table``
-    (``{operator: TableScan, attributes: {table: ...}}`` — the shape a trailing-column /
-    unindexed predicate emits)."""
-    found = False
-
-    def walk(node: Any) -> None:
-        nonlocal found
-        if isinstance(node, dict):
-            attributes = node.get("attributes")
-            if (
-                node.get("operator") == "TableScan"
-                and isinstance(attributes, dict)
-                and attributes.get("table") == table
-            ):
-                found = True
-            for child in node.values():
-                walk(child)
-        elif isinstance(node, list):
-            for child in node:
-                walk(child)
-
-    walk(plan)
-    return found
-
-
 class TestListKeepsForMember:
     """Fork F: ``list_keeps_for_member(*, member_email)`` returns the bare keep ids whose
     household ``member_email`` is in — the symmetric twin of ``list_keeps_for_keeper``.
@@ -1137,19 +1091,20 @@ class TestListKeepsForMember:
     ) -> None:
         """EXPLAIN pin (Fork F rider / store ref §2 / finding #413, ``probe_read_filter_61b.py``):
         EXPLAIN the member_of read the METHOD ACTUALLY ISSUES (captured, not a hand-copy that
-        could drift — the ``test_brief_ledger`` discipline) and assert it is an **IndexScan** on
-        the existing ``UNIQUE(in, out)`` LEADING column (packet 60 Fork F, so NO new index). The
+        could drift — the ``test_brief_ledger`` discipline) and assert it is **index-served**
+        (``index_served``) by the existing ``UNIQUE(in, out)`` LEADING column (packet 60 Fork F, so
+        NO new index). The
         positive control EXPLAINs the TRAILING-column ``WHERE out = $keep`` (what
         ``list_household`` does) and asserts it is a **TableScan** — proving the plan-walker
         DISCRIMINATES leading from trailing (the store-law §2 composite-leading-column fact, on
-        THIS edge) and can SEE a TableScan (so the IndexScan claim is not vacuous). A build that
+        THIS edge) and can SEE a TableScan (so the index-served claim is not vacuous). A build that
         read member_of via the trailing column, an arrow traversal, or with an unindexed extra
         conjunct would TableScan and RED here — the gap a hand-issued EXPLAIN of a fixed query
         could not see. RED at HEAD: ``list_keeps_for_member`` is absent (AttributeError).
 
         ⚠ Re-open trigger (per the Fork F rider): if a future packet adds an index on
         ``member_of.out`` (a free ``IF NOT EXISTS`` add for ``list_household``), the trailing
-        control flips to IndexScan and this leg reds BY DESIGN — delete/retarget the trailing
+        control flips to index-served and this leg reds BY DESIGN — delete/retarget the trailing
         control and say so, do not silence it."""
         keep_store, _principals, env = keep_env
         keep = await keep_store.create_keep(keeper_email=_KEEPER_EMAIL, type="project", name="explain")
@@ -1189,14 +1144,14 @@ class TestListKeepsForMember:
             )
 
             leading_plan = await run(connection, f"{method_statement} EXPLAIN", method_params)
-            assert not _explain_scans_table(leading_plan, MEMBER_OF_RELATION), (
+            assert not scans_table(leading_plan, MEMBER_OF_RELATION), (
                 f"the method's member_of read TableScanned — Fork F's whole design rests on the "
-                f"LEADING-column `WHERE in = $p` IndexScanning the existing UNIQUE(in, out). "
-                f"statement={method_statement!r} operators={_explain_operators(leading_plan)}"
+                f"LEADING-column `WHERE in = $p` being index-served by the existing UNIQUE(in, out). "
+                f"statement={method_statement!r} operators={operators(leading_plan)}"
             )
-            assert "IndexScan" in _explain_operators(leading_plan), (
-                f"the method's member_of read did not register an IndexScan on UNIQUE(in, out): "
-                f"statement={method_statement!r} operators={_explain_operators(leading_plan)}"
+            assert index_served(leading_plan), (
+                f"the method's member_of read did not register an index read on UNIQUE(in, out): "
+                f"statement={method_statement!r} operators={operators(leading_plan)}"
             )
 
             # POSITIVE CONTROL — the walker can SEE a TableScan, AND the trailing column
@@ -1207,11 +1162,11 @@ class TestListKeepsForMember:
                 f"SELECT in FROM {MEMBER_OF_RELATION} WHERE out = $keep EXPLAIN",
                 {"keep": RecordID(KEEP_TABLE, keep_kid)},
             )
-            assert _explain_scans_table(trailing_plan, MEMBER_OF_RELATION), (
+            assert scans_table(trailing_plan, MEMBER_OF_RELATION) and not index_served(trailing_plan), (
                 f"positive control failed: the TRAILING-column read (`WHERE out = $keep`) did "
-                f"NOT TableScan — either the plan format changed (the leading pin is now "
-                f"vacuous) or an `out` index was added (see the re-open trigger). "
-                f"operators={_explain_operators(trailing_plan)}"
+                f"NOT TableScan with no index read — either the plan format changed (the leading "
+                f"pin is now vacuous) or an `out` index was added (see the re-open trigger). "
+                f"operators={operators(trailing_plan)}"
             )
         finally:
             await connection.close()

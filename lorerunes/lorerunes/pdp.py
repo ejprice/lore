@@ -273,8 +273,9 @@ class ScopeInKeeps(Predicate):
     disjuncts are WRAPPED IN PARENS so the fragment is SELF-CONTAINED (#416): an
     unparenthesised OR would ESCAPE an enclosing ``And`` (SurrealQL binds AND tighter than OR:
     ``owner=$p AND scope=$k0 OR scope=$k1`` parses as ``(owner=$p AND scope=$k0) OR scope=$k1``,
-    leaking other principals' rows). The parenthesised form still IndexScans as a top-level
-    READ disjunct (SurrealDB flattens ``A OR (B OR C)`` — re-probed, no #413 regression). An
+    leaking other principals' rows). The parenthesised form is still index-served as a top-level
+    READ disjunct, with no TableScan (SurrealDB flattens ``A OR (B OR C)``; 3.2 plans it as
+    UnionIndexScan > IndexScan, 3.3 as BitmapOr > BitmapIndexScan — store-ref §0a). An
     empty keep set contributes nothing (``false``)."""
 
     keeps: frozenset[str]

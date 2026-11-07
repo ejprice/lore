@@ -71,6 +71,7 @@ from _enforced_relations_scaffold import (
     relation_table_statements,
     statements,
 )
+from _governed_contract import index_served, operators, scans_table  # the shared EXPLAIN walker
 from _surreal_harness import (
     NONDEFAULT_DIM,
     SurrealConnection,
@@ -856,49 +857,8 @@ class TestTheKeeperIndexFires:
     escapes store §4's "a graph TRAVERSAL never uses a secondary index" trap — the whole
     reason keepership is a FIELD LINK and not a ``keeps`` edge. An EXPLAIN plan, with a
     positive control (an unindexed predicate IS a TableScan) so the pin can never be
-    silently vacuous."""
-
-    @staticmethod
-    def _operators(plan: Any) -> list[str]:
-        found: list[str] = []
-
-        def walk(node: Any) -> None:
-            if isinstance(node, dict):
-                for key in ("operator", "operation"):
-                    op = node.get(key)
-                    if isinstance(op, str):
-                        found.append(op)
-                for child in node.values():
-                    walk(child)
-            elif isinstance(node, list):
-                for child in node:
-                    walk(child)
-
-        walk(plan)
-        return found
-
-    @staticmethod
-    def _scans_table(plan: Any, table: str) -> bool:
-        found = False
-
-        def walk(node: Any) -> None:
-            nonlocal found
-            if isinstance(node, dict):
-                attributes = node.get("attributes")
-                if (
-                    node.get("operator") == "TableScan"
-                    and isinstance(attributes, dict)
-                    and attributes.get("table") == table
-                ):
-                    found = True
-                for child in node.values():
-                    walk(child)
-            elif isinstance(node, list):
-                for child in node:
-                    walk(child)
-
-        walk(plan)
-        return found
+    silently vacuous. Plans are read by the shared walker (``_governed_contract``: ``operators`` /
+    ``scans_table`` / ``index_served``)."""
 
     async def test_WHERE_keeper_uses_the_index_not_a_keep_tablescan(
         self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811
@@ -920,10 +880,10 @@ class TestTheKeeperIndexFires:
         unindexed_plan = await run(
             connection, f"SELECT id FROM {KEEP_TABLE} WHERE type = $probe EXPLAIN", {"probe": "project"}
         )
-        assert self._scans_table(unindexed_plan, KEEP_TABLE), (
+        assert scans_table(unindexed_plan, KEEP_TABLE) and not index_served(unindexed_plan), (
             f"positive control failed: an unindexed `type =` predicate did NOT register as a "
-            f"{KEEP_TABLE} TableScan — the plan format changed and the pin is now vacuous. "
-            f"operators={self._operators(unindexed_plan)}"
+            f"{KEEP_TABLE} TableScan with no index read — the plan format changed and the pin is "
+            f"now vacuous. operators={operators(unindexed_plan)}"
         )
 
         # THE INVARIANT — `WHERE keeper = $p` must use the index, NOT a TableScan.
@@ -932,14 +892,14 @@ class TestTheKeeperIndexFires:
             f"SELECT id FROM {KEEP_TABLE} WHERE keeper = $p EXPLAIN",
             {"p": RecordID(PRINCIPAL_TABLE, _KEEPER_ID)},
         )
-        assert not self._scans_table(keeper_plan, KEEP_TABLE), (
+        assert not scans_table(keeper_plan, KEEP_TABLE), (
             f"keep.keeper predicate is a {KEEP_TABLE} TableScan — the keeper index does not fire, "
             f"so the field fell into store §4's traversal-never-indexes trap the FIELD LINK was "
-            f"chosen to avoid (Fork A). operators={self._operators(keeper_plan)}"
+            f"chosen to avoid (Fork A). operators={operators(keeper_plan)}"
         )
-        assert "IndexScan" in self._operators(keeper_plan), (
-            f"expected an IndexScan for the indexed `keeper =` predicate. "
-            f"operators={self._operators(keeper_plan)}"
+        assert index_served(keeper_plan), (
+            f"expected an index-served plan for the indexed `keeper =` predicate. "
+            f"operators={operators(keeper_plan)}"
         )
 
 

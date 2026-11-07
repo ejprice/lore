@@ -102,6 +102,7 @@ from uuid import NAMESPACE_URL, uuid5
 import pytest
 import pytest_asyncio
 from _comms_fakes import FakeBriefDatabase, FakeBriefLedger
+from _governed_contract import index_served, operators, scans_table  # the shared EXPLAIN walker
 from _surreal_harness import (
     PRODUCTION_DIM,
     SurrealEnv,
@@ -1819,55 +1820,9 @@ class TestSubscribedNameSkewQueryPlans:
 
     Real-store-only: an EXPLAIN plan is a store-dialect artifact — the fake
     ledger has no query planner to inspect (mirrors
-    :class:`TestCoverageQueryCountIsBounded`'s real-only posture).
+    :class:`TestCoverageQueryCountIsBounded`'s real-only posture). Plans are read by the shared
+    walker (``_governed_contract``: ``operators`` / ``scans_table`` / ``index_served``).
     """
-
-    @staticmethod
-    def _operators(plan: Any) -> list[str]:
-        """Every ``operator``/``operation`` string in an EXPLAIN plan tree."""
-        found: list[str] = []
-
-        def walk(node: Any) -> None:
-            if isinstance(node, dict):
-                for key in ("operator", "operation"):
-                    op = node.get(key)
-                    if isinstance(op, str):
-                        found.append(op)
-                for child in node.values():
-                    walk(child)
-            elif isinstance(node, list):
-                for child in node:
-                    walk(child)
-
-        walk(plan)
-        return found
-
-    @staticmethod
-    def _scans_table(plan: Any, table: str) -> bool:
-        """True iff the plan contains a ``TableScan`` operator over ``table`` —
-        the exact shape the old ``id IN`` form and any unindexed predicate emit
-        (``{operator: TableScan, attributes: {table: ...}}``).
-        """
-        found = False
-
-        def walk(node: Any) -> None:
-            nonlocal found
-            if isinstance(node, dict):
-                attributes = node.get("attributes")
-                if (
-                    node.get("operator") == "TableScan"
-                    and isinstance(attributes, dict)
-                    and attributes.get("table") == table
-                ):
-                    found = True
-                for child in node.values():
-                    walk(child)
-            elif isinstance(node, list):
-                for child in node:
-                    walk(child)
-
-        walk(plan)
-        return found
 
     async def test_acked_by_id_fetch_is_direct_record_access_not_a_brief_tablescan(self) -> None:
         env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
@@ -1929,43 +1884,43 @@ class TestSubscribedNameSkewQueryPlans:
                 f"SELECT name FROM {BRIEF_TABLE} WHERE body = $probe EXPLAIN",
                 {"probe": "x"},
             )
-            assert self._scans_table(unindexed_plan, BRIEF_TABLE), (
+            assert scans_table(unindexed_plan, BRIEF_TABLE) and not index_served(unindexed_plan), (
                 f"positive control failed: an unindexed `body =` predicate did NOT register "
-                f"as a `{BRIEF_TABLE}` TableScan — the plan format changed and the pin is now "
-                f"vacuous. operators={self._operators(unindexed_plan)}"
+                f"as a `{BRIEF_TABLE}` TableScan with no index read — the plan format changed and "
+                f"the pin is now vacuous. operators={operators(unindexed_plan)}"
             )
 
-            # CONTROL B — the inspection DISTINGUISHES: an INDEXED predicate is an
-            # IndexScan, NOT flagged a scan (proves the pin does not just always
+            # CONTROL B — the inspection DISTINGUISHES: an INDEXED predicate is
+            # index-served, NOT flagged a scan (proves the pin does not just always
             # answer "no scan").
             indexed_plan = await run(
                 setup_connection,
                 f"SELECT name FROM {BRIEF_TABLE} WHERE name IN $names EXPLAIN",
                 {"names": [WAVE_BRIEF_NAME]},
             )
-            assert not self._scans_table(indexed_plan, BRIEF_TABLE), (
+            assert not scans_table(indexed_plan, BRIEF_TABLE), (
                 f"index control failed: an indexed `name IN` predicate was flagged a "
-                f"`{BRIEF_TABLE}` TableScan. operators={self._operators(indexed_plan)}"
+                f"`{BRIEF_TABLE}` TableScan. operators={operators(indexed_plan)}"
             )
-            assert "IndexScan" in self._operators(indexed_plan), (
-                f"index control failed: expected an IndexScan for an indexed predicate. "
-                f"operators={self._operators(indexed_plan)}"
+            assert index_served(indexed_plan), (
+                f"index control failed: expected an index-served plan for an indexed predicate. "
+                f"operators={operators(indexed_plan)}"
             )
 
             # THE INVARIANT — Q2, exactly as production issues it, must NOT be a
             # `brief` TableScan, and MUST use direct record access.
             q2_plan = await run(setup_connection, f"{q2_statement} EXPLAIN", q2_params)
-            assert not self._scans_table(q2_plan, BRIEF_TABLE), (
+            assert not scans_table(q2_plan, BRIEF_TABLE), (
                 f"REGRESSION (#103 / cold-audit F1): subscribed_name_skew's acked-brief-by-id "
                 f"fetch is a `{BRIEF_TABLE}` TableScan — it EXAMINES every brief row on every "
                 f"heartbeat of every agent. A primary-key `id IN $ids` predicate does NOT use "
                 f"record access; pass the bound RecordID list AS the FROM source "
                 f"(`SELECT … FROM $ids`). statement={q2_statement!r} "
-                f"operators={self._operators(q2_plan)}"
+                f"operators={operators(q2_plan)}"
             )
-            assert {"SourceExpr", "RecordIdScan"} & set(self._operators(q2_plan)), (
+            assert {"SourceExpr", "RecordIdScan"} & set(operators(q2_plan)), (
                 f"Q2 must fetch by DIRECT RECORD ACCESS (SourceExpr/RecordIdScan), not a "
-                f"predicate scan. statement={q2_statement!r} operators={self._operators(q2_plan)}"
+                f"predicate scan. statement={q2_statement!r} operators={operators(q2_plan)}"
             )
         finally:
             await ledger.close()

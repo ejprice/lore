@@ -316,9 +316,9 @@ class TestTheMessageReadIndexFires:
             f"SELECT id FROM {_MESSAGE_TABLE} WHERE owner_agent = type::record('agent', $a)",
             {"a": "ag_a"},
         )
-        assert scans_table(plan, _MESSAGE_TABLE), (
+        assert scans_table(plan, _MESSAGE_TABLE) and not index_served(plan), (
             f"owner_agent=… alone must TableScan (unindexed at 63, §4.1) — a build that indexed it "
-            f"IndexScans and reddens here. ops={operators(plan)}"
+            f"is index-served and reddens here. ops={operators(plan)}"
         )
 
     async def test_FLAG_F2_owner_principal_equality_indexscans(
@@ -341,8 +341,9 @@ class TestTheMessageReadIndexFires:
             f"message.owner_principal equality TABLESCANS — the §4.F message_owner_principal index is "
             f"unwired (FLAG F-2: this is the ONLY probe that exercises it). ops={operators(plan)}"
         )
-        assert "IndexScan" in operators(plan), (
-            f"expected an IndexScan on message_owner_principal. ops={operators(plan)}"
+        assert index_served(plan, index=f"{_MESSAGE_TABLE}_owner_principal"), (
+            f"expected an index-served plan reading {_MESSAGE_TABLE}_owner_principal. "
+            f"ops={operators(plan)}"
         )
 
     async def test_P1_scope_equality_indexscans(
@@ -359,8 +360,8 @@ class TestTheMessageReadIndexFires:
         assert not scans_table(plan, _MESSAGE_TABLE), (
             f"message.scope equality TABLESCANS — the §4.F scope index is unwired. ops={operators(plan)}"
         )
-        assert "IndexScan" in operators(plan), (
-            f"expected an IndexScan on message_scope. ops={operators(plan)}"
+        assert index_served(plan, index=f"{_MESSAGE_TABLE}_scope"), (
+            f"expected an index-served plan reading {_MESSAGE_TABLE}_scope. ops={operators(plan)}"
         )
 
     async def test_P3_the_full_member_read_filter_indexscans_no_tablescan(

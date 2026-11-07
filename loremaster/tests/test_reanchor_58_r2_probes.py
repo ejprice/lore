@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from _governed_contract import operators, scans_table  # the shared EXPLAIN walker
 from _reanchor_58_support import (
     ACTION_REANCHORED,
     CLAIMANT,
@@ -287,14 +288,11 @@ async def test_PR10_a_routine_claim_loss_logs_no_ERROR(
 async def test_PR11_production_containment_statements_are_index_served(
     ledger58: tuple[TaskLedger, SurrealEnv], statement: str
 ) -> None:
-    import test_keeps_schema as keeps_schema
-
-    walker = keeps_schema.TestTheKeeperIndexFires
     ledger, _env = ledger58
     blocker = await create(ledger, "a blocker")
     await create(ledger, "a dependent", [blocker])
     plan = await raw(ledger, f"{statement} EXPLAIN", {"x": blocker})
-    assert not walker._scans_table(plan, TASK_TABLE), walker._operators(plan)
+    assert not scans_table(plan, TASK_TABLE), operators(plan)
 
 
 # ---------------------------------------------------------------------------------------------

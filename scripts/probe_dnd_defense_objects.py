@@ -24,10 +24,11 @@ measured on ONE engine in ONE run.
 
 METHOD (store-law discipline — §2 IndexScan-vs-TableScan-via-EXPLAIN + the C1 rule "a
 probe NEEDS a positive control"). Every scan claim is a live EXPLAIN plan on the REAL
-3.2.4 spike engine, classified by the SAME plan-walker the shipped packet-60 pin and
-``probe_read_filter_63.py`` use (``operator == 'IndexScan'`` / ``'TableScan'`` with
-``attributes.table``) — MIRRORED and CITED, not forked (instrument parsing, not
-production policy). Latency (Q6) is wall-clock over ~700 rows, warmup-dropped, median
+spike engine (written against 3.2.4; re-run on 3.3.5 2026-11-07), classified by the ONE
+probe classifier (``probe_read_filter_63._classify``) over the ONE shared plan-walker
+(``loremaster/tests/_governed_contract.py`` — ``index_served`` for an index read on either
+engine line, ``scans_table`` for a ``TableScan`` with ``attributes.table``; the classification
+label ``IndexScan`` means index-served). Latency (Q6) is wall-clock over ~700 rows, warmup-dropped, median
 of repeats — measured, never guessed.
 
 WHAT IT COVERS (the operator's 7 questions):
@@ -61,9 +62,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from loremaster.store._txn import bootstrap_session, signin_credentials
@@ -86,96 +89,19 @@ def unique_database() -> str:
 
 
 # --------------------------------------------------------------------------- #
-# EXPLAIN plan classification — MIRRORED from ``probe_read_filter_63.py`` (itself
-# re-expressing ``test_keeps_schema.py``), CITED not forked.
+# EXPLAIN plan classification — the ONE probe classifier, ``probe_read_filter_63._classify``,
+# over the ONE shared plan-walker (``loremaster/tests/_governed_contract.py``: ``operators`` /
+# ``scans_table`` / ``index_served`` / ``indexes_read``; operator ruling 2026-11-07). This probe
+# used to carry its own copy of the walker, the classifier and an index-name walker.
+# Same-directory import, inserted defensively (the ``probe_drain_read_63b_ii_b`` idiom), and
+# ``loremaster/tests`` for ``_governed_contract`` (the ``scripts/restore_prod_dump.py`` idiom).
 # --------------------------------------------------------------------------- #
-
-
-def _operators(plan: Any) -> list[str]:
-    """Every ``operator``/``operation`` string anywhere in the EXPLAIN plan tree."""
-    found: list[str] = []
-
-    def walk(node: Any) -> None:
-        if isinstance(node, dict):
-            for key in ("operator", "operation"):
-                op = node.get(key)
-                if isinstance(op, str):
-                    found.append(op)
-            for child in node.values():
-                walk(child)
-        elif isinstance(node, list):
-            for child in node:
-                walk(child)
-
-    walk(plan)
-    return found
-
-
-def _scans_table(plan: Any, table: str) -> bool:
-    """True iff the plan carries a ``TableScan`` node targeting ``table``."""
-    found = False
-
-    def walk(node: Any) -> None:
-        nonlocal found
-        if isinstance(node, dict):
-            attributes = node.get("attributes")
-            if (
-                node.get("operator") == "TableScan"
-                and isinstance(attributes, dict)
-                and attributes.get("table") == table
-            ):
-                found = True
-            for child in node.values():
-                walk(child)
-        elif isinstance(node, list):
-            for child in node:
-                walk(child)
-
-    walk(plan)
-    return found
-
-
-def _index_names(plan: Any) -> list[str]:
-    """Every index name referenced anywhere in the plan (best-effort, for the report)."""
-    names: list[str] = []
-
-    def walk(node: Any) -> None:
-        if isinstance(node, dict):
-            for key in ("index", "index_name"):
-                value = node.get(key)
-                if isinstance(value, str):
-                    names.append(value)
-            attributes = node.get("attributes")
-            if isinstance(attributes, dict):
-                for key in ("index", "index_name"):
-                    value = attributes.get(key)
-                    if isinstance(value, str):
-                        names.append(value)
-            for child in node.values():
-                walk(child)
-        elif isinstance(node, list):
-            for child in node:
-                walk(child)
-
-    walk(plan)
-    return names
-
-
-def _classify(plan: Any, table: str) -> tuple[list[str], bool, bool, str]:
-    operators = _operators(plan)
-    has_index_scan = "IndexScan" in operators
-    scans_target = _scans_table(plan, table)
-    if scans_target and not has_index_scan:
-        classification = "TableScan"
-    elif scans_target and has_index_scan:
-        classification = "MIXED(index+table)"
-    elif has_index_scan:
-        classification = "IndexScan"
-    elif "EmptyScan" in operators:
-        classification = "EmptyScan"
-    else:
-        classification = "UNCLASSIFIED"
-    return operators, has_index_scan, scans_target, classification
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_TESTS_DIRECTORY = str(Path(__file__).resolve().parent.parent / "loremaster" / "tests")
+if _TESTS_DIRECTORY not in sys.path:
+    sys.path.insert(0, _TESTS_DIRECTORY)
+from _governed_contract import indexes_read  # noqa: E402
+from probe_read_filter_63 import _classify  # noqa: E402
 
 
 @dataclass
@@ -221,7 +147,7 @@ async def explain(
         statement=statement,
         operators=operators,
         classification=classification,
-        index_names=_index_names(plan),
+        index_names=indexes_read(plan),
         raw_plan=plan,
     )
     report.observations.append(observation)

@@ -407,7 +407,8 @@ async def probe(connection: Any) -> tuple[ProbeReport, dict[str, Any]]:  # noqa:
     )
     _require_local(
         report, a2, "IndexScan",
-        "the emitted flat-OR read_filter must UnionIndexScan with NO message TableScan (ii-a P3).",
+        "the emitted flat-OR read_filter must be index-served (3.2 UnionIndexScan, 3.3 BitmapOr) "
+        "with NO message TableScan (ii-a P3).",
     )
     findings["A2"] = a2.classification
 

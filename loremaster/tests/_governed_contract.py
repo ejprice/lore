@@ -103,10 +103,12 @@ def observes_routing(tool: str, verb: str) -> Callable[[_F], _F]:
 
 
 # --------------------------------------------------------------------------- #
-# The EXPLAIN plan-walker — MIRRORED from the shipped
-# ``test_keeps_schema.py::TestTheKeeperIndexFires`` / ``test_pdp_oracle_61b.py`` walker
-# (instrument parsing, not production policy; ROUTING-IS-NOT-SHARING does not demand two test
-# helpers share a walker — the shared PRODUCTION walker is TestTheKeeperIndexFires, cited).
+# The EXPLAIN plan-walker — the ONE implementation every EXPLAIN pin in the test tree and every
+# ``scripts/probe_*`` plan classifier routes through (operator ruling, 2026-11-07: the private
+# copies that used to live in ``test_keeps_schema`` / ``test_brief_ledger`` / ``test_keeps_store``
+# / ``test_graph_surreal`` / ``test_pdp_oracle_61b`` and the probes were folded in here, so an
+# engine plan-format change is fixed once). Scripts reach it the house way: put
+# ``loremaster/tests`` on ``sys.path`` and import it (``scripts/restore_prod_dump.py``).
 # A pin that cannot SEE a TableScan is not a pin, so every EXPLAIN pin carries a C+ control.
 # --------------------------------------------------------------------------- #
 
@@ -173,12 +175,37 @@ INDEX_SCAN_OPERATORS: frozenset[str] = frozenset(
 )
 
 
-def index_served(plan: Any) -> bool:
+def indexes_read(plan: Any) -> list[str]:
+    """The ``attributes.index`` name of every ``INDEX_SCAN_OPERATORS`` node in the EXPLAIN plan, in
+    walk order (duplicates kept: a 3.2 ``IN`` plans one IndexScan per value, all on one index)."""
+    found: list[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            attributes = node.get("attributes")
+            if node.get("operator") in INDEX_SCAN_OPERATORS and isinstance(attributes, dict):
+                index_name = attributes.get("index")
+                if isinstance(index_name, str):
+                    found.append(index_name)
+            for child in node.values():
+                walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child)
+
+    walk(plan)
+    return found
+
+
+def index_served(plan: Any, index: str | None = None) -> bool:
     """True iff some node of the EXPLAIN plan reads a named index (an ``INDEX_SCAN_OPERATORS``
-    operator). Engine-version-neutral across 3.2 (IndexScan) and 3.3 (BitmapIndexScan).
+    operator) — and, when ``index`` is given, iff one of those nodes reads THAT index
+    (``indexes_read``). Engine-version-neutral across 3.2 (IndexScan) and 3.3 (BitmapIndexScan).
 
     This is ONE leg of "the filter is index-served": it does not rule out a TableScan elsewhere in
     the same plan — pair it with ``not scans_table(plan, table)``."""
+    if index is not None:
+        return index in indexes_read(plan)
     return any(operator in INDEX_SCAN_OPERATORS for operator in operators(plan))
 
 

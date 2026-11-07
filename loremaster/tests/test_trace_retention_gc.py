@@ -16,7 +16,7 @@ WHAT THE BUILD MUST DO (DD-1.c), and where each pin lives:
      reconcile tick's job.  -> TestBootNeverPurges (here) + the reconcile-wiring
      class in ``test_reconcile.py`` (``TestReconcilePurgesTraceRetention``).
   3. Rides ``trace_ts``: an EXPLAIN receipt on the real store proving the
-     ``ts < $cutoff`` scan the batching SELECT issues is an IndexScan on
+     ``ts < $cutoff`` scan the batching SELECT issues is index-served by
      ``trace_ts``, with a TableScan positive control.  -> TestPurgeRidesTraceTsIndex
   4. Config validator: ``trace_retention_days >= aggregate_window_days``
      (cross-field), default 90 >= 14.  -> TestTraceRetentionConfigValidator
@@ -55,6 +55,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
+from _governed_contract import index_served, scans_table  # the shared EXPLAIN walker
 from _surreal_harness import (
     SurrealConnection,
     SurrealEnv,
@@ -286,7 +287,8 @@ class TestPurgeRidesTraceTsIndex:
     observe the effect of the actual code, never a proxy). GREEN on HEAD too (the
     DD-1.a index already exists); it is the store-property RECEIPT DD-1.b/#193
     require. The ``tool`` predicate (no index) is the positive control proving the
-    EXPLAIN reader discriminates rather than always reporting IndexScan.
+    EXPLAIN reader discriminates rather than always reporting an index read. Plans are read
+    by the shared walker (``_governed_contract``: ``scans_table`` / ``index_served``).
 
     The purge's DELETE is ``DELETE ... WHERE id IN $ids`` — bounded by PRIMARY id,
     not the ts index — so it is deliberately NOT asserted here: DD-1.c requirement 3
@@ -305,29 +307,29 @@ class TestPurgeRidesTraceTsIndex:
 
             # EXPLAIN the store's OWN batching SELECT (its exact template + $cutoff
             # param name), so this receipt tracks the purge's real query.
-            purge_select_plan = json.dumps(
-                await run(
-                    conn,
-                    _TRACE_PURGE_ID_SELECT.format(limit=100) + " EXPLAIN",
-                    {"cutoff": cutoff},
-                ),
-                default=str,
+            purge_select_plan = await run(
+                conn,
+                _TRACE_PURGE_ID_SELECT.format(limit=100) + " EXPLAIN",
+                {"cutoff": cutoff},
             )
             index_name = f"{TRACE_TABLE}_ts"
 
-            assert "IndexScan" in purge_select_plan
-            assert index_name in purge_select_plan
+            assert index_served(purge_select_plan, index=index_name), (
+                f"the purge's id SELECT is not index-served by {index_name}. "
+                f"plan={json.dumps(purge_select_plan, default=str)}"
+            )
 
             # Positive control: a predicate on an UNINDEXED field TableScans, so the
-            # reader above is not just always seeing an IndexScan.
-            control_plan = json.dumps(
-                await run(
-                    conn,
-                    f"SELECT * FROM {TRACE_TABLE} WHERE tool = $t EXPLAIN",
-                    {"t": "probe"},
-                ),
-                default=str,
+            # reader above is not just always seeing an index read.
+            control_plan = await run(
+                conn,
+                f"SELECT * FROM {TRACE_TABLE} WHERE tool = $t EXPLAIN",
+                {"t": "probe"},
             )
-            assert "TableScan" in control_plan
+            assert scans_table(control_plan, TRACE_TABLE) and not index_served(control_plan), (
+                f"positive control failed: the unindexed `tool =` predicate did not TableScan "
+                f"{TRACE_TABLE} with no index read — the walker is blind. "
+                f"plan={json.dumps(control_plan, default=str)}"
+            )
         finally:
             await conn.close()

@@ -506,7 +506,8 @@ async def _part_d(connection: Any, report: ProbeReport) -> dict[str, Any]:
         table=BRIEF_TABLE, where=mem_fragment, params=mem_params, dump=True,
     )
     _require(report, d_full, "IndexScan",
-             "the emitted flat-OR read_filter must UnionIndexScan with NO TableScan of brief "
+             "the emitted flat-OR read_filter must be index-served (3.2 UnionIndexScan, 3.3 "
+             "BitmapOr) with NO TableScan of brief "
              "(same verdict as ii-a P3 on message).")
     findings["brief_scope"] = d_scope.classification
     findings["brief_full"] = d_full.classification
@@ -690,8 +691,8 @@ async def main() -> int:
             print(f"  - {surprise}")
         return 1
     print("All controls held; each ASSERT was real; every poisoned-row UPDATE aborted and its")
-    print("conforming control succeeded; brief read-filter IndexScanned; agent owner_principal")
-    print("IndexScanned. PART-D agent-candidate plans + PART-E behaviours are DIAGNOSTIC above.")
+    print("conforming control succeeded; brief read-filter index-served; agent owner_principal")
+    print("index-served. PART-D agent-candidate plans + PART-E behaviours are DIAGNOSTIC above.")
     return 0
 
 
