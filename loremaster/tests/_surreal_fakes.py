@@ -1346,6 +1346,19 @@ class FakeSurrealCodeGraph:
             PRODUCER_GRAPH, [f"{prefix}purge{i}" for i in range(3)], params, effect
         )
 
+    def purge_tier_fragment(self, tier: str) -> FakeFragment:
+        """Build the fragment that purges every graph slice in ``tier``."""
+        prefix = GRAPH_FRAGMENT_PARAM_PREFIX
+        params = {f"{prefix}tier": tier}
+
+        def effect(db: _FakeSurrealDatabase) -> None:
+            for key in [key for key in db.graph_slices if key[0] == tier]:
+                del db.graph_slices[key]
+
+        return FakeFragment(
+            PRODUCER_GRAPH, [f"{prefix}purge_tier{i}" for i in range(3)], params, effect
+        )
+
     # -- standalone build/delete (used by direct callers, not the atomic path) --
 
     async def build_file_graph(

@@ -90,12 +90,8 @@ from watchdog.observers.inotify_c import (
     InotifyEvent,
 )
 
-# Seam-12 (ingest): a RUNTIME module import so ``_purge`` reaches
-# ``claiming_extension`` through the LIVE module — a test monkeypatching
-# ``loremaster.extension.claiming_extension`` binds here too (CF8, ONE
-# IMPLEMENTATION prove-by-mutation).
-import loremaster.extension as extension_module
 from loremaster.config import WATCH_LIVE, RootConfig
+from loremaster.index.indexer import file_purge_fragments
 from loremaster.index.paths import is_included
 
 if TYPE_CHECKING:
@@ -1044,25 +1040,17 @@ class LiveWatcher:
         atomic :meth:`SurrealStore.apply` — tier-scoped, so a sibling tier's copy of
         the path survives and a reader never observes the file half-removed.
         """
-        fragments: list[Any] = [
-            self._store.delete_file_fragment(tier, rel_path),
-            self._store.file_text_delete_fragment(tier, rel_path),
-            self._manifest.delete_fragment(tier, rel_path),
-        ]
-        # Keep the code-graph in lock-step: a deleted/moved-from file's symbols
-        # must not linger in the graph (tier-scoped, so a sibling tier survives).
-        if self._code_graph is not None:
-            fragments.append(self._code_graph.purge_file_fragment(tier, rel_path))
-        # Seam-12 (CF7): a claimed file's entity NODES purge in the SAME apply (its
-        # edges cascade — store §2/§4). The claiming extension is reached via THIS
-        # watcher's OWN ``extensions=`` param (the code_graph precedent), through the
-        # shared ``claiming_extension`` helper (CF8 / ONE IMPLEMENTATION).
-        claimant = extension_module.claiming_extension(self._extensions, tier, rel_path)
-        if claimant is not None:
-            entity_purge = claimant.entity_purge_fragment(tier, rel_path)
-            if entity_purge is not None:
-                fragments.append(entity_purge)
-        await self._store.apply(fragments)
+        # The set of rows a file owns is decided ONCE, in ``file_purge_fragments``
+        # (reconcile's deletion sweep and the tier-rebuild purge compose the same
+        # set): the graph slice when a graph is wired, and a claimed file's entity
+        # NODES via THIS watcher's OWN ``extensions=`` (seam-12 CF7).
+        await self._store.apply(
+            file_purge_fragments(
+                store=self._store, manifest=self._manifest,
+                code_graph=self._code_graph, extensions=self._extensions,
+                tier=tier, file_path=rel_path,
+            )
+        )
 
     # -- periodic sweep (under the SAME lock) ------------------------------- #
 

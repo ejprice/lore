@@ -2081,6 +2081,11 @@ class Indexer:
         and two-pass static freshness rebuilds and both ``rebuild_all`` paths — so
         no entry point can acquire without purging, or purge less than another.
 
+        Consequence, accepted (lead ruling 2026-11-07): the purge runs BEFORE the
+        walk, so for the rebuild's duration the tier serves neither chunks NOR a
+        code graph for a file not yet re-indexed — graph queries return nothing for
+        it, exactly as search already did, instead of the previous corpus's graph.
+
         Args:
             root: The tier's :class:`~loremaster.config.RootConfig`.
         """
@@ -2090,22 +2095,22 @@ class Indexer:
     async def _purge_tier_rows(self, tier: str) -> None:
         """Purge every row ``tier``'s files own, so the rebuild walk starts empty.
 
-        Two steps, both needed. ``delete_by_tier`` reaps the store-owned tables
-        (chunk, ``file_text``, entity tables) tier-wide, including rows whose
-        manifest row an earlier rebuild already dropped. Then each manifest row's
-        file is purged through :func:`file_purge_fragments` — the same purge
-        reconcile's deletion sweep runs — which removes the manifest row AND the
-        code-graph slice (a graph slice the new corpus lacks would otherwise
-        outlive the rebuild: the walk only re-graphs files that still exist).
-
-        Stated bound: a graph slice whose manifest row is ALREADY gone (orphaned
-        by a rebuild before this purge existed) is not reachable from here — the
-        graph port exposes only a per-file purge.
+        Three steps. ``delete_by_tier`` reaps the store-owned tables (chunk,
+        ``file_text``, entity tables) tier-wide, and the graph's
+        ``purge_tier_fragment`` reaps the tier's whole code graph — both tier-wide
+        so rows whose manifest row an earlier rebuild already dropped are reaped
+        too (the walk only re-writes files that still exist). Then each manifest
+        row's file is purged through :func:`file_purge_fragments` — the same purge
+        reconcile's deletion sweep and the watcher run — which removes the manifest
+        row (its other statements find nothing left; one file-set owner beats a
+        second, narrower list here).
 
         Args:
             tier: The tier to purge.
         """
         await self._store.delete_by_tier(tier)
+        if self._code_graph is not None:
+            await self._store.apply([self._code_graph.purge_tier_fragment(tier)])
         for stale in await self._manifest.files_for_tier(tier):
             await self._store.apply(
                 file_purge_fragments(

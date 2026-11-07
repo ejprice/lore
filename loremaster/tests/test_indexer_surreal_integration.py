@@ -609,3 +609,129 @@ class TestStaticTierRebuildPurgesEveryRowOfADeletedFile:
             await graph.close()
             clear_resolution_cache()
             reset_search_path_memo()
+
+
+async def _tables_with_a_row_mentioning_all(env: SurrealEnv, *needles: str) -> set[str]:
+    """Every table holding at least one ROW whose text mentions every one of ``needles``.
+
+    Row-level (not table-level) so a tier name and a path must sit on the SAME row:
+    that tells one tier's copy of a path from a sibling tier's copy of it. The
+    table set is read from ``INFO FOR DB``, never hand-listed.
+    """
+    connection = await connect_admin(env)
+    try:
+        info = await run(connection, "INFO FOR DB")
+        mentioning: set[str] = set()
+        for table in info.get("tables", {}):
+            rows = await run(connection, f"SELECT * FROM `{table}`")
+            for row in rows if isinstance(rows, list) else []:
+                text = repr(row)
+                if all(needle in text for needle in needles):
+                    mentioning.add(table)
+                    break
+    finally:
+        await connection.close()
+    return mentioning
+
+
+_GRAPH_TABLES = {"code_node", "refers", "answers_to"}
+
+
+class TestStaticTierRebuildReapsAnOrphanedGraphSlice:
+    """A rebuild reaps a graph slice whose manifest row an EARLIER rebuild dropped.
+
+    Before ``8feb2ad`` a tier rebuild dropped manifest rows but never purged the
+    removed files' graph slices, so production stores hold graph rows with no
+    manifest row. A per-manifest-row purge cannot reach those; the rebuild must
+    purge the tier's graph tier-wide. Tier-scoped: the same path's slice in a
+    sibling tier survives.
+    """
+
+    async def test_orphan_graph_slice_is_reaped_and_the_sibling_tiers_copy_survives(
+        self, surreal_env: SurrealEnv, tmp_path: Path  # noqa: F811
+    ) -> None:
+        clear_resolution_cache()
+        reset_search_path_memo()
+        orphan_path = "src/orphaned_by_an_old_rebuild.py"
+        live_root = tmp_path / "live"
+        (live_root / "src").mkdir(parents=True)
+        (live_root / _BASE_PATH).write_text(_BASE_SOURCE, encoding="utf-8")
+        # The SAME path in the live sibling tier — its graph slice must survive.
+        (live_root / orphan_path).write_text(_WIDGET_SOURCE, encoding="utf-8")
+        static_src = tmp_path / "community_src"
+        (static_src / "src").mkdir(parents=True)
+        (static_src / _BASE_PATH).write_text(_BASE_SOURCE, encoding="utf-8")
+        (static_src / orphan_path).write_text(_WIDGET_SOURCE, encoding="utf-8")
+        snapshot_root = tmp_path / "snap"
+        connection_args: dict[str, Any] = {
+            "url": surreal_env.url, "namespace": surreal_env.namespace,
+            "database": surreal_env.database, "user": surreal_env.user,
+            "password": surreal_env.password,
+        }
+        config_v1 = _config(
+            slug=surreal_env.database, live_path=live_root,
+            static_source=static_src, static_version="3.2",
+        )
+        tier_roots, project_roots = graph_roots(config_v1, snapshot_root)
+        store = SurrealStore(dim=_DIM, **connection_args)
+        manifest = SurrealManifest(**connection_args)
+        graph = SurrealCodeGraph(
+            tier_roots=tier_roots, project_roots=project_roots, **connection_args
+        )
+        await store.ensure_ready()
+        await manifest.ensure_ready()
+        await graph.ensure_ready()
+
+        def _indexer(config: LoreConfig) -> Indexer:
+            return Indexer(
+                store=store, embedder=FakeEmbedder(dim=_DIM), manifest=manifest,
+                registry=LoreServer(config).registry,
+                source_providers=[LocalDirectorySourceProvider(TIER_B, static_src)],
+                config=config, snapshot_root=snapshot_root, code_graph=graph,
+            )
+
+        try:
+            indexer_v1 = _indexer(config_v1)
+            for root in config_v1.roots:
+                await indexer_v1.index_tier(root)
+            # Reproduce the pre-8feb2ad debt: an old rebuild dropped the file's
+            # manifest row (and store rows) but left its graph slice behind.
+            await manifest.delete(TIER_B, orphan_path)
+            (static_src / orphan_path).unlink()
+            # Setup controls: the orphan slice exists with NO manifest row, and the
+            # sibling tier holds its own slice for the same path.
+            orphan_before = await _tables_with_a_row_mentioning_all(
+                surreal_env, orphan_path, TIER_B
+            )
+            assert _GRAPH_TABLES <= orphan_before, orphan_before
+            assert "file" not in orphan_before, "test setup: the orphan must have no manifest row"
+            assert _GRAPH_TABLES <= await _tables_with_a_row_mentioning_all(
+                surreal_env, orphan_path, TIER_A
+            ), "test setup: the sibling tier must hold its own graph slice for the path"
+
+            config_v2 = _config(
+                slug=surreal_env.database, live_path=live_root,
+                static_source=static_src, static_version="3.3",
+            )
+            summary = await _indexer(config_v2).index_tier(
+                next(r for r in config_v2.roots if r.tier == TIER_B)
+            )
+            assert TIER_B in summary.tiers_rebuilt
+
+            assert await _tables_with_a_row_mentioning_all(
+                surreal_env, orphan_path, TIER_B
+            ) == set()
+            # Tier scope: the sibling tier's copy of the same path is untouched.
+            assert _GRAPH_TABLES | {"chunk", "file_text", "file"} <= (
+                await _tables_with_a_row_mentioning_all(surreal_env, orphan_path, TIER_A)
+            )
+            # Positive control: the rebuilt tier's surviving file is re-graphed.
+            assert {"code_node", "answers_to"} <= await _tables_with_a_row_mentioning_all(
+                surreal_env, _BASE_PATH, TIER_B
+            )
+        finally:
+            await store.close()
+            await manifest.close()
+            await graph.close()
+            clear_resolution_cache()
+            reset_search_path_memo()

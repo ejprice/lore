@@ -895,6 +895,34 @@ class SurrealCodeGraph:
             params={_P_TIER: tier, _P_FILE: file_path},
         )
 
+    def purge_tier_fragment(self, tier: str) -> TxnFragment:
+        """Build the fragment that purges EVERY code-graph row in ``tier``.
+
+        The tier-wide counterpart to :meth:`purge_file_fragment`, for a whole-tier
+        rebuild: it reaps slices no manifest row names any more (orphaned by a
+        rebuild that dropped manifest rows without purging the graph), which a
+        per-file purge driven by the manifest cannot reach. Scoped by each table's
+        tier key, exactly as ``SurrealStore.delete_by_tier`` scopes its tables, so a
+        sibling tier's slice for the same path survives.
+
+        The edges are deleted EXPLICITLY rather than left to the endpoint-delete
+        cascade: ``RELATE`` does not validate endpoints (store law §4), so an edge
+        whose ``code_node`` never existed would not cascade. ``name`` rows are left
+        in place (shared across files and tiers; orphans are harmless — see
+        :meth:`delete_file_graph`).
+
+        Stated bound: ``refers`` is indexed on ``src_file_path`` only, so its
+        ``src_tier`` filter scans the table — once per tier rebuild.
+        """
+        return TxnFragment(
+            statements=[
+                f"DELETE {CODE_NODE_TABLE} WHERE {_COL_TIER} = ${_P_TIER};",
+                f"DELETE {REFERS_RELATION} WHERE {_COL_SRC_TIER} = ${_P_TIER};",
+                f"DELETE {ANSWERS_TO_RELATION} WHERE {_COL_TIER} = ${_P_TIER};",
+            ],
+            params={_P_TIER: tier},
+        )
+
     @staticmethod
     def _purge_statements() -> tuple[str, ...]:
         """The three tier+file-scoped DELETEs that purge one file's graph slice."""
