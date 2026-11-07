@@ -139,3 +139,37 @@ recommendations accepted." Applied item by item:
 - **S1:** in scope — scout's drop goes away with R5's shared factory.
 - **R2 stands:** `run_query` consumes the SDK's native per-statement list and selects its one
   statement — that is the seam's contract, not a reshaped copy of SDK 2.0.
+
+## R7 — after the 4.0 scout: F8/F7 re-ruled, R5 amended, db.batch conditional, SDK pinned, F9 native (operator, 2026-11-07)
+
+Grounds: scout-40-sdk3 (throwaway v4.0.0 + v3.3.5 memory containers, SDK 3.0.0 and 3.0.1 @ 05d3192), receipts
+`scratchpad/scout40/REPORT.md` + probe scripts beside it. R2, R4, the R5 API, F3, F9 and F10 hold on 4.0 unchanged.
+
+- **F8/F7 (REPLACES R6's F8/F7 bullets).** SDK `str(RecordID)` changed between 3.0.0 (`keep:⟨01J…⟩`) and 3.0.1
+  (``keep:`01J…` ``), and `RecordID.parse` is `split(":", 1)` — `parse(str(rid)) != rid` on both. The ENGINE renders
+  the bare form (`keep:01J…`) lore already persists, so persisted bare strings need NO migration. Ruled, all
+  SDK-native: (a) record ids travel as `RecordID` values end to end; prefer storing `record<…>` values over
+  strings; (b) build ids with `RecordID(table, key)` from `.table_name` / `.id`, never by parsing text;
+  (c) text → id via `StringRecordId(text)` (server-parsed; reads both bracket styles); (d) served/persisted text
+  comes from the engine (`<string> id`) or `.table_name + ":" + .id`, NEVER `str(RecordID)`. The four
+  `partition(":")` parsers are deleted. Lead's read-only :18500 check stays: no persisted id string was written
+  BRACKETED by SDK 2.0 (which bracketed all-digit / non-word keys).
+- **R5 amended.** "Unknown, stated" is replaced by the measurement (both engines, memory engine): SDK streaming
+  default + timeout → the SDK sends a stream cancel, nothing commits; disconnect mid-flight → nothing commits;
+  `streaming=False` + timeout → the ENGINE KEEPS RUNNING AND COMMITS; client transactions never stream. Rider (2)
+  ("outcome unknown") is CONFIRMED. The shared factory sets streaming EXPLICITLY, pinned. Override wording:
+  `with db.timeout(N):` (context manager). Bound: SurrealKV/RocksDB unprobed; a commit racing the cancel unconstructed.
+- **`db.batch()` (native) — CONDITIONAL.** The contract pins the transaction behaviour lore needs (root-cause
+  selection incl. domain-cascade notices, conflict typing, no writes on failure); the builder uses SDK `db.batch()`
+  in place of `_txn.compose` + root-cause selection IF it passes those pins, else keeps `compose` and files the gap
+  upstream. (Packages-over-hand-rolling: decided by measurement.)
+- **W6 contract wording.** `query()` on a conflicted transaction raises the FIRST failure (`NotExecuted`,
+  `is_transaction_conflict=False`); the retirement pin drives the transaction path through the root-cause selector.
+- **SDK pinned `surrealdb==3.0.0`** (3.0.1 unpublished on PyPI as of 2026-11-07).
+- **F9 — native (REPLACES R6's F9 bullet).** The native principle extends to the engine: retire the `>=`/`<`
+  range for `string::starts_with` (index-served by range on 3.3.5 and 4.0, measured). Retire with a pin + mutation
+  like RP1–RP3 (the pin proves the native form is index-served via the shared EXPLAIN walker).
+- **4.0 flags (NOT this packet; for the 4.0 upgrade packet):** compatibility level 4 refuses narrowing
+  `DEFINE FIELD OVERWRITE` on populated tables (MIGRATE EXISTING ROWS); `INFO FOR DB/TABLE` key sets change;
+  `RETURN` inside a transaction commits the rest on 4.0; 3.x→4.0 in-place upgrade is experimental, one-way,
+  RocksDB → SurrealKV.
