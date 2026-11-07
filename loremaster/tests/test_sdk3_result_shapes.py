@@ -11,7 +11,8 @@ LORE caller relies on and drives it through the production seam that serves it:
   truthy wrapper around one;
 * ``execute_read_transaction``: each statement's result at the position the caller composed;
 * datetimes: equality, ordering, ISO and pydantic JSON round trips;
-* record ids: table, key and rendering of every key shape lore mints;
+* record ids: moved to ``test_sdk3_record_ids`` (round 3, ruling R7 — ids are values, served text is the
+  engine's);
 * the LIVE wake (``InboxAwaiter``): a notification wakes the waiter long before its poll would.
 """
 
@@ -37,8 +38,6 @@ from _surreal_harness import (
     unique_database,
 )
 from loremaster.inbox_awaiter import InboxAwaiter
-from loremaster.keeps import KeepStore
-from loremaster.principals import PrincipalHasKeepsError, PrincipalStore
 from loremaster.scout import _open_command_connection
 from loremaster.store._txn import execute_read_transaction, run_query
 from loremaster.store.lease import SurrealLeaseStore
@@ -64,28 +63,6 @@ _WRITTEN_DATETIMES = [
 # How many server-stamped rows the precision pin writes: one engine stamp has a ~1/1000 chance of a
 # zero sub-microsecond remainder, so requiring ALL of them keeps a truncating build from passing by luck.
 _SERVER_STAMPS = 5
-
-# Every record-key SHAPE lore mints, each with the rendering SDK 2.0.0 gives it (measured 2026-11-07
-# with the instrument pasted in packet doc §2.3). keeps mint a ULID (``str(ULID())``: today every
-# ULID starts with a DIGIT); the engine mints principal ids ([a-z0-9], ~28% digit-led); agents a uuid5
-# string (bracketed by both SDKs); chunks/graph path-like strings; plus an integer key. SDK 3.0
-# brackets EVERY digit-led key that SDK 2.0 rendered bare (``keep:01J…`` → ``keep:⟨01J…⟩``), and lore
-# splits that rendering on ``:`` to bind lookups and to build persisted ``keep:<id>`` scopes.
-_RECORD_KEYS = {
-    "ulid": ("01JCXZ3Q9V8M2T5K7R4N6P1W0Y", "shape:01JCXZ3Q9V8M2T5K7R4N6P1W0Y"),
-    "engine_style_digit_led": ("0ysb7r5es9z0ysb7r5es", "shape:0ysb7r5es9z0ysb7r5es"),
-    "engine_style_letter_led": ("z0ysb7r5es9z0ysb7r5e", "shape:z0ysb7r5es9z0ysb7r5e"),
-    "uuid5": (str(uuid.uuid5(uuid.NAMESPACE_URL, "sdk3")), None),
-    "path": ("loremaster/store/_txn.py", "shape:⟨loremaster/store/_txn.py⟩"),
-    "integer": (42, "shape:42"),
-}
-
-# The keeper of the keep the served-id pin creates.
-_KEEPER_EMAIL = "sdk3-keeper@example.com"
-
-# The engine mints principal ids from [a-z0-9]: ~28% start with a digit — the shape SDK 3.0 renders
-# bracketed. The refuse-while-keeping pin creates principals until it has one (P(miss in 40) < 1e-5).
-_DIGIT_LED_PRINCIPAL_ATTEMPTS = 40
 
 # The LIVE-wake pin: the awaiter's budget, a poll cadence it will never reach, how long to let the
 # LIVE subscription establish, and the bound within which a notification must wake it.
@@ -256,124 +233,6 @@ class TestDatetimesSurviveTheRoundTrip:
             f"{len(misses)} of {_SERVER_STAMPS} server-stamped datetimes, read back and bound as a "
             f"parameter, did not match their own row: {misses!r}"
         )
-
-
-class TestRecordIdsKeepTheirTableKeyAndRendering:
-    """lore keys rows by RecordID, renders ids with ``str()`` (stored as VALUE columns and split on
-    ``:`` by keeps/principals) and compares a returned id to one it built."""
-
-    async def test_every_minted_key_shape_round_trips(self, owner: SurrealLeaseStore) -> None:
-        for name, (key, rendered_at_head) in _RECORD_KEYS.items():
-            built = RecordID("shape", key)
-            await _query(owner, "CREATE $id SET kind = $kind", {"id": built, "kind": name})
-            read = await _query(owner, "SELECT VALUE id FROM shape WHERE kind = $kind", {"kind": name})
-            assert len(read) == 1, f"{name}: expected one row, got {read!r}"
-            returned = read[0]
-            assert isinstance(returned, RecordID), f"{name}: the id came back as {type(returned).__name__}"
-            assert returned.table_name == "shape"
-            assert returned.id == key, f"{name}: wrote key {key!r}, read back {returned.id!r}"
-            assert str(returned) == str(built), f"{name}: the returned id renders unlike the one built"
-            if rendered_at_head is not None:
-                assert str(returned) == rendered_at_head, (
-                    f"{name}: {key!r} renders as {str(returned)!r}, not {rendered_at_head!r} — ids "
-                    f"stored as strings by an earlier build would stop matching"
-                )
-
-
-class TestTheIdLoreServesNamesTheEnginesKey:
-    """A served id (``Keep.id``) is ``str(RecordID)``; lore splits it on ``:`` to look the record up
-    again and to build the ``keep:<id>`` scope it PERSISTS on governed rows. Every keep id is a
-    digit-led ULID — exactly the shape whose rendering SDK 3.0 changed — so a build that keeps
-    rendering through the SDK serves ``keep:⟨01J…⟩``: the round trip misses, and a scope derived from
-    it no longer equals the scope stored on rows written before the bump (those rows go dark)."""
-
-    async def test_a_keep_round_trips_by_its_served_id_which_names_its_bare_key(
-        self, store_env: SurrealEnv
-    ) -> None:
-        wiring: dict[str, Any] = {
-            "url": store_env.url,
-            "namespace": store_env.namespace,
-            "database": store_env.database,
-            "user": store_env.user,
-            "password": store_env.password,
-        }
-        principal_store = PrincipalStore(**wiring)
-        keep_store = KeepStore(**wiring)
-        admin = await connect_admin(store_env)
-        try:
-            await principal_store.ensure_ready()
-            await keep_store.ensure_ready()
-            await principal_store.create(email=_KEEPER_EMAIL)
-            keep = await keep_store.create_keep(keeper_email=_KEEPER_EMAIL, type="project", name="sdk3")
-            engine_keys = await run(admin, "SELECT VALUE record::id(id) FROM keep")
-            assert len(engine_keys) == 1, f"premise: one keep row, found {engine_keys!r}"
-            assert keep.id == f"keep:{engine_keys[0]}", (
-                f"the served keep id {keep.id!r} does not name the engine's key "
-                f"{engine_keys[0]!r} as SDK 2.0 served it — every scope lore derives from it changes"
-            )
-            again = await keep_store.get_keep(keep.id)
-            assert again is not None and again.id == keep.id, "a keep cannot be found by its own served id"
-        finally:
-            await admin.close()
-            await keep_store.close()
-            await principal_store.close()
-
-
-class TestAKeeperCannotBeDeletedWhileKeepingWhateverItsIdLooksLike:
-    """``PrincipalStore.delete`` refuses while the principal keeps a keep (§FR-4): a ``keep.keeper``
-    link does not auto-clean, so the delete would dangle it. The refusal reads the kept keeps by
-    binding the id-part of the SERVED ``Principal.id``. For an engine-minted DIGIT-LED id that SDK 3.0
-    renders ``principal:⟨0…⟩``, a build that keeps splitting the SDK's rendering binds the wrong key,
-    finds no kept keep and deletes the keeper — the guard silently off for ~28% of principals."""
-
-    async def test_a_digit_led_keeper_is_refused_deletion(self, store_env: SurrealEnv) -> None:
-        wiring: dict[str, Any] = {
-            "url": store_env.url,
-            "namespace": store_env.namespace,
-            "database": store_env.database,
-            "user": store_env.user,
-            "password": store_env.password,
-        }
-        principal_store = PrincipalStore(**wiring)
-        keep_store = KeepStore(**wiring)
-        admin = await connect_admin(store_env)
-        try:
-            await principal_store.ensure_ready()
-            await keep_store.ensure_ready()
-            keeper_email: str | None = None
-            for attempt in range(_DIGIT_LED_PRINCIPAL_ATTEMPTS):
-                email = f"sdk3-principal-{attempt}@example.com"
-                created = await principal_store.create(email=email)
-                key = (
-                    await run(
-                        admin, "SELECT VALUE record::id(id) FROM principal WHERE email = $e", {"e": email}
-                    )
-                )[0]
-                if str(key)[:1].isdigit():
-                    keeper_email = email
-                    assert created.id == f"principal:{key}", (
-                        f"the served principal id {created.id!r} does not name the engine's key {key!r}"
-                    )
-                    break
-            assert keeper_email is not None, (
-                f"premise: no digit-led principal id in {_DIGIT_LED_PRINCIPAL_ATTEMPTS} engine mints"
-            )
-            await keep_store.create_keep(keeper_email=keeper_email, type="project", name="sdk3")
-            try:
-                await principal_store.delete(email=keeper_email)
-            except PrincipalHasKeepsError:
-                return
-            remaining = await run(
-                admin, "SELECT VALUE id FROM principal WHERE email = $e", {"e": keeper_email}
-            )
-            raise AssertionError(
-                f"a principal who KEEPS a keep was deleted (rows left: {remaining!r}) — the keep's keeper "
-                f"link now dangles; the refuse-while-keeping read missed because of its id's shape"
-            )
-        finally:
-            await admin.close()
-            await keep_store.close()
-            await principal_store.close()
 
 
 class TestALiveNotificationWakesTheInboxAwaiter:

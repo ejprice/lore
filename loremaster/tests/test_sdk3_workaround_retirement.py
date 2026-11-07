@@ -36,10 +36,12 @@ from _surreal_harness import (
 from loremaster.store._txn import (
     RetryableConflictSignal,
     SurrealConnectionError,
+    _failed_statements,
+    _rollback_verdict,
     retry_on_conflict,
     run_query,
 )
-from surrealdb.errors import SurrealError, parse_query_error
+from surrealdb.errors import SurrealError
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +193,7 @@ class TestTheSdkTypesALiveTransactionConflict:
     async def test_every_live_conflict_is_typed_by_the_sdk_on_both_paths(self, store_env: SurrealEnv) -> None:
         racers = [await connect_admin(store_env) for _ in range(_RACERS)]
         raised: list[BaseException] = []
-        parsed: list[BaseException] = []
+        parsed: list[Any] = []
         try:
 
             async def bump(connection: Any) -> None:
@@ -210,17 +212,24 @@ class TestTheSdkTypesALiveTransactionConflict:
 
             async def transact(connection: Any) -> None:
                 async def attempt() -> Any:
+                    # R7 W6 wording: drive the transactional path THROUGH lore's root-cause selector
+                    # (``_failed_statements`` → ``_rollback_verdict``), never ``query()`` — on a conflicted
+                    # transaction SDK 3.0's ``query()`` raises the FIRST failure, a ``NotExecuted`` cascade
+                    # notice whose ``is_transaction_conflict`` is False (scout-40: 112/112), so a pin reading
+                    # it would condemn a correct predicate. The entry the selector names as the conflict's
+                    # root cause is the one the SDK must type. (If the builder adopts ``db.batch()`` per the
+                    # R7 condition, this leg re-points at the error ``db.batch()`` raises — say so.)
                     response = await connection.query_raw(_TXN_INCREMENT, {})
-                    conflicts = [
-                        entry
-                        for entry in response.get("result") or []
-                        if entry.get("status") == "ERR"
-                        and (entry.get("details") or {}).get("kind") == _CONFLICT_DETAIL_KIND
-                    ]
-                    if conflicts:
-                        parsed.extend(parse_query_error(entry) for entry in conflicts)
+                    failed = _failed_statements(response)
+                    if not failed:
+                        return response
+                    is_conflict, root_cause = _rollback_verdict(failed)
+                    if is_conflict:
+                        parsed.append(root_cause.typed)
                         raise RetryableConflictSignal()
-                    return response
+                    raise AssertionError(
+                        f"premise: a racing increment failed for a non-conflict reason: {failed!r}"
+                    )
 
                 for _ in range(_TRANSACTIONS_PER_RACER):
                     await retry_on_conflict(attempt, label="sdk3.retirement.txn")

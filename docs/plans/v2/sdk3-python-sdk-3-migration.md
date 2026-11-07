@@ -1,6 +1,6 @@
 # Packet SDK3 — Python SDK `surrealdb` 2.0.0 → 3.0.0 (on the 3.3.5 stores)
 
-Status: DISCOVERY + CONTRACT (tdd Phase 0 + Phase 1), written 2026-11-07 by the SDK3 contract author
+Status: CONTRACT ROUND 3 (rulings R2–R7 pinned; §ROUND 3 below supersedes the round-1/2 forks — the round-1/2 sections stay as history). Round 1: DISCOVERY + CONTRACT (tdd Phase 0 + Phase 1), written 2026-11-07 by the SDK3 contract author
 against HEAD `4624daf` (branch `feat/surreal-unification`; the brief named `c05bf3f`, HEAD moved
 under another builder's commit while this ran), SDK 2.0.0 in lore's venv, SDK 3.0.0 in the
 research40 scratch venv. Operator approved the packet 2026-11-07. **This contract STOPS for operator
@@ -8,6 +8,373 @@ review** (§5 forks); then `contract-adversary` grades it, then a builder implem
 
 Inputs: `docs/research/2026-11-07-surrealdb-3.3-4.0-for-lore.md` (SUMMARY, §B4–B6/B18, §C, §D-4/D-10,
 §E 7/11/12), finding #576, `docs/reference/surrealdb-31-capabilities.md` §0a/§2/§3/§6.5.
+
+## ROUND 3 — rulings R2–R7 implemented as pins (contract-sdk3-r3, 2026-11-07, graded tree HEAD `b03c4fc`)
+
+Round 3 supersedes the round-1/2 forks F1–F10 (ruled: `docs/plans/v2/sdk3-rulings.md` R2–R7; R7 replaces R6's
+F7/F8/F9 bullets). Everything below §R3.0 is dated 2026-11-07 and measured at HEAD `b03c4fc` (SDK 2.0.0) and on a
+REFERENCE BUILD (SDK 3.0.0) in a `scripts/scratch_copy.sh` copy. lore MCP was DOWN for this round
+(`lore_lore` ECONNREFUSED at spawn): every structure question was answered by grep/Read (no friction filed — no
+lore tools in the session).
+
+### R3.0 Summary
+
+- **Contract:** 9 files / **70 pins** (`loremaster/tests/test_sdk3_*.py` + `_sdk3_proxy.py`). Five NEW files —
+  `test_sdk3_single_statement_seam.py` (R2), `test_sdk3_index_batching.py` (R3/R4), `test_sdk3_connection_factory.py`
+  (R5/R7), `test_sdk3_record_ids.py` (R7 F8/F7; absorbs round-1/2 R7–R9), `test_sdk3_native_shapes.py` (R7 F9, R6 F5).
+  Edited: lifecycle (L6 now ∀ owners, 3.0 s from the store's return), txn classification (+T6, the `db.batch()` text
+  selector discriminator), retirement (RP3 now drives the transaction path through `_rollback_verdict`, R7 W6),
+  result shapes (R7–R9 moved out), proxy (+`hold_next_response`, a slow store without a slow statement).
+- **RED at HEAD, for the intended reason: 33 declared, from `--collect-only` before the run** (§R3.9). The 37
+  GREEN-at-HEAD pins are preservation pins (behaviour SDK 3.0 breaks unless the build keeps it — measured RED on SDK
+  3.0 in rounds 1/2 or by mutation here) or engine facts (F9).
+- **Satisfiability: the reference build passes the whole set — 94 passed, 0 failed** (70 contract pins + the two
+  engine/SDK KNOWN-BOUND classes + `test_graph_surreal::TestNamesWithValuePrefixRangeRewrite`), `loremaster.__file__`
+  inside the scratch copy, SDK 3.0.0 (§R3.9). The reference build is a SATISFIABILITY instrument, not the build:
+  `scratchpad/sdk3r3/reference_build.diff` (32 files) — it is correct where the pins look and deliberately partial
+  elsewhere (§R3.9 "what the reference did NOT do").
+- **Operator-ruled mutation proofs** (R2 sharing, R4 bound pin, F9, W6) via `scripts/mutation_proof.py` with declared
+  reds: §R3.9.
+- **Forks for the operator: F11–F17** (§R3.8). None blocks the adversary; each pin that depends on one says so.
+- **DROP LIST** §R3.5 (31 rows) — the lead presents it before anything is deleted. **F8 query for the lead** §R3.7.
+
+### R3.1 R2 — ONE single-statement seam that SELECTS (pins and where they live)
+
+| id | pin | proves | HEAD | ref |
+|---|---|---|---|---|
+| S1 | `single_statement_seam::…test_a_two_statement_call_raises[two_scalars\|two_lists]` | two statements → `SurrealStoreError`, never transport (would drop + invite retry), never domain (engine refused nothing) | R | G |
+| S2 | `…test_a_two_statement_write_is_refused_before_either_statement_runs` | refused BEFORE the wire: no row lands | R | G |
+| S3 | `…test_the_connection_is_kept_after_the_refusal` | the next call answers its own scalar | R | G |
+| S4 | `…TestScoutsCommandClaimHasExactlyOneWinner` | 8 subscribers race `CommandSubscriber._mark` on one pending command: exactly 7 log a lost claim | G | G |
+| R1–R4, R6, R6b, R10 (+R10c) | `result_shapes` (unchanged) | rows, scalar, lost CAS `== []` and falsy, 1 of 8 racers wins, LIVE wake < 4 s | G (R6b R) | G |
+
+Why S2 forces "refuse before sending" (an inference from two standing rules, not a choice between readings of R2): R2
+says the seam raises on ≠ 1 result; the autouse runtime guard (`tests/_sdk_guard.py`, the #144 posture) already
+fails any test in which a multi-statement `.query()` reaches the wire, judged by the shared
+`_txn._assert_envelope_integrity` split. A seam that sent the text and refused the SDK's two-entry answer would have
+run both statements (measured at HEAD: the guard ERRORs all four S-pins at teardown). The reference build calls that
+same shared split before acquiring a connection, AND checks the SDK's answer length after (a comment-only text, or a
+future SDK shape, still raises).
+**Sharing proof (rider), mutation M-R2:** make the shared selection return the SDK's list → declared reds: R1, R2, R3,
+R4, R6, R6b, R10, S2, S3, S4 (seam + scout + awaiter redden together); S1 stays green (refused before the selection).
+
+### R3.2 R3/R4 — batched rows, one transaction, a row bound, a refused file NAMED
+
+**Measured first (rider 2), OFFLINE** — the production pure builders composed with no socket (instrument
+`probe_r3_compose_breakdown.py`, Appendix D): `loremaster/tests/test_comms_tool.py` composes to **5,113 statements**
+(exactly production's figure) = chunk 511 UPSERT + 1 DELETE; file_text 1; manifest 2; graph: refers 1,858 RELATE, name
+1,204 UPSERT, answers_to 1,022 RELATE, code_node 511 CREATE, 3 DELETE. **Rows written: 5,108.** Param bytes (Python
+repr, a proxy): chunk 3.42 MB (the 1024-float vectors), graph 1.36 MB, file_text 0.43 MB — the vectors are ~80 %.
+The synthetic fixture (600 functions × 4 calls) composes to 6,612 statements / ~6,600 rows.
+**Bound chosen: ROWS**, `store._txn.TXN_ROW_HARD_CAP` (reference value 50,000 ≈ 10× the largest real file measured).
+Why rows, not bytes: bytes per row are already bounded by existing caps (a chunk's tokens and the fixed vector width;
+`FILE_TEXT_MAX_BYTES` for the body), and the 128 MiB WebSocket message ceiling (scout-40) sits ~25× above
+test_comms_tool.py's whole payload; what scales without bound is the ROW count (graph edges per file), and every row
+is index maintenance (HNSW per chunk, graph indexes per edge). The value is the builder's to re-measure against the
+largest file of every indexed tier.
+
+| id | pin | rider | HEAD | ref |
+|---|---|---|---|---|
+| B1 | `index_batching::TestALargeFileIndexesAndIsSearchable` | 4a: a file over the retired 5,000-statement cap (premise: rows > 5,000) lands `indexed` and the served `search` finds it | R | G |
+| B2 | `…TestTheStatementCountDoesNotGrowWithRows` | **the bound pin** (4b): one request with `BEGIN` per file, and 10× the rows add ≤ 1 statement per 100 rows | R | G |
+| B3 | `…TestARefusedFileIsNamedOnTheServedStatus` | 3: shrink `_txn.TXN_ROW_HARD_CAP` to 1009 → the served `lore_index` status JSON names the file AND `1009` | R | G |
+| B4 | `…TestNoBatchedEdgeDangles` | 1 / store-ref §4 (#105): every `refers`/`answers_to` edge of the large file joins two existing records (`record::exists`) | R | G |
+
+Mutation M-R4 (rider 4b): restore per-row chunk statements → declared red: B2 only (B1/B3/B4 stay green — they guard
+other properties). Rider 1 (bulk-INSERT semantics against `surrealql-tests`, then a probe): the reference build's
+`INSERT INTO`, `INSERT … ON DUPLICATE KEY UPDATE value = $input.value` and `INSERT RELATION INTO` were exercised live by
+B1–B4 on 3.3.5; scout-40 measured 3,000 rows + 2,999 edges, dangling edges accepted, one bad row → nothing written. The
+corpus read is NOT done here (lore MCP down): the builder does it (fork-free; it is the rider's first half).
+
+### R3.3 R5 as amended by R7 — the shared factory, finite timeouts, outcome unknown
+
+Names this contract FIXES (read with `getattr`, so a build lacking one fails that pin, not the module):
+`store._txn.SURREAL_REQUEST_TIMEOUT_SECONDS` (finite; 30.0 until measured) and `store._txn.SurrealOutcomeUnknownError`
+(subclass of `SurrealConnectionError`, so every existing transport handler still catches it).
+
+| id | pin | rider | cost | HEAD | ref |
+|---|---|---|---|---|---|
+| CF1 | `connection_factory::TestACallDuringAnOutageFailsWithinItsBound` | 3a: store stays down → `SurrealConnectionError` within the default + 10 s | ~30 s | R | G |
+| CF2 | `…TestALongOperationOutlivesTheDefaultTimeout::…startup_ddl…` | 3c: `SurrealStore.ensure_ready` survives one reply held default + 2 s (`hold_next_response`) | ~35 s | R | G |
+| CF2c | `…::test_control_the_same_hold_times_out_an_ordinary_call` | control: the same hold times out a plain call | ~32 s | R | G |
+| CF3 | `…TestAWriteWhoseOutcomeIsUnknownIsRaisedAsUnknown` ×3 | 2: in-flight drop (single statement, transaction) and a reply outliving `with db.timeout(1)` → `SurrealOutcomeUnknownError` | ~5 s | R | G |
+| CF4 | `…TestATimedOutWriteUnderTheFactoryCommitsNothing` | R7 streaming "explicit, pinned" — **fork F11**, recommended reading (streaming ON → a timed-out write never lands) | ~5 s | R | G |
+| L6 | `lifecycle::TestRecoveryLatencyAfterALongOutage` (rewritten) | 3b: ∀ owners (derived), 15 s outage, every first call answers ≤ 3.0 s after the store returns; an owner bypassing the factory (SDK default backoff) or with a finite attempt count fails it | ~20 s | R | G |
+| L1/L2/L3/L4/L5 | `lifecycle` (unchanged) | idle-bounce first call ∀ owners; repeatable; racing call typed; no zombie; closed stays closed | — | L1/L2 R | G |
+
+"Keep any >30 s pin's cost stated": CF1 ~30 s, CF2 ~35 s, CF2c ~32 s (they run in parallel under `-n 8`; the whole
+factory file took 34.6 s wall on the reference).
+
+### R3.4 R7 F8/F7, F9 native, R6 F5, W6, db.batch
+
+**F8/F7 — `test_sdk3_record_ids.py`.** The fixture discriminates by RENDERING: `_rendered(rendering)` patches
+`RecordID.__str__` to each rendering an SDK release has shipped — `angle` (3.0.0 `t:⟨k⟩`) and `backtick` (3.0.1
+``t:`k` ``) — for EVERY string key (so no hunting for a digit-led id), plus `installed`. The SDK encodes a RecordID
+from `table_name`/`id` (CBOR tag 8, read in both SDKs' `data/cbor.py`), so the patch never reaches the wire.
+
+| id | pin | HEAD | ref |
+|---|---|---|---|
+| K0 | `TestARecordIdRoundTripsAsAValue::…value_that_was_written` — every minted key shape: equal, hashable alike (set/dict key) — retires the "RecordID is unhashable" idiom (drop list #9) | R (TypeError) | G |
+| K0b | `…server_parsed_text_in_either_bracket_style…` — `StringRecordId` reads bare, ⟨⟩ and backtick text as the same record | R (no `StringRecordId` in 2.0) | G |
+| K1 | `TestTheIdLoreServesNamesTheEnginesKey::…served_id[installed\|angle\|backtick]` — `Keep.id` == engine `<string> id`, found again | installed G, angle/backtick R | G |
+| K2 | `…found_by_its_id_written_in_any_form` — `get_keep` accepts bare / ⟨⟩ / backtick | R | G |
+| K3 | `TestAKeeperCannotBeDeletedWhileKeeping[installed\|angle\|backtick]` — served `Principal.id` is engine text; a digit-led keeper is refused deletion | installed G, others R | G |
+| K4 | `TestARegisteredAgentIsOwnedAndScopedByEngineIds[angle\|backtick]` — through `AppContext._comms_register`: `agent.owner_principal` is the registrant's record, `agent.scope` the session keep's engine text | R | G |
+
+Bound, stated: the pins prove BEHAVIOUR (served/persisted text is the engine's, under any rendering). Deleting the
+`partition(":")` / `split(":")` re-parsers is a drop-list item: once served text is engine text they parse it
+correctly for word keys, so no behavioural pin can tell "deleted" from "harmless" — that would be a spelling check
+(operator approval needed). Not pinned: `memory/local.py` owner compare (`split(":")[-1]`), `principals` migrate
+backfills, `server.py` comms-send scope, `governed._bare` → `audit.actor_email` — the adversary may demand them.
+
+**F9 native — `test_sdk3_native_shapes.py`.** Engine fact (probed first, `probe_f9_starts_with.py`, Appendix D):
+`string::starts_with(value, $p)` on 3.3.5 plans `IndexScan` alone and `BitmapOr > BitmapIndexScan×n` OR'd (2 and 3
+prefixes); `string::starts_with(string::lowercase(value), $p)` (control) TableScans.
+Pins: `TestTheNativePrefixMatchIsIndexServed` ×4 + control (GREEN at HEAD — the defect is gone on the ENGINE);
+`TestTheModulePrefixReachIsIndexServed` ×4 on the PRODUCTION statement (`SurrealCodeGraph._prefix_range_query`):
+`[max_codepoint]` is **RED at HEAD — an OLD BUG the range workaround carries**: for a prefix ending in U+10FFFF
+`_prefix_upper_bound` returns None and the query falls back to an UNBOUNDED `value >= $lo`, returning every
+later-sorting name (measured: `pkg.m10.sym*`…`pkg.m29.*` for prefix `pkg.m1.\U0010ffff`). The native form fixes it.
+Mutation M-F9: wrap `value` in `string::lowercase` inside the production builder → declared reds: the 4 production pins.
+
+**F5 — `TestTheSdkGuardReachesTheBuilderDoors`.** The door set is DERIVED from the SDK class: a coroutine function, or a
+method whose annotated return is awaitable / async-iterable / carries a coroutine method. Measured on SDK 3.0.0:
+`query, select, create, update, upsert, delete, insert, relate` (awaitable builders), `batch` (AsyncBatch.execute),
+`live_of` + every coroutine. Pins: every derived door is guarded (with `query ∈ doors` as the checked variable);
+a bare `.query()` outside the driver is recorded as an escape AND observed through the guard's public hook chain; a
+two-statement `.query()` inside the driver is a multi-statement violation. GREEN at HEAD (2.0's doors are coroutines);
+the reference build's widened guard (`_is_door`) makes them GREEN on 3.0. ⚠ The SAME coroutine-only reach exists in
+`_surreal_harness.StoreTraffic.COUNTABLE_DOORS` / `uncountable_doors` (builder flag, §R3.10).
+
+**W6 (R7 wording).** RP3's transactional leg now runs `query_raw` → `_txn._failed_statements` → `_txn._rollback_verdict`
+and requires the conflict root cause the SELECTOR names to satisfy `is_transaction_conflict`; it never reads `query()`
+(which raises the first failure, a `NotExecuted` notice with the predicate False — scout-40 112/112). Mutation M-W6
+(the predicate answers False in the production classifier) → declared reds: RP3, T1, T2.
+If the builder adopts `db.batch()`, RP3's leg re-points at the error `db.batch()` raises (said in the test).
+
+**db.batch() CONDITIONAL (R7).** The transaction behaviour lore needs is pinned in `test_sdk3_txn_classification.py`:
+T1/T2 conflict typing + retry at 16-way, nothing lost; T3 root cause at three THROW positions (kind `Thrown`, never a
+cascade kind), one attempt, nothing committed; T4 text never buys a retry; **T6 (new) a THROW whose text QUOTES the
+cascade notice still surfaces as `Thrown`** — read in SDK source (`connections/batch.py::_results`): `db.batch()`
+selects the first failure whose message does not contain `"not executed due to a failed transaction"`, so it
+skips such a THROW and reports a cascade/Cancelled/COMMIT notice instead. Expected: a `db.batch()` build FAILS T6 (not
+run here: building it is the builder's measurement, per R7). Also not met by `db.batch()` as read: lore logs EVERY
+failed statement server-side (`_log_rollback`) where `db.batch()` raises one error — a removed behaviour the builder
+must preserve or drop deliberately (§R3.6 row X12).
+
+### R3.5 DROP LIST — everything SDK 3.0 / engine 3.3.5 lets lore delete (the lead presents this before any deletion)
+
+Fates: **R** retire-now-with-pin · **C** conditional-on-measurement (named) · **K** keep-with-reason. Draft by a Sonnet
+sweep (scratch `sdk3r3/droplist_draft.md`, every row SDK-source-quoted), sampled and re-fated by me.
+
+| # | what | where (symbol) | SDK/engine-native replacement | evidence | fate · pin |
+|---|---|---|---|---|---|
+| 1 | `KeyError`-as-transport arm | `_txn._SDK_AWAIT_BOUNDARY_ERRORS`, `run_query._attempt` / `_txn_query_raw` excepts, `_raise_attempt_failure` | `errors.ConnectionUnavailableError(TransportError)` | P1 (round 2): 4/4 in-flight → typed | **R** · RP1 (+M1 round 2) |
+| 2 | bare `"TransactionConflict"` literal + `_detail_kind` decision | `_txn._RETRYABLE_CONFLICT_KIND`, `_is_retryable_conflict_kind` | `QueryError.is_transaction_conflict` | P6: 5/5 + 29/29 | **R** · RP3 (+M-W6), T1/T2 |
+| 3 | 18 per-owner `AsyncSurreal(url)` + reconnect-on-next-call self-heal (#576) | every `_ensure_connection` / `_drop_connection` (17 stores + scout) | ONE factory, `ReconnectOptions(attempts=-1, retry_delay=0.5, retry_delay_max=2.0)` | R5; L1/L6 ∀ owners | **R** (simplify: the drop stays as the racing/give-up backstop, W7) · L1, L2, L6, RP2 |
+| 4 | scout's unconditional non-CAS `_drop_connection` (S1) | `scout.CommandSubscriber._drop_connection` | the factory's reconnect | R6 S1 | **R** · L1 (scout is in the derived owner set) |
+| 5 | `partition(":")` / `split(":")` / `_bare_id` text re-parsers of SERVED ids — **~31 sites in 3 families, not 4** | `keeps._record_id_part`/`_resolve_principal_id`, `principal_keys._record_id_part`, `principals` (803, 1527, 2196, 2197, 2292), `server` (6723, 6756, 6771, 7322), `governed._bare`, `memory/local` (1405, 1410), 7 `_bare_id` clones (findings, messages, agents, tasks, briefs, memory/local, store/surreal) | `RecordID(table, key)` from `.table_name`/`.id`; `StringRecordId(text)`; engine `<string> id` | R7 (moved, round 3: , re-cut for ruling R7) | **R** (scope: fork F16) · K1–K4 (behaviour; deletion itself unpinnable, §R3.4) |
+| 6 | `str(RecordID)` as served/persisted text | `keeps._row_to_keep`, `principals._row_to_principal`, `principal_keys` mapper, `audit` return value | `.table_name + ":" + .id` / engine `<string> id` | R7 (d) | **R** · K1, K3, K4 |
+| 7 | "RecordID is unhashable" → str-keyed sets/dicts | `graph_surreal` de-dupe (`unique[str(record_id)]`, `name_ids_by_key`, …), docstrings in findings/tasks/agents/briefs/store | `RecordID.__hash__` (SDK 3.0 `record_id.py`) | measured 2.0 `TypeError` | **R** · K0 |
+| 8 | six cloned datetime coercers (`_to_aware_utc` ×6) | agents, briefs, findings, messages, principals, tasks | `PreciseDatetime` (a `datetime`; `astimezone` keeps `.nanosecond`, measured) | R6 S2 | **C**: before deleting each, list the columns it reads with their DECLARED types; a `string`/FLEXIBLE column keeps its string branch (§R3.6 X8). Pin R6b (ns kept) |
+| 9 | `_CONNECTION_ERRORS` / `_SDK_AWAIT_BOUNDARY_ERRORS` hand-kept tuples incl. `WebSocketException` | `_txn`, consumers scout + inbox_awaiter | `TransportError` / `ConnectionUnavailableError` | R6 F10 | **C**: the two F10 measurements (§R3.7b); KeyError half is #1 |
+| 10 | `>= $lo AND < $hi` prefix range + `_prefix_upper_bound` (and its max-codepoint unbounded fallback — an old bug) | `graph_surreal._prefix_range_query`, `_prefix_upper_bound` | `string::starts_with(value, $p)` (index-served on 3.3.5) | P14, `probe_f9_starts_with.py` | **R** · native_shapes ×9 (+M-F9) |
+| 11 | per-row index statements + the STATEMENT cap as the strain bound (R3) | `SurrealStore.replace_file_fragment`, `SurrealCodeGraph.build_file_graph_fragment`, `_txn.TXN_STATEMENT_HARD_CAP` | one `INSERT` / `INSERT RELATION` per table; a ROW cap | R4 | **R** · B1–B4 (+M-R4); scope of the statement cap: fork F12 |
+| 12 | `run_query` returning `query()`'s value raw (SDK 2.0 first-statement shape) | `_txn.run_query`, `scout._scout_query_once`, `inbox_awaiter._live_query` | SDK 3.0 per-statement list + ONE selection | R2 | **R** (replace) · S1–S4, R1–R10 (+M-R2) |
+| 13 | `AsyncEmbeddedSurrealConnection` imports | `_txn` alias, `_sdk_guard.SDK_CONNECTION_CLASSES`, `_surreal_harness`, `test_retry_seam` | moved to `surrealdb-embedded` | round 2 D9 | **R** (dropped; nothing uses the embedded engine) |
+| 14 | hand verification of every statement + text `BEGIN;…COMMIT;` wrappers + `execute_read_transaction` | `_txn._failed_statements`/`_parse_failed_statement`/`_rollback_verdict`/`compose` envelope; 19 `BEGIN;\n{ddl}COMMIT;` sites | `db.batch()` (one request, refuses BEGIN/COMMIT/non-final RETURN, raises root cause) | R7 conditional; `batch.py::_results` read | **C**: `db.batch()` must pass T1–T6 + per-statement rollback logging; T6 is expected to FAIL it (text selector) — then keep `compose` and file the gap upstream |
+| 15 | `_SDK_PARSE_FAILURES` guard (`AttributeError`, `TypeError`, `RecursionError`) around `parse_query_error` | `_txn._parse_failed_statement` | SDK 3.0 `parse_rpc_error` now returns `InternalError` for a non-dict (the `AttributeError` arm) | source read | **C**: probe a non-dict cause, an unhashable kind, a deep chain on 3.0 — retire each arm that no longer raises |
+| 16 | `_safe_close` (try close except `_CONNECTION_ERRORS`) ×18 | every owner | SDK `close()` is idempotent; `_teardown` swallows | source read | **C**: measure `close()` over a severed socket (both sever modes) never raises on 3.0 |
+| 17 | `signin_credentials` + 18 `.signin()` + manual re-sign-in | `_txn.signin_credentials`, owners, scout | `auth=` provider replayed after every reconnect | `auth_provider.py` docstring | **C**: under the factory, an idle-bounce replays auth without lore (RP2 already shows replay for `signin`); adopt `auth=` if the factory owns credentials — design call for the builder |
+| 18 | `_CONNECTION_ERROR_KINDS = {NotAllowed, Connection}` | `_txn.is_connection_error` | `NotAllowedError.is_invalid_auth` / `is_token_expired` | source read | **K** with trigger: W3 (NotAllowed after reconnect give-up) can no longer occur with `attempts=-1`; keep the arm until the factory is the only constructor, then re-evaluate |
+| 19 | `"recursion depth"` text marker | `_txn._classify_engine_error` | `ValidationError.is_parse_error` (a superset) | source read | **C**: probe the recursion-limit rejection's `details.kind` on 3.3.5 |
+| 20 | ASSERT / coercion / UNIQUE / governed THROW text markers | `_txn._classify_engine_error` | none (Internal is untyped) | P7 | **K**: still untyped on 3.3.5 (W10) |
+| 21 | scout's reconnect ladder backoff | `scout.CommandSubscriber._backoff` (+ `loresigil.backoff.jittered_backoff_delay`) | SDK reconnect for the socket | `reconnect.py` | **C**: measure whether scout's ladder still fires (connect failures at boot) once the factory reconnects forever; delete the socket half only |
+| 22 | `retry_on_conflict` / `_txn_conflict_backoff_seconds` | `_txn` | none in SDK 3.0; 4.0 retries single statements server-side only | research §C | **K** (no SDK twin; transactions still need client retry) |
+| 23 | lease thread-bridge timeout | `store/lease._call` | `with db.timeout()` bounds an SDK await, not a thread wait | source read | **K** |
+| 24 | inlined literals in `LIVE SELECT … WHERE` | `inbox_awaiter.live_select_statement`, scout | `live()` has no filter; `live_of` | source read | **K** (no native filter); hand-escaping ``agent:`{id}` `` → `escape_identifier`: **C** (an id holding a backtick) |
+| 25 | `name.value` mirror column (prefix-match a RecordID id) | `graph_surreal._COL_VALUE`, schema | `string::starts_with(record::id(id), $p)` or an id range | unprobed | **C**: probe index service on 3.3.5 |
+| 26 | `rebuild_embeddings` REMOVE/DEFINE two-transaction dance | `memory/local.LocalMemoryBackend.rebuild_embeddings` | blocking `REBUILD INDEX` (research B14, LOW) | not probed | **C**: measure on 3.3.5 |
+| 27 | `check_response_for_error` after `query_raw` | `_txn._txn_query_raw` | already the SDK's | source | **K** (native; goes with #14 if `db.batch()` is adopted) |
+| 28 | `_PROVEN_KINDS` / `_typed_kind` | `_txn` | already SDK constants | source | **K** (already native) |
+| 29 | keepalive (none in lore) | — | SDK `ping_interval=30`, `ping_timeout=10` | source | **K-inherited**: new behaviour lore gets silently; a half-open peer is noticed in ~40 s. Disposition needed (recommend accept SDK default; state it in the store reference) |
+| 30 | version gate (none in lore) | — | `version_check=True`, `MINIMUM 2.0.0 / MAXIMUM 5.0.0` | source | **K-inherited** (recommend accept) |
+| 31 | 30 s default request timeout (none in 2.0) | — | `timeout=30.0` | R5 | ruled: finite default + named overrides (CF1, CF2) |
+
+### R3.6 Removed-behaviour inventory (the reshape dual) — one row per behaviour a deletion removes
+
+Adjudications: **pin** preserved-with-pin (spec clause) · **drop** dropped-deliberately (reason) · **old-bug** ·
+**ruling** spec-silent → operator. Independent enumeration from the CODE at `b03c4fc`, then diffed against the drop list.
+
+| X | deleted thing → behaviour it carried | adjudication |
+|---|---|---|
+| X1 | KeyError arm → a raw `KeyError` from the SDK-await boundary is transport: drop + `SurrealConnectionError` | drop (SDK 3.0 never raises it: P1, RP1); a `KeyError` from lore's own code now propagates as a bug — correct |
+| X2 | KeyError arm → `inbox_awaiter` / scout recover from it (the shared-tuple mutation pins) | drop with X1; the pins asserting it (§R3.10) change with the builder |
+| X3 | literal → retry decided by `details.kind == "TransactionConflict"` on BOTH paths | pin (R1/W6): RP3, T1, T2 via the SDK predicate |
+| X4 | literal → a `ServerError` that is NOT a `QueryError` but carries `details.kind: TransactionConflict` was retryable | old-bug-or-dead: the engine sends conflicts as `kind: Query` (P6); spec-silent → keep `isinstance(QueryError)` |
+| X5 | self-heal → an idle owner's FIRST call after a restart failed, the second healed (#576) | old-bug, fixed: L1 |
+| X6 | self-heal → a call racing the drop fails once, typed; the handle is replaced | pin: L3, L4 (drop stays) |
+| X7 | self-heal → after any transport error a NEW socket is built (fresh auth, fresh session) | pin: L4 (one socket, no zombie); W3 give-up path unreachable with `attempts=-1` |
+| X8 | coercers → a naive datetime becomes UTC; an ISO string is parsed; unparseable → `None`; aware → UTC | ruling-if-reachable: engine returns aware PreciseDatetime (branch unreachable for `datetime` columns); the string/None branches are behaviour only for a column that can hold a string — the builder lists each coercer's columns' declared types before deletion (drop #8 C). `PreciseDatetime.replace(tzinfo=UTC)` DROPS `.nanosecond` (measured), so the naive branch, if ever reached, loses ns |
+| X9 | parsers → a served id with NO `:` passes through unchanged (bare id accepted) | pin: K2 (bare/text forms via `StringRecordId`; a no-colon text is a `RecordID(table, text)` in the reference) — **spec-silent for non-keep tables** → fork F17 |
+| X10 | parsers → `principals.delete` binds the id part of the served id to read kept keeps | pin: K3 |
+| X11 | range → max-codepoint prefix answered with an unbounded `>=` (superset) | old-bug, fixed by native: `[max_codepoint]` RED at HEAD |
+| X12 | `_failed_statements` / `_log_rollback` → every failed statement's index + raw engine text logged server-side; the raised error carries only the classified label (#31) | pin-needed if `db.batch()` replaces it: no contract pin today asserts the per-statement log (pre-existing `test_retry_seam` / rollback-log pins cover it — §R3.10 lists them for the builder) |
+| X13 | per-row statements → each row its own `UPSERT`/`CREATE` (`UPSERT` = overwrite a same-id chunk; `CREATE` node fails if present) | spec-silent → **ruling-light**: batched `INSERT` FAILS on a duplicate id where `UPSERT` overwrote; after the per-file DELETE only an intra-file duplicate point id can collide. Reference used plain `INSERT` for chunks (B1 green); builder confirms point ids are unique per file or uses `ON DUPLICATE KEY UPDATE` |
+| X14 | per-row `RELATE … SET` → edges written only after their endpoint `UPSERT`/`CREATE` statements | pin: B4 (no dangling edge) |
+| X15 | statement cap → a pathological file refused at BUILD time with a typed `SurrealStoreError`, isolated `failed`, last-good kept | pin: B3 (now NAMED, with its bound); the per-file isolation is pre-existing (`test_indexer_surreal_integration`) |
+| X16 | `run_query` returned statement[0] for a multi-statement text (silently ignoring the rest) | old-bug (#144 class): S1–S3 |
+| X17 | `str(RecordID)` served ids carried SDK 2.0's own bracketing for all-digit / non-word keys (`task:⟨0199c4f1-…⟩`, #248) | ruling via F8 count (§R3.7): engine text brackets non-word keys too, so a dashed task id serves IDENTICALLY (`<string> id`); `.table_name + ":" + .id` would serve it BARE — the two R7 (d) forms differ exactly here → fork F15 |
+
+### R3.7 For the lead
+
+**(a) F8 read-only check on :18500 (the lead runs it; I did not touch :18500).** Field inventory: Sonnet draft
+(`sdk3r3/f8_inventory.md`, 212 `DEFINE FIELD` derived by calling every `surreal_schema.generate_*_ddl()`, 122
+string-bearing classified), spot-checked by me against `governed.GuardedPlan.fragments` (`target_row=f"{self.table}:{self.row_id}"`),
+`governed.resolve_subject` (`principal_id=_bare(principal.id)` → `audit.actor_email`), `keeps._row_to_keep`
+(`id=str(row["id"])`) — all three as described. Run in EVERY namespace/database that holds these tables (they share one
+project database per ns/db); ONE read-only statement, validated on a throwaway :18000 database with controls (one
+⟨⟩ scope, one backtick ref → counted 1 each; bare values → 0):
+
+```surql
+RETURN {
+  agent_scope: count((SELECT id FROM agent WHERE string::contains(<string> scope, '⟨') OR string::contains(<string> scope, '`'))),
+  agent_task_id: count((SELECT id FROM agent WHERE string::contains(<string> task_id, '⟨') OR string::contains(<string> task_id, '`'))),
+  memory_scope: count((SELECT id FROM memory WHERE string::contains(<string> scope, '⟨') OR string::contains(<string> scope, '`'))),
+  memory_supersedes: count((SELECT id FROM memory WHERE string::contains(<string> supersedes, '⟨') OR string::contains(<string> supersedes, '`'))),
+  memory_superseded_by: count((SELECT id FROM memory WHERE string::contains(<string> superseded_by, '⟨') OR string::contains(<string> superseded_by, '`'))),
+  message_scope: count((SELECT id FROM message WHERE string::contains(<string> scope, '⟨') OR string::contains(<string> scope, '`'))),
+  message_task_id: count((SELECT id FROM message WHERE string::contains(<string> task_id, '⟨') OR string::contains(<string> task_id, '`'))),
+  message_refs: count((SELECT id FROM message WHERE string::contains(<string> refs, '⟨') OR string::contains(<string> refs, '`'))),
+  audit_target_row: count((SELECT id FROM audit WHERE string::contains(<string> target_row, '⟨') OR string::contains(<string> target_row, '`'))),
+  audit_actor_email: count((SELECT id FROM audit WHERE string::contains(<string> actor_email, '⟨') OR string::contains(<string> actor_email, '`'))),
+  audit_actor_agent_name: count((SELECT id FROM audit WHERE string::contains(<string> actor_agent_name, '⟨') OR string::contains(<string> actor_agent_name, '`'))),
+  task_blocked_by: count((SELECT id FROM task WHERE string::contains(<string> blocked_by, '⟨') OR string::contains(<string> blocked_by, '`'))),
+  task_superseded_by: count((SELECT id FROM task WHERE string::contains(<string> superseded_by, '⟨') OR string::contains(<string> superseded_by, '`'))),
+  file_chunk_ids: count((SELECT id FROM file WHERE string::contains(<string> chunk_ids, '⟨') OR string::contains(<string> chunk_ids, '`')))
+};
+```
+⚠ Bounds: a table that does not exist in a database raises NotFound on 3.x (drop that key for that database); free
+text can contain a backtick legitimately (`message.refs`), so a non-zero count is a lead to inspect
+(`SELECT id, refs FROM message WHERE … LIMIT 20`), not a verdict. Out of scope (record-typed, not strings):
+`owner_principal`/`owner_agent`, `keep.keeper`, `message.sender`, `audit.actor_principal`/`actor_agent`, every edge's
+`in`/`out`. Expected from the key shapes (ULID keeps, engine `[a-z0-9]` principals, uuid hex): ~0, except legacy dashed
+task ids (#248) in `task.blocked_by` / `message.task_id` / `message.refs`.
+
+**(b) F10 — the two measurements the builder owes before `WebSocketException` leaves `_CONNECTION_ERRORS`.** Both on
+SDK 3.0.0 + 3.3.5 through `_sdk3_proxy.StoreBounceProxy`, each × `SeverMode.ABORT` and `SeverMode.CLOSE_FRAME`, 20 runs
+each, on a connection from the shared factory:
+1. **LIVE iterator over a dead socket:** `LIVE SELECT` via the seam → `subscribe_live(id)` → start iterating → `go_down()`
+   (no `come_up`) → record, for 10 s, what the iterator does: raises (record the exact class and module), ends, or
+   hangs; then `come_up()` and record whether it resumes (SDK 3.0 does not replay a `query()`-made LIVE — source read).
+2. **`kill()` over a dead socket:** same setup → `go_down()` → `await connection.kill(id)` → record the raised class
+   (and whether it waits on the reconnect, bounded by the timeout); repeat with the store back (`come_up` first) → the
+   kill of a LIVE the new session never had.
+Retire the arm iff no run raises a `websockets.*` class; otherwise keep it with the observed path as its reason.
+
+**(c) F6 — `pending_contracts.yaml` pytest-only adjudication (a gate change; the builder implements).** Shape: a
+`PendingBound` gains `red_nodeids: tuple[str, ...] = ()` (a `PendingFile` may then carry no mypy content). Semantics in
+`pending_contract_gate.py --currency` (pytest leg only): (1) a failing node id listed under a bound →
+`RED_ADJUDICATED(owner, reopen_trigger)`; (2) a failing node id not listed → `RED_ORPHANED` (unchanged); (3)
+**self-destruct:** a listed node id that PASSES fails the gate ("adjudicated red `<id>` is green — delete it with the
+fix"), exactly like the typecheck leg's "produced NO mypy errors"; (4) **stale:** a listed id that is not COLLECTED
+(renamed/deleted) fails the gate; (5) ids are written from `pytest --collect-only -q` (pytest escapes non-ASCII in
+parametrised ids), and a parametrised id is listed per parameter, never by prefix. The 33 HEAD-red ids of §R3.9 are the
+first entry (owner: packet SDK3 builder; trigger: the SDK3 build lands).
+
+### R3.8 Forks for the operator (each: the readings, my recommendation, what the pins assume)
+
+- **F11 — R7 "the shared factory sets streaming EXPLICITLY, pinned" names no VALUE.** ON (SDK default): a timed-out
+  request is cancelled (nothing commits, measured on both engines). OFF: the engine keeps running and commits.
+  Recommend **ON**. CF4 pins ON; ruling OFF inverts its last assertion. ("Explicitly" itself is spelling — unpinnable
+  without a source scan.)
+- **F12 — R4 "the cap is re-expressed as a bound on rows or bytes": replace the STATEMENT cap everywhere, or add the row
+  bound beside it?** (a) replace: `compose()`'s statement cap goes; packet 58's re-anchor packer
+  (`test_reanchor_58_*`, `test_supersede_reanchor_58`) and the entity seam (`test_ingest_entity_seam` P6) are sized by
+  statements and must re-size by rows; (b) add: keep 5,000 statements as a second backstop (harmless once the index is
+  batched). Recommend **(a)** — statement count no longer measures strain — with 58 re-sized when it is revived (it is
+  dormant, SDK3 is scheduled first). The reference kept (b) (minimal); B1–B4 hold under both.
+- **F13 — R2 rider "scout._scout_query_once and inbox_awaiter._live_query are converted to the same seam".** (a) route
+  them through `run_query` itself: scout's transport faults become `SurrealConnectionError`, contradicting
+  W1-SCOUTKILL (its reconnect ladder catches RAW SDK types; `test_retry_seam` pins it); (b) they keep their raw-error
+  contracts and call the ONE selection function `run_query` also calls. Recommend **(b)**; S4/R10 and M-R2 hold under
+  both. The reference did (b).
+- **F14 — "a timed-out or in-flight-dropped WRITE is raised as outcome unknown": the seam cannot tell a read from a
+  write, nor a request that was sent from one parked on a reconnect** (both surface as `TransportTimeoutError`).
+  Recommend: every SDK `TransportError` on a request → `SurrealOutcomeUnknownError` (a `SurrealConnectionError`
+  subclass — harmless for reads). Pins assert writes only; CF1 accepts either class.
+- **F15 — R7 (d) offers two text forms that DIFFER for a non-word key:** engine `<string> id` renders
+  `task:⟨0199c4f1-…⟩` (bracketed, as SDK 2.0 did — #248); `.table_name + ":" + .id` renders it bare. For every key lore
+  mints today (ULID, `[a-z0-9]`, hex) they agree. Recommend: the ENGINE form for anything persisted or compared with
+  persisted text (it equals what SDK 2.0 wrote for legacy dashed ids), `.table_name + ":" + .id` only for display.
+  The pins use word-char keys (both forms pass); the F8 count decides whether legacy bracketed rows exist.
+- **F16 — R7 says "the four `partition(":")` parsers are deleted"; the sweep finds ~31 re-parse sites in three families**
+  (drop list #5). Recommend deleting all of them under the same ruling (one principle).
+- **F17 — text with NO `:` handed to an id-taking API** (`get_keep("01J…")`): `StringRecordId` refuses it
+  (`InvalidRecordIdError`). The HEAD parsers pass a bare key through. Recommend: accept a bare key as
+  `RecordID(<that API's table>, text)` (the reference does, for keeps). Unpinned beyond keeps.
+
+### R3.9 Receipts
+
+Logs in the lead-named scratch `scratchpad/sdk3r3/receipts/` (the reference build is `scratchpad/sdk3r3/ref`, its diff
+`scratchpad/sdk3r3/reference_build.diff`). Every final log opens with `tree_id.sh`.
+
+| gate | command | log | EXIT | count | TREE |
+|---|---|---|---|---|---|
+| contract @HEAD (SDK 2.0.0) | `systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0 uv run pytest -q -rfE -p no:cacheprovider --timeout=300 -n 8 <the 9 test_sdk3_* files>` | `r3_head_contract_final.log` | 1 | 33 failed, 37 passed, 4 errors — the observed FAILED set equals the 33 declared ids exactly (diffed both ways); the 4 ERRORs are the autouse guard's teardown on 4 of those same 33 (S1×2, S2, S3: a multi-statement `.query()` reached the wire at HEAD) | TREE=e74c4c91…c46e (HEAD b03c4fc) |
+| contract @reference (SDK 3.0.0) | same files + the 2 KNOWN-BOUND classes + `test_graph_surreal::TestNamesWithValuePrefixRangeRewrite`, `.venv/bin/python -m pytest` in the scratch copy | `r3_reference_contract.log` | 0 | **94 passed** | TREE=d83f5268…fe0f (scratch copy) |
+| mutation proofs M-R2, M-R4, M-F9, M-W6 | `scratchpad/sdk3r3/mut/run_mutations.sh` (`scripts/mutation_proof.py`, declared reds in `mut/*.expect`) | `r3_mutation_proofs.log` | 0 | PROOF HELD ×4 — M-R2 10 failed/4 passed; M-R4 1/3; M-F9 4/8; M-W6 3/10 — each the declared set exactly; tree restored | TREE=d83f5268…fe0f (same scratch tree) |
+| currency `--legs typecheck,ruff` | `uv run python scripts/pending_contract_gate.py --currency --legs typecheck,ruff` | `r3_gate_currency.log` | 1 | typecheck RED_ADJUDICATED (83, packet-58 + packet-64b-i) · ruff GREEN · **no RED_ORPHANED** · pytest NOT_RUN (the `--legs` subset still reports the unrun pytest leg — the gate quirk rounds 1/2 flagged) | TREE=e74c4c91…c46e (HEAD b03c4fc) |
+
+Declared RED-at-HEAD set (33, from `--collect-only`, written before the run): `receipts/declared_red_head_final.txt`.
+Edited after these runs: ONLY this packet doc (§R3.9 receipt cells, §R3.11) (so a re-derived TREE of the repo differs by this file
+alone). A T2 flake was caught BETWEEN receipt rounds and fixed before the final runs: round-1's
+`test_sixteen_way_single_statement_updates_all_commit_once` failed its own contention premise once on the reference
+(32 updates, 0 conflicts — on 3.3.5 a single-statement increment conflicts ~3% of the time, so two fixed rounds saw no
+conflict in ~38% of runs); its rounds are now adaptive (until a conflict, ≤ 25 rounds).
+Provenance receipt of the reference: `loremaster.__file__=…/scratchpad/sdk3r3/ref/loremaster/loremaster/__init__.py`,
+`surrealdb=3.0.0` (first lines of `r3_reference_contract.log`).
+
+**What the reference build did NOT do** (satisfiability instrument, not the build; the builder owns all of it): S2
+coercer deletion; the parser deletions (fixed the served text at the row mappers instead); `db.batch()`; the
+`_SDK_PARSE_FAILURES`/`_safe_close`/`auth=` conditionals; port `scripts/` (21 SDK users); fix
+`_surreal_harness.StoreTraffic` reach, the session-end reaper and `drop_database`'s SDK-2.0 shapes (only `run()` was
+adapted); named overrides beyond `SurrealStore.ensure_ready`; the full covering-test sweep (`lore_impact` was
+unavailable; the reference ran ONLY the set above — every pre-existing test that asserts an SDK 2.0 shape will be RED
+on it, §R3.10).
+
+### R3.10 Pre-existing pins / helpers that contradict a ruling (the builder changes them; outside this writable set)
+
+- `tests/_sdk_guard.py` — `SDK_CONNECTION_CLASSES` names `AsyncEmbeddedSurrealConnection` (ImportError on 3.0); door
+  reach coroutine-only (F5; reference `_is_door`).
+- `tests/_surreal_harness.py` — embedded import + alias; `run()` returns `query()`'s value raw (must select its ONE
+  statement); `StoreTraffic.COUNTABLE_DOORS` / `uncountable_doors` derive reach from `iscoroutinefunction` (same class
+  as F5 — under 3.0 `query` is neither countable nor uncountable); the INFO-map reaper (round 2 §7).
+- `tests/test_retry_seam.py` — two `AsyncEmbeddedSurrealConnection` imports; its KeyError-at-the-await-boundary pins
+  and the `_SDK_AWAIT_BOUNDARY_ERRORS` shared-tuple mutation pins (R6 F10 / drop #1) — 25 retired-name hits.
+- `tests/test_comms_await.py` — 24 hits on the KeyError / `WebSocketException` boundary (drop #1, #9).
+- `tests/test_surreal_apply.py`, `tests/_surreal_fakes.py`, `test_ingest_entity_seam.py` P6,
+  `test_reanchor_58_*`, `test_supersede_reanchor_58.py` — the STATEMENT cap (F12).
+- `tests/test_graph_surreal.py::TestNamesWithValuePrefixRangeRewrite` — behaviour pins hold on the native form
+  (measured on the reference); its docstrings narrate the range rewrite (prose to update).
+- `tests/test_sdk3_result_shapes.py` round-1/2 R7 asserted SDK 2.0's RENDERING — contradicted R7; removed here (the
+  only one inside this writable set).
+Full retired-name sweep (tests tree, 207 hits in 40 files, P8 pattern in `sdk3r3/sweep/run_sweep.sh`):
+`sdk3r3/sweep/out/P8_tests_pin_retired.txt` — every hit is the builder's to adjudicate; I did not adjudicate them one
+by one (NOT DONE: per-hit verdicts).
+
+### R3.11 DRY ledger (round 3 — every new reusable symbol is test-side)
+
+| new symbol | where I looked | found | disposition |
+|---|---|---|---|
+| `_sdk3_proxy.StoreBounceProxy.hold_next_response` | the proxy itself; grep `delay\|latency\|hold` in `loremaster/tests` | no slow-store fault anywhere | EXTENDED `StoreBounceProxy` (one-shot hold, counted) |
+| `test_sdk3_index_batching._TransactionSpy` | `_surreal_harness.StoreTraffic` (counts `query_raw` per LEDGER connection, reach-checked) | instruments one ledger's connection; the index write rides the STORE's — and its door reach is the F5 defect class | REUSED `_sdk_guard._CALL_HOOKS` (the guard's public hook chain) rather than a second wrapper; the spy is the hook |
+| `test_sdk3_native_shapes._is_door` / `_doors` | `_sdk_guard.install` (coroutine-only), `_surreal_harness.StoreTraffic.COUNTABLE_DOORS` (coroutine-only) | both are the defect F5 names | HAND-ROLLED in the test because it is the derivation the ruling asks the guard to adopt; the reference build put the same predicate in `_sdk_guard` (a second copy) — **the builder moves it into `_sdk_guard` and the test imports it** (one implementation) |
+| `test_sdk3_record_ids._rendered`, `_angle`, `_backtick` | grep `__str__` monkeypatches in `loremaster/tests` | none | HAND-ROLLED (test fixture) |
+| `test_sdk3_index_batching._big_module_source` | `test_mcp_server._map_budget_filler_source` | small-file filler, no call graph | HAND-ROLLED |
+| `test_sdk3_single_statement_seam._Ignored` | `test_sdk3_lifecycle._ignore_command` | same job | near-duplicate (4 lines) — should import `_ignore_command`; left for the adversary round |
+| `test_sdk3_connection_factory._required` | — | a getattr assertion | HAND-ROLLED (test-local) |
+| reused | `_governed_contract.{explain, index_served, scans_table, credentialed_app_context}`, `test_mcp_server.{_config, _make_context, _slug, _surreal_test_env}`, harness `connect_admin`/`run`/`make_env`/`unique_database`/`drop_database`, `scout._open_command_connection`, `scripts/mutation_proof.py`, `scripts/scratch_copy.sh` | | REUSED |
 
 ## SUMMARY
 
@@ -888,4 +1255,224 @@ if _MUTATION == "noreconnect":
     surrealdb.AsyncSurreal = functools.partial(surrealdb.AsyncSurreal, reconnect=False)
 if _MUTATION == "nopredicate":
     QueryError.is_transaction_conflict = property(lambda self: False)
+```
+
+## Appendix D — round-3 instruments (verbatim; run with the SDK under test, `-I`)
+
+### `probe_r3_compose_breakdown.py`
+```python
+"""SDK3 r3 / ruling R4 rider (2): OFFLINE per-table breakdown of one file's composed index transaction.
+
+    uv run python -I probe_r3_compose_breakdown.py <repo-relative .py path> [token_divisor]
+
+Builds the SAME producer fragments `Indexer._compose_file_fragments` builds (chunk replace,
+file_text, manifest row, code graph) with the production PURE builders — no socket is opened
+(every builder is documented "a PURE builder (no I/O)") — then classifies every composed
+statement by verb + table and every record it writes by table. Token counting for the chunker is
+approximated (len/divisor); the statement total is compared to the 5,113 measured on production.
+"""
+import collections, re, sys
+from pathlib import Path
+from pydantic import SecretStr
+from lorescribe.models import ChunkContext
+from lorescribe.python_ast import PythonAstChunker
+from loremaster.graph_surreal import SurrealCodeGraph
+from loremaster.index.records import chunk_to_record, sha512_hex
+from loremaster.index.surreal_manifest import SurrealManifest
+from loremaster.store.surreal import SurrealStore
+from loremaster.store._txn import compose, TXN_STATEMENT_HARD_CAP
+
+REPO = Path(sys.argv[3]) if len(sys.argv) > 3 else Path("/home/ejprice/PycharmProjects/lore")
+rel = sys.argv[1]
+divisor = int(sys.argv[2]) if len(sys.argv) > 2 else 4
+source = (REPO / rel).read_text()
+wiring = dict(url="ws://unused.invalid:1/rpc", namespace="n", database="d", user="u", password=SecretStr("p"))
+store = SurrealStore(dim=1024, **wiring)
+manifest = SurrealManifest(**wiring)
+graph = SurrealCodeGraph(tier_roots={"project": REPO}, project_roots=[REPO], **wiring)
+ctx = ChunkContext(slug="lore", file_path=rel, count_tokens=lambda t: max(1, len(t) // divisor), max_input_tokens=32000)
+chunks = PythonAstChunker().chunk(source, ctx) if hasattr(PythonAstChunker(), "chunk") else None
+h = sha512_hex(source.encode()) if "bytes" in str(sha512_hex.__annotations__) else sha512_hex(source)
+records = [chunk_to_record(c, slug="lore", tier="project", file_path=rel, content_hash=h, mtime_ns=0) for c in chunks]
+pairs = [(r, [0.0] * 1024) for r in records]
+fragments = {
+    "chunk": store.replace_file_fragment("project", rel, pairs),
+    "file_text": store.file_text_fragment("project", rel, source, h),
+    "manifest": manifest.replace_fragment(tier="project", file_path=rel, sha512=h, mtime_ns=0, size=len(source),
+                                          n_chunks=len(records), chunk_ids=[r.point_id for r in records], state="indexed"),
+    "graph": graph.build_file_graph_fragment("project", rel, chunks, module_name=rel[:-3].replace("/", ".")),
+}
+verb_table = re.compile(r"^\s*(DELETE|UPSERT|CREATE|RELATE|INSERT RELATION INTO|INSERT INTO|UPDATE|LET)\s+(?:type::record\('(\w+)'|\$(\w+)|(\w+))?", re.I)
+by_producer = collections.Counter(); by_verb_table = collections.Counter(); relate_edges = collections.Counter()
+for producer, fragment in fragments.items():
+    for statement in fragment.statements:
+        by_producer[producer] += 1
+        m = verb_table.match(statement)
+        verb = m.group(1).upper() if m else statement.split()[0].upper()
+        target = (m.group(2) or m.group(4) or (f"${m.group(3)}" if m.group(3) else "?")) if m else "?"
+        if target.startswith("$"):
+            bound = fragment.params.get(target[1:])
+            target = getattr(bound, "table_name", None) or f"{target}<{type(bound).__name__}>"
+        if verb == "RELATE":
+            edge = re.search(r"->\s*(\w+)\s*->", statement)
+            target = edge.group(1) if edge else "?"
+        by_verb_table[(producer, verb, target)] += 1
+text, params = (None, None)
+total = sum(by_producer.values())
+print(f"file={rel} chunks={len(records)} source_bytes={len(source.encode())} divisor={divisor}")
+print(f"composed statements={total} (production measured 5,113 for test_comms_tool.py) cap={TXN_STATEMENT_HARD_CAP}")
+for producer, n in by_producer.items():
+    print(f"  producer {producer}: {n}")
+for (producer, verb, target), n in sorted(by_verb_table.items(), key=lambda kv: (kv[0][0], -kv[1])):
+    print(f"    {producer:9} {verb:8} {target:22} {n}")
+try:
+    statement_text, merged = compose(*fragments.values())
+    print(f"compose: OK text_bytes={len(statement_text.encode())} params={len(merged)}")
+except Exception as error:  # noqa: BLE001 - the refusal IS the observation
+    print(f"compose: REFUSED {type(error).__name__}: {str(error)[:160]}")
+for producer, fragment in fragments.items():
+    print(f'  params {producer}: {len(fragment.params)} repr_bytes={len(repr(dict(fragment.params)).encode())}')
+```
+
+### `probe_f9_starts_with.py`
+```python
+"""SDK3 r3 F9 probe: is string::starts_with index-served on 3.3.5 for the shapes lore's prefix reach
+emits (1 prefix, 2-3 prefixes OR'd)? Throwaway db on the TEST store :18000, removed at the end."""
+import asyncio, sys, uuid
+sys.path.insert(0, "/home/ejprice/PycharmProjects/lore/loremaster/tests")
+from _governed_contract import index_served, scans_table, operators  # noqa: E402
+from surrealdb import AsyncSurreal  # noqa: E402
+DB = f"sdk3r3f9_{uuid.uuid4().hex[:10]}"
+async def main():
+    c = AsyncSurreal("ws://127.0.0.1:18000/rpc"); await c.signin({"username": "root", "password": "spikeroot"})
+    await c.use("lore_test", DB)
+    try:
+        await c.query_raw("DEFINE TABLE name SCHEMAFULL; DEFINE FIELD value ON name TYPE string; DEFINE INDEX name_value ON name FIELDS value;")
+        for i in range(300):
+            await c.query_raw("CREATE name SET value = $v", {"v": f"pkg.m{i%30}.sym{i}"})
+        await c.query_raw("CREATE name SET value = 'pkg.café.widget'; CREATE name SET value = 'pkg.cafés.other';")
+        shapes = {
+            "sw1": ("SELECT VALUE id FROM name WHERE string::starts_with(value, $a)", {"a": "pkg.m1."}),
+            "sw2": ("SELECT VALUE id FROM name WHERE string::starts_with(value, $a) OR string::starts_with(value, $b)", {"a": "pkg.m1.", "b": "pkg.m2."}),
+            "sw3": ("SELECT VALUE id FROM name WHERE string::starts_with(value, $a) OR string::starts_with(value, $b) OR string::starts_with(value, $c)", {"a": "pkg.m1.", "b": "pkg.m2.", "c": "pkg.café."}),
+            "range2": ("SELECT VALUE id FROM name WHERE (value >= $a AND value < $ah) OR (value >= $b AND value < $bh)", {"a": "pkg.m1.", "ah": "pkg.m1/", "b": "pkg.m2.", "bh": "pkg.m2/"}),
+            "control_lower": ("SELECT VALUE id FROM name WHERE string::starts_with(string::lowercase(value), $a)", {"a": "pkg.m1."}),
+        }
+        for label, (sql, params) in shapes.items():
+            plan = (await c.query_raw(sql + " EXPLAIN", params))["result"][0]["result"]
+            rows = (await c.query_raw(sql, params))["result"][0]["result"]
+            print(f"{label}: index_served={index_served(plan, 'name_value')} tablescan={scans_table(plan, 'name')} rows={len(rows)} ops={operators(plan)}")
+    finally:
+        await c.query_raw(f"REMOVE DATABASE IF EXISTS {DB}"); await c.close()
+asyncio.run(main())
+```
+
+### `probe_slow_write.py`
+```python
+"""Does a single-statement write with an embedded sleep() take the sleep and commit? (TEST store)"""
+import asyncio, time, uuid
+from surrealdb import AsyncSurreal
+DB = f"sdk3r3sw_{uuid.uuid4().hex[:8]}"
+async def main():
+    c = AsyncSurreal("ws://127.0.0.1:18000/rpc"); await c.signin({"username": "root", "password": "spikeroot"}); await c.use("lore_test", DB)
+    try:
+        t = time.monotonic(); r = await c.query_raw("CREATE probe:a SET n = 1, slow = sleep(2s)"); print("create+sleep", round(time.monotonic()-t, 2), r["result"][0]["status"])
+        t = time.monotonic(); r = await c.query_raw("BEGIN; CREATE probe:b SET n = 2; LET $w = sleep(2s); COMMIT;"); print("txn+sleep", round(time.monotonic()-t, 2), [e["status"] for e in r["result"]])
+        print((await c.query_raw("SELECT VALUE id FROM probe"))["result"][0]["result"])
+    finally:
+        await c.query_raw(f"REMOVE DATABASE {DB}"); await c.close()
+asyncio.run(main())
+```
+
+### `probe_f8_query.py`
+```python
+"""Validate the lead's F8 read-only count statement on a THROWAWAY TEST-store db (:18000) with controls:
+one bracketed value per bracket style in some fields, bare values elsewhere; tables left undeclared
+where lore would have them declared is NOT modelled — every table is created SCHEMALESS here."""
+import asyncio, sys, uuid
+from surrealdb import AsyncSurreal
+DB = f"sdk3r3f8_{uuid.uuid4().hex[:8]}"
+async def main():
+    c = AsyncSurreal("ws://127.0.0.1:18000/rpc"); await c.signin({"username": "root", "password": "spikeroot"}); await c.use("lore_test", DB)
+    try:
+        for t in ("agent", "memory", "message", "audit", "task", "file"):
+            await c.query_raw(f"DEFINE TABLE {t} SCHEMALESS")
+        await c.query_raw("CREATE agent SET scope = 'keep:01JCX'; CREATE agent SET scope = 'keep:⟨01JCX⟩'; CREATE agent SET task_id = NONE;")
+        await c.query_raw("CREATE message SET refs = ['task:abc', 'task:`0199-x`']; CREATE message SET refs = [];")
+        await c.query_raw("CREATE audit SET target_row = 'memory:abc', actor_email = 'p1'")
+        out = await c.query_raw(open(sys.argv[1]).read())
+        print(out["result"][-1]["status"], out["result"][-1]["result"])
+    finally:
+        await c.query_raw(f"REMOVE DATABASE {DB}"); await c.close()
+asyncio.run(main())
+```
+
+### `f8_counts.surql` = the statement in §R3.7(a)
+
+### `run_mutations.sh` (declared reds: one node id per line in `mut/<name>.expect`, from `--collect-only`, written before the run)
+```bash
+#!/usr/bin/env bash
+# SDK3 r3 operator-ruled mutation proofs on the reference build (R2 sharing, R4 bound pin, F9, W6).
+# Declared reds: $D/mut/<name>.expect (from pytest --collect-only, written BEFORE the run).
+set -u
+D=/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/d68febab-e1d4-4ed2-95a0-0ded042fa32c/scratchpad/sdk3r3
+R=$D/ref
+cd "$R"
+~/.claude/orchestration/tree_id.sh "$R"
+.venv/bin/python -c "import loremaster; print('loremaster.__file__=' + loremaster.__file__)"
+PYTEST=(systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0 .venv/bin/python -m pytest -q -rfE -p no:cacheprovider --timeout=300 -n 8)
+run() { # name file tests...
+  local name=$1 file=$2; shift 2
+  local expects=(); while read -r id; do expects+=(--expect-red "$id"); done < "$D/mut/$name.expect"
+  echo "=== MUTATION $name on $file"
+  .venv/bin/python scripts/mutation_proof.py --file "$file" --anchor-file "$D/mut/$name.anchor" --replacement-file "$D/mut/$name.repl" "${expects[@]}" -- "${PYTEST[@]}" "$@"
+  echo "MUTATION_EXIT $name=$?"
+}
+run r2 loremaster/loremaster/store/_txn.py loremaster/tests/test_sdk3_result_shapes.py loremaster/tests/test_sdk3_single_statement_seam.py
+run r4 loremaster/loremaster/store/surreal.py loremaster/tests/test_sdk3_index_batching.py
+run f9 loremaster/loremaster/graph_surreal.py loremaster/tests/test_sdk3_native_shapes.py
+run w6 loremaster/loremaster/store/_txn.py loremaster/tests/test_sdk3_workaround_retirement.py loremaster/tests/test_sdk3_txn_classification.py
+git -C "$R" diff --stat | tail -1
+```
+
+Mutation anchors → replacements (each matched exactly once):
+- **M-r2**: `return results[0]` → ` return results `
+- **M-r4**: `statements.append(f"INSERT INTO {CHUNK_TABLE} ${rows_param}")` → ` for index, row in enumerate(rows): params[f"{rows_param}{index}"] = [row] statements.append(f"INSERT INTO {CHUNK_TABLE} ${rows_param}{index}") `
+- **M-f9**: `conditions.append(f"string::starts_with({_COL_VALUE}, ${key})")` → ` conditions.append(f"string::starts_with(string::lowercase({_COL_VALUE}), ${key})") `
+- **M-w6**: `return isinstance(error, QueryError) and error.is_transaction_conflict` → ` return False `
+
+### Offline breakdown output (`probe_r3_compose_breakdown.py loremaster/tests/test_comms_tool.py 4`, 2026-11-07, HEAD `b03c4fc`)
+```
+file=loremaster/tests/test_comms_tool.py chunks=511 source_bytes=423315 divisor=4
+composed statements=5113 (production measured 5,113 for test_comms_tool.py) cap=5000
+  producer chunk: 512
+  producer file_text: 1
+  producer manifest: 2
+  producer graph: 4598
+    chunk     UPSERT   chunk                  511
+    chunk     DELETE   chunk                  1
+    file_text UPSERT   file_text              1
+    graph     RELATE   refers                 1858
+    graph     UPSERT   name                   1204
+    graph     RELATE   answers_to             1022
+    graph     CREATE   code_node              511
+    graph     DELETE   code_node              1
+    graph     DELETE   refers                 1
+    graph     DELETE   answers_to             1
+    manifest  DELETE   file                   1
+    manifest  CREATE   file                   1
+compose: REFUSED SurrealStoreError: composed transaction has 5113 statements, exceeding the hard cap of 5000 statements per transaction — refused before anything was sent to the server
+  params chunk: 1024 repr_bytes=3424677
+  params file_text: 2 repr_bytes=433128
+  params manifest: 8 repr_bytes=20843
+  params graph: 13419 repr_bytes=1355523
+```
+
+### F9 probe output (3.3.5 TEST store)
+```
+sw1: index_served=True tablescan=False rows=10 ops=['ProjectValue', 'Filter', 'IndexScan']
+sw2: index_served=True tablescan=False rows=20 ops=['ProjectValue', 'Filter', 'BitmapResolve', 'BitmapOr', 'BitmapIndexScan', 'BitmapIndexScan']
+sw3: index_served=True tablescan=False rows=21 ops=['ProjectValue', 'Filter', 'BitmapResolve', 'BitmapOr', 'BitmapIndexScan', 'BitmapIndexScan', 'BitmapIndexScan']
+range2: index_served=True tablescan=False rows=20 ops=['ProjectValue', 'Filter', 'BitmapResolve', 'BitmapOr', 'BitmapIndexScan', 'BitmapIndexScan']
+control_lower: index_served=False tablescan=True rows=10 ops=['ProjectValue', 'TableScan']
 ```

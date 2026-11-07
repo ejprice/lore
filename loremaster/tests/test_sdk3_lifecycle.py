@@ -70,11 +70,12 @@ _IN_FLIGHT_STATEMENT = "RETURN sleep(3s)"
 _IN_FLIGHT_SETTLE_SECONDS = 0.5
 _RACING_FAILURE_BOUND_SECONDS = 20.0
 
-# The long-outage pin (operator fork F2 in the packet doc): an outage longer than a short bounce,
-# and the bound on how long the first call after the store returns may take to answer.
+# The long-outage pin (operator ruling R5, F2b): an outage longer than a short bounce, and the bound,
+# measured from the moment the store returns, within which every owner's first call must answer: the
+# factory's reconnect delay is capped at 2.0 s (+10% SDK jitter = 2.2 s), plus the handshake and session
+# replay. "~2 s" in the ruling; 3.0 s here.
 _LONG_OUTAGE_SECONDS = 15.0
-_AFTER_RETURN_SECONDS = 1.0
-_FIRST_CALL_AFTER_LONG_OUTAGE_BOUND_SECONDS = 6.0
+_FIRST_CALL_AFTER_LONG_OUTAGE_BOUND_SECONDS = 3.0
 
 # How long the no-zombie pins watch the proxy for a socket nobody should be opening. It covers the
 # SDK's first two reconnect attempts (~2 s and ~6 s after a drop).
@@ -444,35 +445,49 @@ class TestAClosedOwnerStaysClosed:
 
 
 class TestRecoveryLatencyAfterALongOutage:
-    """RECOVERY under a longer outage — **operator fork F2** (packet doc §5): how soon after the store
-    returns must the first call answer? Pinned at the recommended bound; RED at HEAD (the first call
-    fails outright) and RED on an SDK 3.0 build left at its default exponential backoff (whose next
-    reconnect attempt after a 15 s outage is ~30 s after the drop)."""
+    """RECOVERY under a longer outage — operator ruling R5 (F2b): ONE shared connection factory with
+    ``ReconnectOptions(attempts=-1, retry_delay=0.5, retry_delay_max=2.0)``, so "a call after the server
+    returns answers within ~2 s (L6)". Round 3 quantifies it over EVERY owner (derived, never hand-listed):
+    an owner that bypasses the factory keeps the SDK default (5 attempts, backoff to 60 s — after a 15 s
+    outage its next attempt is ~15 s away), and one with the factory's delays but a finite attempt count
+    gives up ~7.5 s into the outage and never comes back; both fail this pin. The calls are issued the
+    moment the store returns, so the bound measures the reconnect cadence itself.
+    RED at HEAD (SDK 2.0 never reconnects: the first call fails outright). COST: ~20 s."""
 
-    async def test_the_first_call_after_a_long_outage_answers_promptly(
-        self, lease_owner: SurrealLeaseStore, proxy: StoreBounceProxy
+    async def test_every_owner_answers_promptly_once_the_store_returns(
+        self, every_owner: dict[str, Any], proxy: StoreBounceProxy
     ) -> None:
-        await _probe_call(lease_owner, proxy.url)
+        warm_failures = await _call_each(every_owner, proxy.url)
+        assert not warm_failures, (
+            f"premise: every owner works before the outage:\n  {_describe(warm_failures)}"
+        )
         await proxy.go_down()
         await asyncio.sleep(_LONG_OUTAGE_SECONDS)
         await proxy.come_up()
-        await asyncio.sleep(_AFTER_RETURN_SECONDS)
+        returned_at = time.monotonic()
 
-        started = time.monotonic()
-        try:
-            await asyncio.wait_for(
-                _probe_call(lease_owner, proxy.url), _FIRST_CALL_AFTER_LONG_OUTAGE_BOUND_SECONDS
+        async def _timed(name: str) -> tuple[str, float | BaseException]:
+            try:
+                await asyncio.wait_for(
+                    _probe_call(every_owner[name], proxy.url), _FIRST_CALL_AFTER_LONG_OUTAGE_BOUND_SECONDS
+                )
+            except BaseException as error:  # noqa: BLE001 - the failure IS the finding
+                return name, error
+            return name, time.monotonic() - returned_at
+
+        outcomes = dict(await asyncio.gather(*(_timed(name) for name in every_owner)))
+        late = {
+            name: outcome
+            for name, outcome in outcomes.items()
+            if isinstance(outcome, BaseException) or outcome > _FIRST_CALL_AFTER_LONG_OUTAGE_BOUND_SECONDS
+        }
+        assert not late, (
+            f"{len(late)} of {len(every_owner)} owners did not answer within "
+            f"{_FIRST_CALL_AFTER_LONG_OUTAGE_BOUND_SECONDS}s of the store returning after a "
+            f"{_LONG_OUTAGE_SECONDS}s outage (an MCP tool call parked on a reconnect backoff, or an owner "
+            f"whose reconnect gave up): "
+            + "; ".join(
+                f"{name}: {type(o).__name__}: {o}" if isinstance(o, BaseException) else f"{name}: {o:.1f}s"
+                for name, o in sorted(late.items())
             )
-        except TimeoutError:
-            pytest.fail(
-                f"the store has been back {_AFTER_RETURN_SECONDS}s after a {_LONG_OUTAGE_SECONDS}s "
-                f"outage, and the first call was still waiting after "
-                f"{_FIRST_CALL_AFTER_LONG_OUTAGE_BOUND_SECONDS}s (an MCP tool call parked on a "
-                f"reconnect backoff)"
-            )
-        except Exception as error:  # noqa: BLE001 - the failure IS the finding
-            pytest.fail(
-                f"the first call after a {_LONG_OUTAGE_SECONDS}s outage failed "
-                f"({type(error).__name__}: {error}) although the store was back"
-            )
-        assert time.monotonic() - started < _FIRST_CALL_AFTER_LONG_OUTAGE_BOUND_SECONDS
+        )

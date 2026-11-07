@@ -49,6 +49,9 @@ logger = logging.getLogger(__name__)
 # conflicts on 3.3.5, research §D-1) and rounds, so the conflict premise holds with margin.
 _RACERS = 16
 _ROUNDS = 2
+# The single-statement leg's ceiling on rounds while waiting for a conflict (P(no conflict in 400 updates)
+# at P6's ~3% per update ≈ 5e-6).
+_MAX_SINGLE_STATEMENT_ROUNDS = 25
 
 # The engine's typed kind for a THROW (SDK ``ErrorKind.THROWN``'s value) — what a domain refusal
 # must surface as. Written as the engine's word, not imported, so an SDK that renamed its constant
@@ -57,6 +60,13 @@ _THROWN_KIND = "Thrown"
 
 # The cascade detail kinds that must NEVER be reported as a root cause.
 _CASCADE_KINDS = frozenset({"NotExecuted", "Cancelled"})
+
+# The engine's cascade-notice text (measured 3.2.4 and 3.3.5 on the statements a rollback never ran) — used
+# only as a THROW payload: SDK 3.0's ``db.batch()`` selects the root cause by THIS text (it skips every
+# failure whose message contains it), while lore's selector is TYPED (``is_not_executed`` /
+# ``is_cancelled``). Operator ruling R7: ``db.batch()`` may replace ``compose`` + root-cause selection only
+# if it passes these pins.
+_CASCADE_LOOKALIKE_TEXT = "The query was not executed due to a failed transaction"
 
 # The live conflict text on 3.3.5 RocksDB (research §A.3) — used only as a THROW payload, to prove
 # text never buys a retry.
@@ -171,10 +181,16 @@ class TestARetryableConflictIsRetriedAndLosesNothing:
     async def test_sixteen_way_single_statement_updates_all_commit_once(
         self, owners: list[_CountingOwner]
     ) -> None:
+        """Round 3: rounds continue until a conflict was observed (at most ``_MAX_SINGLE_STATEMENT_ROUNDS``).
+        On 3.3.5 a single-statement increment conflicts rarely (probe P6: 5 raised in 160), so a fixed two
+        rounds (32 updates) saw NO conflict in ~0.97^32 ≈ 38% of runs and failed its own premise — measured
+        once on the round-3 reference build. Adaptive rounds keep the premise and the count exact."""
         await _query(owners[0], "CREATE counter:hot SET n = 0")
         for item in owners:
             item.attempts = 0
-        for _ in range(_ROUNDS):
+        rounds = 0
+        while rounds < _MAX_SINGLE_STATEMENT_ROUNDS:
+            rounds += 1
             outcomes = await asyncio.gather(
                 *(_query(item, "UPDATE counter:hot SET n += 1") for item in owners), return_exceptions=True
             )
@@ -183,11 +199,14 @@ class TestARetryableConflictIsRetriedAndLosesNothing:
                 f"{len(failures)} of {_RACERS} racing single-statement updates FAILED instead of "
                 f"retrying: {[f'{type(error).__name__}: {error}' for error in failures]!r}"
             )
+            if rounds >= _ROUNDS and sum(item.attempts for item in owners) > _RACERS * rounds:
+                break
         attempts = sum(item.attempts for item in owners)
-        assert attempts > _RACERS * _ROUNDS, (
-            f"premise: {_RACERS * _ROUNDS} updates took {attempts} attempts — no conflict was retried"
+        assert attempts > _RACERS * rounds, (
+            f"premise: {_RACERS * rounds} updates over {rounds} rounds took {attempts} attempts — no "
+            f"conflict was retried"
         )
-        assert await _counter_value(owners[0]) == [_RACERS * _ROUNDS]
+        assert await _counter_value(owners[0]) == [_RACERS * rounds]
 
 
 # The domain-refusal shapes: the THROW at the FIRST statement after BEGIN, in the MIDDLE, and LAST
@@ -245,6 +264,27 @@ class TestADomainRefusalIsNotRetriedAndItsRootCauseSurfaces:
         assert owner.attempts == 1, (
             f"a THROW quoting the conflict text was retried ({owner.attempts} attempts)"
         )
+
+    @pytest.mark.parametrize("position", sorted(_THROW_POSITIONS))
+    async def test_a_throw_quoting_the_cascade_text_still_surfaces_as_the_root_cause(
+        self, owners: list[_CountingOwner], position: str
+    ) -> None:
+        """R7 (``db.batch()`` CONDITIONAL): the root cause is chosen by the engine's TYPED kind, never by
+        what the message says. A domain refusal whose text quotes the cascade notice (a guard echoing a
+        caller's value can say anything) is still the root cause: kind ``Thrown``, one attempt, nothing
+        committed. A text selector skips it and reports a cascade notice (or the refused COMMIT) instead."""
+        owner = owners[0]
+        await _query(owner, "DEFINE TABLE probe SCHEMALESS")
+        owner.attempts = 0
+        statement = _THROW_POSITIONS[position].replace("sdk3 domain refusal", _CASCADE_LOOKALIKE_TEXT)
+        with pytest.raises(TxnDomainRejectionError) as caught:
+            await _transact(owner, statement)
+        assert caught.value.kind == _THROWN_KIND, (
+            f"a THROW at the {position} statement whose text quotes the cascade notice surfaced as kind "
+            f"{caught.value.kind!r} — the root cause was selected by TEXT"
+        )
+        assert owner.attempts == 1
+        assert await _query(owner, "SELECT VALUE id FROM probe") == [], "a rolled-back transaction left rows"
 
     async def test_a_single_statement_throw_is_not_retried(self, owners: list[_CountingOwner]) -> None:
         """The single-statement path: the same refusal, raised by the SDK call itself."""

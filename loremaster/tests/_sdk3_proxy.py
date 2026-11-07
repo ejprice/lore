@@ -22,6 +22,14 @@ Two sever shapes, because a real restart can produce either and the SDK classifi
   written in the middle of a forwarded server frame would corrupt it, so the racing-call pins use
   :attr:`SeverMode.ABORT`.
 
+A SLOW STORE, without a slow statement (round 3, operator ruling R5 rider 3):
+:meth:`StoreBounceProxy.hold_next_response` arms a one-shot hold — the NEXT server-to-client chunk on
+any socket is held back ``seconds`` before it is forwarded (and everything after it on that socket
+queues behind it, so frame order is preserved). The
+engine finished long ago; the CLIENT simply sees its reply arrive ``seconds`` late. That is how the
+long-operation pins make a startup DDL "take" longer than the default request timeout without depending
+on how long any real DDL takes on this box.
+
 The proxy also COUNTS, so a pin can prove its own premise (a positive control): how many sockets it
 accepted, how many it severed, and how many are live now. A recovery pin that never saw its
 connections cut would pass for the wrong reason.
@@ -76,6 +84,8 @@ class StoreBounceProxy:
     upstream_url: str
     accepted_total: int = 0
     severed_total: int = 0
+    held_total: int = 0
+    _hold_seconds: float | None = None
     _port: int = 0
     _server: asyncio.base_events.Server | None = None
     _pipes: list[_Pipe] = field(default_factory=list)
@@ -141,6 +151,10 @@ class StoreBounceProxy:
         await self.come_up()
         return severed
 
+    def hold_next_response(self, seconds: float) -> None:
+        """Arm a one-shot hold: the next server-to-client chunk waits ``seconds`` (module docstring)."""
+        self._hold_seconds = seconds
+
     async def close(self) -> None:
         """Teardown: go down for good."""
         await self.go_down(SeverMode.ABORT)
@@ -171,6 +185,10 @@ class StoreBounceProxy:
                 chunk = await reader.read(_FORWARD_CHUNK_BYTES)
                 if not chunk:
                     break
+                if writer is pipe.client_writer and self._hold_seconds is not None:
+                    seconds, self._hold_seconds = self._hold_seconds, None
+                    self.held_total += 1
+                    await asyncio.sleep(seconds)
                 writer.write(chunk)
                 await writer.drain()
         except OSError, asyncio.IncompleteReadError:
