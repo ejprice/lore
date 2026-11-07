@@ -109,3 +109,33 @@ happened server-side), never as a plain failure; (3) pins: a call during an outa
 bound; a call after the server returns answers within ~2 s (L6); a long DDL under its override
 survives past 30 s. Unknown, stated: whether the engine keeps running a statement whose client
 timed out (unmeasured) — which is why rider (2) says "unknown".
+
+## R6 — PRINCIPLE: native SDK shapes over hand-rolled ones; F3, F5–F10, scheduling, S1, S2 accepted (operator, 2026-11-07)
+
+Operator, verbatim: "I prefer to use the native SDK shapes over hand rolling. Otherwise,
+recommendations accepted." Applied item by item:
+
+- **F8 (CHANGED by the principle):** NO lore-owned SDK-2.0-shape "served id" function. lore adopts
+  SDK 3.0's own `RecordID` rendering (`str(RecordID)`, bracketed digit-led keys) and parses with
+  `RecordID.parse` — the four `partition(":")` re-parsers are deleted, not centralised. Consequence
+  the contract must carry: values PERSISTED in the SDK-2.0 bare shape (keep scopes, principal refs,
+  `audit.target_row`, anything storing a `str(RecordID)`) compare unequal after the bump → a
+  migration of persisted id-strings (or storing `record<…>` values instead of strings), sized by a
+  read-only count on :18500 run by the lead BEFORE the contract revision.
+- **S2 (CHANGED):** the six cloned datetime coercers are DELETED in favour of the SDK's native
+  `PreciseDatetime` (a `datetime` subclass), not merged into a seventh shared copy.
+- **F7 (CHANGED):** `RecordID.parse` is THE parser; lore keeps no acceptance list of its own.
+  Snapshot ids are lore-minted (unreachable widening), so no lore-side validation is added.
+- **F3:** yes — keep the engine's nanoseconds (native `PreciseDatetime`).
+- **F5:** widen `tests/_sdk_guard.py` to the SDK 3.0 sync builder methods; observed `query` calls are
+  a checked variable.
+- **F6:** extend `PendingFile` with a pytest-only expected-red node-id list that self-destructs when
+  green (a gate change).
+- **F9:** keep the `>=`/`<` range, re-classified as design (see the open question below).
+- **F10:** retire the `KeyError` arm now; keep `WebSocketException` until the builder measures the LIVE
+  iterator and `kill()`-over-dead-socket paths. Target state per the principle: classification by the
+  SDK's own `TransportError` / `ConnectionUnavailableError`, with lore's hand-kept error lists retired.
+- **Scheduling:** SDK3 before the dormant 58 / 63c / 64b.
+- **S1:** in scope — scout's drop goes away with R5's shared factory.
+- **R2 stands:** `run_query` consumes the SDK's native per-statement list and selects its one
+  statement — that is the seam's contract, not a reshaped copy of SDK 2.0.
