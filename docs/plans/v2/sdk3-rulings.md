@@ -73,3 +73,18 @@ composes to 5,113 statements and `compose()` refuses it (`TXN_STATEMENT_HARD_CAP
 `store/_txn.py`), so `index.file.store_failed` → `index.file.failed` and the file is absent from the
 index (no chunks, no graph). This pre-dates the 3.3.5 migration. Ruled in scope for this packet;
 the mechanism is an open fork (packet doc §5).
+
+## R4 — R3's mechanism: BATCH ROWS (operator, 2026-11-07)
+
+Ruled option A. A file's index write stays ONE atomic transaction, but rows are written as one
+batched `INSERT` (or `INSERT RELATION`) per table carrying an array of rows, so the statement count
+scales with the number of tables, not rows. The cap is re-expressed as a bound on what strains the
+shared server (rows or bytes), not statement count. Rejected: B (raise the cap — moves the ceiling),
+C (split a file across transactions — readers see a half-indexed file).
+
+Rider: (1) read `docs/reference/surrealdb-31-capabilities.md` first, and confirm bulk `INSERT` /
+`INSERT RELATION` semantics on 3.3.5 (protected keys, RELATE's unvalidated endpoints, CONTENT
+datetimes) against the `surrealql-tests` corpus, then a probe; (2) measure test_comms_tool.py's
+per-table row breakdown BEFORE choosing the new bound; (3) a file still refused must be NAMED on a
+served surface, never silently absent; (4) pin: test_comms_tool.py-sized fixture indexes and is
+searchable; a mutation restoring per-row statements reddens the bound pin.
