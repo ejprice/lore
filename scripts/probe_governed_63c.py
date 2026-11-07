@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-# HISTORICAL INSTRUMENT — measured the PRE-63c-i-a world. Its C-agent control is EXPECTED to
-# fail on >= 63c-i-a (the build implements what it measured); do not treat that failure as a
-# regression. (Its prose below — incl. "agent has NO scope column" — describes that pre-63c-i-a
-# world.)
+# Built to measure the PRE-63c-i-a world; PART D's prose ("agent has NO scope column") still
+# describes that world. PART C-agent was RE-POINTED 2026-11-07 at where the rule now lives:
+# 63c-i-a (ruling §4.2 Q3 DROP + MOVE) dropped the agent.role store ASSERT into the ONE writer
+# (``AgentRegistry.register``), so the C-control proves the WRITER refuses the poison, and the
+# DD-3.c legs run the real migration path: the deployed asserted world -> HEAD's emitter.
 """Probe: packet-63c store + code FACTS (govern the comms REMAINDER — the ``brief``
-+ ``agent`` populations), settled BY CONSTRUCTION on the live 3.2.4 engine — never
-by reasoning (#107 came from reasoning about engine behaviour instead of measuring
-it). This is the ii-a/ii-b method (``scripts/probe_read_filter_63.py`` /
-``scripts/probe_drain_read_63b_ii_b.py``) turned on the two populations 63c owns.
++ ``agent`` populations), settled BY CONSTRUCTION on the live engine (built on
+3.2.4; re-run on 3.3.5 on 2026-11-07) — never by reasoning (#107 came from
+reasoning about engine behaviour instead of measuring it). This is the ii-a/ii-b
+method (``scripts/probe_read_filter_63.py`` / ``scripts/probe_drain_read_63b_ii_b.py``)
+turned on the two populations 63c owns.
 
 WHY. 63c retrofits the packet-61 governance onto the comms REMAINDER: the ``brief``
 ledger (``brief_get``/``brief_publish``/``brief_ack``) and the ``agent`` ROSTER
@@ -16,15 +18,21 @@ author will rule on are BELIEVED-not-known; each is a #107/#131-class hazard (gr
 on a small/virgin test DB, a fault on a large/dirty long-lived store):
 
   * PART C — THE HEADLINE (the packet-03b DD-3.c hazard, the ii-b shape). Both
-    ``agent`` and ``brief`` are POPULATED SCHEMAFULL tables carrying field ASSERTs.
-    On a SCHEMAFULL table the WHOLE record is re-validated on ANY write (store
-    reference §1.4). So a LEGACY row that violates an ASSERT (written before the
-    ASSERT was landed/narrowed — a #131 long-lived dirty store) is write-poisoned:
-    does a whole-window UPDATE (the 63c owner/scope BACKFILL) — or a single-row
-    UPDATE (``heartbeat``'s ``touch``) — re-fire that ASSERT and ERROR, aborting the
-    statement (store reference §3)? For a whole-window backfill that is TOTAL DENIAL
-    of the migration (DD-3.c verbatim). Settled by CONSTRUCTING the dirty row (mirror
-    the #131 downgrade→write-dirty→migrate path) and OBSERVING which ASSERTs re-fire.
+    ``agent`` and ``brief`` are POPULATED SCHEMAFULL tables; on a SCHEMAFULL table the
+    WHOLE record is re-validated on ANY write (store reference §1.4). So a LEGACY row
+    that violates a store ASSERT (written before the ASSERT was landed/narrowed — a
+    #131 long-lived dirty store) is write-poisoned: does a whole-window UPDATE (the 63c
+    owner/scope BACKFILL) — or a single-row UPDATE (``heartbeat``'s ``touch``) — re-fire
+    that ASSERT and ERROR, aborting the statement (store reference §3)? For a
+    whole-window backfill that is TOTAL DENIAL of the migration (DD-3.c verbatim).
+    Settled by CONSTRUCTING the dirty row and OBSERVING which ASSERTs re-fire.
+    ``brief`` still carries its name/body/created_by store ASSERTs at HEAD (their DROP
+    is 63c-ii), so C-brief measures them live. ``agent.role`` does NOT any more:
+    63c-i-a (ruling ``docs/design/2026-09-13-packet63c-remainder-ruling.md`` §4.2 Q3)
+    DROPPED it and MOVED the non-empty rule into ``AgentRegistry.register``. So C-agent
+    proves the rule at the WRITER, then runs the real migration: a legacy role='' row
+    under the DEPLOYED asserted world (the shared frozen capture) re-fires there, and
+    HEAD's emitter, re-applied over it, must drop the ASSERT (the §4.4 two-leg shape).
   * PART D — the governed READ-filter plans (mirror ii-a probe-63). Does the packet-61
     ``authorize_filter(subject, READ, table)`` member filter IndexScan on ``brief``
     once the three governed columns + their two plain indexes are spliced on? And on
@@ -62,11 +70,16 @@ emitter output (``authorize_filter``), the DDL is the REAL top-level generators
 
 SELF-CHECKING where a leg has a DEFINITE expected shape (exit non-zero on a
 surprise): every C+ walker control classifies as stated; the PART-C C-controls prove
-each ASSERT is REAL (a fresh violating write under the CURRENT DDL is REJECTED — else
-there is no hazard and the probe is INVALID); each poisoned-row UPDATE ERRORs and its
-CONFORMING positive control succeeds; the PART-D REQUIRE legs (brief scope=, brief
-full READ fragment, agent owner_principal=) IndexScan. PART-D agent candidate fleet
-filters + PART-E are DIAGNOSTIC (printed, never an exit gate).
+each rule is REAL where it LIVES — for ``brief`` a fresh violating write under the
+CURRENT DDL is REJECTED by the store; for ``agent`` the ONE writer
+(``AgentRegistry.register``) REFUSES role='' / role='   ' with nothing written and
+ACCEPTS a real role — else the poison is not genuinely non-conformant and the probe is
+INVALID; under the deployed asserted ``agent`` world a heartbeat over the poisoned row
+ERRORs while one over a conforming row does not (the instrument can SEE the abort); each
+CONFORMING positive-control UPDATE succeeds; the PART-D REQUIRE legs (brief scope=, brief
+full READ fragment, agent owner_principal=) IndexScan. Whether each poisoned-row UPDATE
+under the CURRENT DDL errors is the measurement itself — printed, never an exit gate —
+as are the PART-D agent candidate fleet filters and PART-E.
 
 SAFETY. Mints its own throwaway database ``test_<pid>_<uuid4>`` under the
 ``lore_test`` namespace on the spike-surreal TEST store (``ws://127.0.0.1:18000`` —
@@ -97,7 +110,7 @@ from typing import Any
 # SHIPPED ii-a instrument — not re-cloned here (store-law C1: do not fork a throwaway
 # walker). The raw per-statement status helpers are the ii-b DD-3.c instrument.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from loremaster.agents import AgentRegistry  # noqa: E402
+from loremaster.agents import AgentRegistry, InvalidAgentIdentityError  # noqa: E402
 from loremaster.store._txn import bootstrap_session, signin_credentials  # noqa: E402
 from loremaster.store.surreal_schema import (  # noqa: E402
     BRIEF_TABLE,
@@ -210,11 +223,12 @@ async def _create_conforming_agent(
 
 # --------------------------------------------------------------------------- #
 # PART C — DD-3.c reachability on ``agent`` + ``brief`` (the load-bearing fact).
-# For EACH ASSERT: downgrade the field (drop its ASSERT), write a LEGACY row that
-# VIOLATES it (store-ref §1.4 — under the OLD DDL, before the migrate), re-land the
-# ASSERT (OVERWRITE), then run the relevant whole-window / single-row UPDATE and
-# OBSERVE whether whole-record re-validation aborts. Every negative is paired with a
-# CONFORMING positive control.
+# For EACH rule: downgrade the field (drop its ASSERT), write a LEGACY row that
+# VIOLATES it (store-ref §1.4 — under the OLD DDL, before the migrate), land the
+# asserted definition over it (brief: HEAD's emitter, which still asserts; agent: the
+# DEPLOYED asserted world, then HEAD's emitter, which drops the role ASSERT), then run
+# the relevant whole-window / single-row UPDATE and OBSERVE whether whole-record
+# re-validation aborts. Every negative is paired with a CONFORMING positive control.
 # --------------------------------------------------------------------------- #
 
 
@@ -224,9 +238,92 @@ async def _downgrade(connection: Any, table: str, column: str, type_expr: str) -
     await _apply_ddl(connection, f"DEFINE FIELD OVERWRITE {column} ON {table} TYPE {type_expr};\n")
 
 
-async def _agent_dd3c(connection: Any, report: ProbeReport) -> dict[str, Any]:
+async def _agent_names_present(connection: Any, names: list[str]) -> list[str]:
+    """The subset of ``names`` that has an ``agent`` row — the read-back a writer refusal
+    is checked against ("nothing was written" is observed, never assumed)."""
+    rows = await connection.query(
+        f"SELECT name FROM {AGENT_TABLE} WHERE name IN $names", {"names": names}
+    )
+    return sorted(str(row.get("name")) for row in rows or [] if isinstance(row, dict))
+
+
+async def _agent_writer_control(database: str, connection: Any, report: ProbeReport) -> bool:
+    """C-CONTROL, at the rule's HOME since 63c-i-a (ruling §4.2 Q3 MOVE): the ONE writer
+    ``AgentRegistry.register`` REFUSES the poison (role='' and the whitespace-only role the
+    dropped store ASSERT's ``string::trim`` also refused) with NOTHING written, and ACCEPTS a
+    real role (positive control: the refusal is about the role, not a writer that refuses
+    everything). False ⇒ the DD-3.c poison is not non-conformant under the current rules."""
+    registry = AgentRegistry(
+        url=URL, namespace=NAMESPACE, database=database, user=USER, password=SecretStr(PASSWORD)
+    )
+    refused: dict[str, bool] = {}
+    try:
+        await registry.ensure_ready()
+        for label, name, role in (("empty", "agwriterempty", ""), ("blank", "agwriterblank", "   ")):
+            try:
+                await registry.register(name, session="sess1", role=role)
+                refused[label] = False
+            except InvalidAgentIdentityError as error:
+                refused[label] = True
+                print(f"  [C-control writer] register(role={role!r}) REFUSED: {error}")
+        await registry.register("agwriterok", session="sess1", role="probe")
+    finally:
+        await registry.close()
+    leaked = await _agent_names_present(connection, ["agwriterempty", "agwriterblank"])
+    accepted = await _agent_names_present(connection, ["agwriterok"]) == ["agwriterok"]
+    held = all(refused.values()) and not leaked and accepted
+    print(f"  [C-control writer] refused={refused} rows-written-by-refusals={leaked} "
+          f"real-role accepted+written={accepted}")
+    if not held:
+        report.surprises.append(
+            "PART C-agent C-CONTROL FAILED — the ONE writer AgentRegistry.register did not refuse a "
+            f"blank role with nothing written, or refused a real one (refused={refused}, "
+            f"written-by-refusals={leaked}, real-role accepted={accepted}). The 63c-i-a MOVE says the "
+            "writer enforces what the dropped store ASSERT did: if it does not, that is a PRODUCTION "
+            "defect, and the DD-3.c poison below is not genuinely non-conformant (a false clear)."
+        )
+    return held
+
+
+async def _agent_deployed_world_control(connection: Any, report: ProbeReport, now: datetime) -> bool:
+    """C0 — INSTRUMENT CONTROL: land the DEPLOYED asserted ``agent`` world over the legacy rows,
+    then a heartbeat over the poisoned row must ERROR (whole-record re-validation re-fires role's
+    ASSERT) and one over a conforming row must not. Without it, a non-erroring C1 under HEAD's DDL
+    could be a blind instrument, not a fixed hazard. Returns whether the poisoned heartbeat errored."""
+    # The DEPLOYED world (name/session charset, role non-empty, status domain), HAND-CAPTURED once in
+    # the shared contract helper — the capture the 63c-i-a §4.4 dirty-store legs use, so this probe and
+    # those pins cannot drift about production's asserted shape. Imported HERE because the module is
+    # importable only once ``probe_read_filter_63`` has put ``loremaster/tests`` on sys.path (a
+    # module-level import would be re-sorted above it).
+    from _governed_contract import frozen_asserted_agent_ddl
+
+    await _apply_ddl(connection, frozen_asserted_agent_ddl())
+    c0_raw = await _query_raw(
+        connection,
+        f"UPDATE type::record('{AGENT_TABLE}', $id) SET heartbeat_at = $t",
+        {"id": "ag_poison", "t": now},
+    )
+    c0_ok_raw = await _query_raw(
+        connection,
+        f"UPDATE type::record('{AGENT_TABLE}', $id) SET heartbeat_at = $t",
+        {"id": "ag_ok1", "t": now},
+    )
+    print(f"\n  [C0 DEPLOYED world: heartbeat over POISONED] errored={_any_err(c0_raw)}")
+    print(f"      err: {_err_texts(c0_raw)}")
+    print(f"  [C0-control DEPLOYED world: heartbeat over CONFORMING] errored={_any_err(c0_ok_raw)}")
+    if not _any_err(c0_raw) or _any_err(c0_ok_raw):
+        report.surprises.append(
+            "PART C-agent C0 FAILED — under the DEPLOYED asserted agent world a heartbeat over the "
+            f"role='' row did not error ({_err_texts(c0_raw)}) or one over a conforming row did "
+            f"({_err_texts(c0_ok_raw)}). The probe cannot SEE the DD-3.c abort, so a non-erroring C1 "
+            "below would be a false clear."
+        )
+    return _any_err(c0_raw)
+
+
+async def _agent_dd3c(database: str, connection: Any, report: ProbeReport) -> dict[str, Any]:
     """DD-3.c on ``agent``: heartbeat (single-row ``touch``) + the owner backfill
-    (whole-window). The poison is ``role = ''`` (violates the non-empty ASSERT and is
+    (whole-window). The poison is ``role = ''`` (non-conformant under the writer's rule and
     a field ``touch`` does NOT set, so it cannot be repaired by the write)."""
     findings: dict[str, Any] = {}
     print("\n" + "=" * 78)
@@ -238,25 +335,22 @@ async def _agent_dd3c(connection: Any, report: ProbeReport) -> dict[str, Any]:
     # column (PART D measured that fact; 63c-i-a adds one). The owner backfill needs only owner_principal.
     await _apply_ddl(connection, generate_agent_ddl())
 
-    # C-CONTROL: the role non-empty ASSERT is REAL — a fresh role='' CREATE under the
-    # CURRENT DDL must be REJECTED, else the poison is not genuinely non-conformant.
-    ctrl_raw = await _query_raw(
+    findings["agent_cap_real"] = await _agent_writer_control(database, connection, report)
+
+    # STORE FACT (DIAGNOSTIC, not a gate): HEAD's DDL carries NO role store ASSERT (dropped by
+    # design, 63c-i-a §4.2), so a raw role='' CREATE that bypasses the writer is ACCEPTED.
+    store_raw = await _query_raw(
         connection,
         f"CREATE type::record('{AGENT_TABLE}', $id) CONTENT {{ name: $n, session: $s, "
         "role: '', status: 'active', registered_at: time::now(), heartbeat_at: time::now() }",
         {"id": "ag_ctrl_reject", "n": "agctrlreject", "s": "sess1"},
     )
-    ctrl_rejected = _any_err(ctrl_raw)
-    print(f"  [C-control] fresh role='' CREATE under CURRENT DDL rejected={ctrl_rejected}")
-    findings["agent_cap_real"] = ctrl_rejected
-    if not ctrl_rejected:
-        report.surprises.append(
-            "PART C-agent C-CONTROL FAILED — a fresh role='' agent CREATE under the CURRENT "
-            "DDL was NOT rejected; the role non-empty ASSERT is not live, so the DD-3.c poison "
-            "is not genuinely non-conformant (a false clear)."
-        )
+    findings["agent_store_accepts_blank_role"] = not _any_err(store_raw)
+    print(f"  [store fact] raw role='' CREATE under HEAD DDL accepted={not _any_err(store_raw)} "
+          "(expected True: the store bound was dropped into the writer)")
 
-    # #131 dance: downgrade role → write the dirty legacy row (role='') → re-land the ASSERT.
+    # #131 dance: downgrade role → write the dirty legacy row (role='') → land the DEPLOYED asserted
+    # world over it (production's shape before 63c-i-a deploys) → then migrate to HEAD below.
     await _downgrade(connection, AGENT_TABLE, "role", "string")
     await connection.query(
         f"CREATE type::record('{AGENT_TABLE}', $id) CONTENT {{ name: $n, session: $s, "
@@ -265,12 +359,18 @@ async def _agent_dd3c(connection: Any, report: ProbeReport) -> dict[str, Any]:
     )
     await _create_conforming_agent(connection, "ag_ok1", name="agok1", session="sess1")
     await _create_conforming_agent(connection, "ag_ok2", name="agok2", session="sess1")
-    await _apply_ddl(connection, generate_agent_ddl())  # re-lands role non-empty ASSERT (OVERWRITE)
-
     now = datetime.now(UTC)
-    # C1 — heartbeat's SINGLE-ROW touch UPDATE over the poisoned row (a bare heartbeat
-    # stamp — the field it re-fires, role, is NOT one touch sets, so the stamp cannot
-    # repair it). Whole-record re-validation => ERR => that agent can NEVER heartbeat.
+    findings["agent_deployed_heartbeat_poisoned_errored"] = await _agent_deployed_world_control(
+        connection, report, now
+    )
+
+    # THE MIGRATION: HEAD's emitter, re-applied over the deployed world (OVERWRITE is a FULL
+    # REPLACE, store-ref §1.2 — it must DROP the stored role ASSERT; the legacy row stays as it is).
+    await _apply_ddl(connection, generate_agent_ddl())
+
+    # C1 — heartbeat's SINGLE-ROW touch UPDATE over the poisoned row under HEAD's DDL (a bare
+    # heartbeat stamp — role is NOT a field touch sets, so the stamp cannot repair it). An ERR
+    # here means a store ASSERT on role still re-fires and that agent can NEVER heartbeat.
     c1_raw = await _query_raw(
         connection,
         f"UPDATE type::record('{AGENT_TABLE}', $id) SET heartbeat_at = $t",
@@ -294,9 +394,9 @@ async def _agent_dd3c(connection: Any, report: ProbeReport) -> dict[str, Any]:
             f"({_err_texts(c1_ok_raw)}); the walker cannot see a clean single-row UPDATE."
         )
 
-    # C2 — the OWNER BACKFILL as a WHOLE-WINDOW UPDATE over [poison + conforming]. One
-    # poisoned row aborts the WHOLE statement (store-ref §3) => TOTAL backfill denial:
-    # the conforming rows are NOT stamped either.
+    # C2 — the OWNER BACKFILL as a WHOLE-WINDOW UPDATE over [poison + conforming] under HEAD's
+    # DDL. If any store ASSERT still re-fired, one poisoned row would abort the WHOLE statement
+    # (store-ref §3) => TOTAL backfill denial, the conforming rows NOT stamped either.
     op = RecordID(PRINCIPAL_TABLE, "alice")
     c2_raw = await _query_raw(
         connection,
@@ -627,7 +727,10 @@ def _verdict(report: ProbeReport, c_agent: dict[str, Any], c_brief: dict[str, An
     print("VERDICTS")
     print("=" * 78)
     print("\n-- PART C (DD-3.c) --")
-    print(f"  agent  cap-real(role ASSERT live)        : {c_agent.get('agent_cap_real')}")
+    print(f"  agent  cap-real(WRITER refuses role='')  : {c_agent.get('agent_cap_real')}")
+    print(f"  agent  store accepts raw role='' (HEAD)  : {c_agent.get('agent_store_accepts_blank_role')}")
+    print(f"  agent  DEPLOYED-world heartbeat POISONED : errored="
+          f"{c_agent.get('agent_deployed_heartbeat_poisoned_errored')}")
     print(f"  agent  heartbeat single-row over POISONED: errored="
           f"{c_agent.get('agent_heartbeat_poisoned_errored')} (conforming="
           f"{c_agent.get('agent_heartbeat_conforming_errored')})")
@@ -663,7 +766,7 @@ async def main() -> int:
     print(f"probe database: {NAMESPACE}:{database}  (TEST store {URL})")
     report = ProbeReport()
     try:
-        c_agent = await _agent_dd3c(connection, report)
+        c_agent = await _agent_dd3c(database, connection, report)
         c_brief = await _brief_dd3c(connection, report)
         d = await _part_d(connection, report)
     finally:
@@ -690,9 +793,11 @@ async def main() -> int:
         for surprise in report.surprises:
             print(f"  - {surprise}")
         return 1
-    print("All controls held; each ASSERT was real; every poisoned-row UPDATE aborted and its")
-    print("conforming control succeeded; brief read-filter index-served; agent owner_principal")
-    print("index-served. PART-D agent-candidate plans + PART-E behaviours are DIAGNOSTIC above.")
+    print("All controls held: each brief store ASSERT was real; the agent writer refused role=''")
+    print("and accepted a real role; the deployed agent world showed the abort; every conforming")
+    print("control succeeded; brief read-filter index-served; agent owner_principal index-served.")
+    print("The poisoned-row UPDATE outcomes, PART-D agent-candidate plans and PART-E behaviours are")
+    print("DIAGNOSTIC above.")
     return 0
 
 
