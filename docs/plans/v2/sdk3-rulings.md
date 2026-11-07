@@ -65,3 +65,11 @@ with it).
 
 Rejected: B (per-caller `[0]`, 27 copies of the rule); C (`query_raw` for every statement; unmeasured
 outside transactions). Not covered by this ruling: the test harness `run()` fixture.
+
+## R3 — the per-file statement cap is IN SCOPE for SDK3 (operator, 2026-11-07)
+
+Measured 2026-11-07 on production lore-lore boot: `loremaster/tests/test_comms_tool.py` (8,784 lines)
+composes to 5,113 statements and `compose()` refuses it (`TXN_STATEMENT_HARD_CAP = 5000`,
+`store/_txn.py`), so `index.file.store_failed` → `index.file.failed` and the file is absent from the
+index (no chunks, no graph). This pre-dates the 3.3.5 migration. Ruled in scope for this packet;
+the mechanism is an open fork (packet doc §5).
