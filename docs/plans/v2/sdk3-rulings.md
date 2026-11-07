@@ -47,3 +47,21 @@ mutation proof that re-introducing the old defect's symptom reddens it.
 Decision rights: a `retire` whose re-probe is unambiguous is decided by the evidence. A row
 whose re-probe is ambiguous, or whose retirement changes a served surface, is an operator fork:
 list it in the packet doc's forks section.
+
+## R2 — F1: `run_query` returns its ONE statement's result, and refuses anything else (operator, 2026-11-07)
+
+Ruled option A. `_txn.run_query` is lore's single-statement seam (every production caller sends one
+statement; multi-statement work rides `execute_transaction`). Under SDK 3.0 `query()` returns one entry
+per statement, so `run_query` selects that one statement's result itself, and RAISES when the SDK
+returns anything other than exactly one result — never a silent `[0]`. This is the seam's contract,
+not a mimicry of SDK 2.0 (which validated only statement[0]).
+
+Rider: `scout._scout_query_once` and `inbox_awaiter._live_query` are converted to the same seam, so
+the selection rule lives in exactly one place. Pin it like this: a lost compare-and-swap must read
+as lost (the measured SDK 3.0 failure was `[[]]` read truthy, 8/8 racers winning), a counter must
+read its scalar, a `LIVE SELECT` must yield its bare id, and a two-statement call must raise; prove
+the sharing by mutation (break the selection in the seam — scout and the inbox awaiter must redden
+with it).
+
+Rejected: B (per-caller `[0]`, 27 copies of the rule); C (`query_raw` for every statement; unmeasured
+outside transactions). Not covered by this ruling: the test harness `run()` fixture.
