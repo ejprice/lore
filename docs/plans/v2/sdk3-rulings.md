@@ -88,3 +88,24 @@ datetimes) against the `surrealql-tests` corpus, then a probe; (2) measure test_
 per-table row breakdown BEFORE choosing the new bound; (3) a file still refused must be NAMED on a
 served surface, never silently absent; (4) pin: test_comms_tool.py-sized fixture indexes and is
 searchable; a mutation restoring per-row statements reddens the bound pin.
+
+## R5 — F2 + F4 ruled together: reconnect forever, finite timeouts (operator, 2026-11-07)
+
+Grounds (SDK 3.0 source, `connections/reconnect.py` + `async_ws.py::_await_reconnect`): a request in
+flight at a drop fails with `ConnectionUnavailableError` and is NOT re-sent; a request made during a
+reconnect waits, bounded ONLY by the request timeout; the default policy gives up after 5 attempts
+(~1 min) and leaves the connection `disconnected`; `connection.timeout(N)` scopes an override.
+
+- **F2b:** ONE shared connection factory with `ReconnectOptions(attempts=-1, retry_delay=0.5,
+  retry_delay_max=2.0)`. This retires the 18 per-owner `_ensure_connection` self-heals (drop list).
+- **F4b:** a FINITE default request timeout (keep SDK 3.0's 30 s until measured) plus a NAMED constant
+  override, with its rationale, for each known-long operation (startup DDL / `ensure_ready`,
+  `REBUILD INDEX`, large index transactions), applied with `connection.timeout(N)`. F4a (`timeout=None`)
+  is REJECTED: with F2b it hangs a call forever during a permanent outage.
+
+Riders: (1) the builder MEASURES the longest legitimate operations before setting the overrides;
+(2) a timed-out or in-flight-dropped WRITE is raised as "outcome unknown" (the commit may have
+happened server-side), never as a plain failure; (3) pins: a call during an outage fails within its
+bound; a call after the server returns answers within ~2 s (L6); a long DDL under its override
+survives past 30 s. Unknown, stated: whether the engine keeps running a statement whose client
+timed out (unmeasured) — which is why rider (2) says "unknown".
