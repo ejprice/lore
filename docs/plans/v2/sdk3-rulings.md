@@ -173,3 +173,28 @@ Grounds: scout-40-sdk3 (throwaway v4.0.0 + v3.3.5 memory containers, SDK 3.0.0 a
   `DEFINE FIELD OVERWRITE` on populated tables (MIGRATE EXISTING ROWS); `INFO FOR DB/TABLE` key sets change;
   `RETURN` inside a transaction commits the rest on 4.0; 3.x→4.0 in-place upgrade is experimental, one-way,
   RocksDB → SurrealKV.
+
+## R8 — round-3 contract: drop list and forks F11–F17 (operator, 2026-11-07: "Approved.")
+
+Contract `496d745` (packet doc "ROUND 3" §R3.0–R3.11). The DROP LIST (§R3.5, 31 rows) is APPROVED AS FATED: R rows
+retire with their named pins; C rows retire only when their named measurement passes, and the builder reports each
+C row's measurement and resulting fate; K rows stay. The removed-behaviour inventory X1–X17 (§R3.6) is the
+adjudication record — X8, X12, X13 carry their stated consequences into the build. Lead measurement (read-only,
+:18500, 2026-11-07): ZERO persisted id strings written bracketed across `lore/lore` and `lore/demand_intelligence`
+(control fired on `⟨⟩` and backtick, not on bare or NONE; populated fields checked: memory.supersedes 26,
+task.blocked_by 38, task.superseded_by 11, agent.task_id 15, message.refs 860, file.chunk_ids 5,885; the scope
+columns and audit.target_row are empty in prod, so the zero is vacuous there) → no persisted-id migration (R7 holds).
+
+- **F11 — streaming ON**, set explicitly by the shared factory and pinned (CF4), because `streaming=False` + timeout
+  lets the engine commit after the client gave up.
+- **F12 — the row bound REPLACES the statement cap everywhere**: `TXN_ROW_HARD_CAP` is the one bound; packet 58's
+  packer and the entity seam re-size by rows; the statement-cap pins become row-cap pins (and pin it: a build that
+  keeps the statement cap anywhere goes RED).
+- **F13 — scout and the inbox awaiter call the shared one-statement selection function**, not `run_query` (keeps
+  the W1-SCOUTKILL raw-error contract); sharing proven by mutation (M-R2).
+- **F14 — every SDK `TransportError` on a request maps to `SurrealOutcomeUnknownError`** (the seam cannot tell a
+  read from a write, nor sent from queued).
+- **F15 — the engine form (`<string> id`) is the text form for anything persisted or compared with persisted
+  text**; `.table_name + ":" + .id` only where no persisted comparison exists.
+- **F16 — all ~31 parser sites (3 families) are deleted under R7**, not only the four R7 named.
+- **F17 — bare text with no `:` maps to `RecordID(<that API's table>, text)`.**
