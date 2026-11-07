@@ -80,10 +80,12 @@ from _governed_contract import (
     build_principal_and_keep_stores,
     derive_member_source_roots,
     frozen_asserted_message_ddl,
+    frozen_asserted_to_ack_note_ddl,
     governed_table_raw_mutation_sites,
     member,
     seed_message_legacy,
     session_keep_id_for,
+    unbounded_to_ack_note_ddl,
 )
 from _surreal_harness import (
     SurrealConnection,
@@ -3338,13 +3340,11 @@ class TestALegacyOverCapNoteCannotDenyADrain:
         )
         try:
             # 1. REAL agent + message + `to` DDL, then DOWNGRADE `to.ack_note` to unbounded (the
-            #    "before it was bounded" world) — the edges' over-cap note is written under THIS.
+            #    "before it was bounded" world) — the edges' over-cap note is written under THIS. The
+            #    SHARED capture (ONE IMPLEMENTATION with probe_drain_read_63b_ii_b's dirty-edge seeding).
             await run(connection, generate_agent_ddl())
             await run(connection, generate_message_ddl())
-            await run(
-                connection,
-                f"DEFINE FIELD OVERWRITE ack_note ON {_schema().TO_RELATION} TYPE option<string>",
-            )
+            await run(connection, unbounded_to_ack_note_ddl())
             # 2. one member principal + one recipient agent owned by it (a governed member Subject).
             await principal_store.create(email="recip@example.com", role="member")
             principal = (await principal_store.list())[0]
@@ -3405,6 +3405,35 @@ class TestALegacyOverCapNoteCannotDenyADrain:
                 "the ii-b §4.B one-txn read-governance (drain resolves + filters by the Subject) is "
                 f"unbuilt. engine/py: {error}"
             )
+
+    def test_the_ack_note_old_worlds_are_faithful_captures(self) -> None:
+        """CONTROL — the two HAND-CAPTURED ``to.ack_note`` old worlds are what they claim: the FROZEN
+        deployed one (``frozen_asserted_to_ack_note_ddl()``) carries the literal 4000-char ASSERT, and the
+        pre-bound one (``unbounded_to_ack_note_ddl()``) carries NO ASSERT. The probe's C0 (the drain must
+        ABORT under the deployed bound) and this class's downgraded world (an over-cap edge must be
+        WRITABLE) rest on these — a frozen capture that lost its ASSERT makes C0 vacuous; an unbounded
+        one that gained one makes the BASELINE seed fail for a fixture reason.
+
+        ⚠ Self-consistency ONLY — NEVER a comparison to the live emitter (see
+        ``TestTheMessageAssertsAreDroppedFromADIRTYStore.test_the_frozen_old_world_is_a_faithful_asserted_capture``
+        for why: the emitter is DESIGNED to change; the capture is what production FROZE). Both name the
+        ``ack_note`` field ON the delivery edge, so neither can silently re-target another table."""
+        target = f"DEFINE FIELD OVERWRITE ack_note ON {_schema().TO_RELATION} "
+        frozen = frozen_asserted_to_ack_note_ddl()
+        assert frozen.startswith(target), f"the frozen capture no longer defines to.ack_note: {frozen!r}"
+        assert "ASSERT string::len($value) <= 4000" in frozen, (
+            f"the FROZEN deployed to.ack_note capture is MISSING its 4000-char ASSERT — "
+            f"frozen_asserted_to_ack_note_ddl() has rotted, so the probe's C0 'drain ABORTS under the "
+            f"deployed bound' control is vacuous. Re-capture it from store reference §0a. Got: {frozen!r}"
+        )
+        unbounded = unbounded_to_ack_note_ddl()
+        assert unbounded.startswith(target), (
+            f"the unbounded capture no longer defines to.ack_note: {unbounded!r}"
+        )
+        assert "ASSERT" not in unbounded, (
+            f"the PRE-BOUND to.ack_note capture carries an ASSERT — the dirty over-cap edge could not be "
+            f"written under it, so the DD-3.c legs would fail at seeding, not at the hazard: {unbounded!r}"
+        )
 
     async def test_BASELINE_the_downgraded_world_accepts_both_edges(
         self, dirty_to_world: Any

@@ -120,15 +120,6 @@ _OVER_CAP_NOTE = "x" * (MESSAGE_BODY_MAX_CHARS + 1)
 _BOUNDED_NOTE = "acked by probe"  # a legal, in-bound replacement note (for the ack probe)
 _AT_CAP_NOTE = "y" * MESSAGE_BODY_MAX_CHARS  # the largest legal note — the writer's positive control
 
-# The DEPLOYED (pre-63b-ii-b) ``to.ack_note`` definition: production's shape until the ii-b image
-# boots (store reference §0a, probed on :18500's definitions 2026-11-07: ``TYPE none | string ASSERT
-# string::len($value) <= 4000``). HAND-CAPTURED on purpose — HEAD's emitter no longer emits it, and an
-# emitter-derived "old world" would drop the ASSERT too and could never be C0's control.
-_DEPLOYED_ACK_NOTE_DDL = (
-    f"DEFINE FIELD OVERWRITE ack_note ON {TO_RELATION} TYPE option<string> "
-    f"ASSERT string::len($value) <= {MESSAGE_BODY_MAX_CHARS};\n"
-)
-
 
 # --------------------------------------------------------------------------- #
 # Raw observation helpers — LEG B/C read the EXACT per-statement engine status via
@@ -266,22 +257,27 @@ async def _setup_current_schema(connection: Any) -> None:
     await _apply_ddl(connection, generate_message_ddl())
 
 
-async def _downgrade_ack_note(connection: Any) -> None:
-    """Simulate the PRE-BOUND world: OVERWRITE ``to.ack_note`` to option<string> with NO
-    ASSERT ("BEFORE ack_note was bounded" — the statement
-    ``test_comms_schema.py::TestALegacyOverCapNoteCannotDenyADrain`` downgrades with). This
-    is how a #131 legacy over-cap edge came to exist. (Since 63b-ii-b it is also the shape
-    HEAD's emitter lands — ruling §0 R3.)"""
-    await _apply_ddl(
-        connection, f"DEFINE FIELD OVERWRITE ack_note ON {TO_RELATION} TYPE option<string>;\n"
-    )
+async def _land_pre_bound_world(connection: Any) -> None:
+    """Simulate the PRE-BOUND world: OVERWRITE ``to.ack_note`` with NO ASSERT ("BEFORE ack_note was
+    bounded") — how a #131 legacy over-cap edge came to exist. The definition is the SHARED
+    ``unbounded_to_ack_note_ddl`` (ONE IMPLEMENTATION with
+    ``test_comms_schema.py::TestALegacyOverCapNoteCannotDenyADrain``). Imported HERE because
+    ``_governed_contract`` is importable only once ``probe_read_filter_63`` has put
+    ``loremaster/tests`` on sys.path (a module-level import would be re-sorted above it)."""
+    from _governed_contract import unbounded_to_ack_note_ddl
+
+    await _apply_ddl(connection, unbounded_to_ack_note_ddl())
 
 
 async def _land_deployed_bound(connection: Any) -> None:
     """Land the DEPLOYED asserted ``to.ack_note`` over the dirty edges — the store as production
     holds it before the ii-b image boots. Existing rows are NOT retro-validated (store §1.4): the
-    dirty edges persist, now write-poisoned."""
-    await _apply_ddl(connection, _DEPLOYED_ACK_NOTE_DDL)
+    dirty edges persist, now write-poisoned. The definition is the SHARED HAND-CAPTURED
+    ``frozen_asserted_to_ack_note_ddl`` (literal 4000 — what production froze, never the live cap);
+    imported HERE for the same sys.path reason as :func:`_land_pre_bound_world`."""
+    from _governed_contract import frozen_asserted_to_ack_note_ddl
+
+    await _apply_ddl(connection, frozen_asserted_to_ack_note_ddl())
 
 
 async def _migrate_to_current(connection: Any) -> None:
@@ -341,7 +337,7 @@ async def _seed(connection: Any) -> None:
     await _relate(connection, "m_ap", _R_WRITER)
 
     # --- the #131 dirty-store dance: downgrade → write dirty → migrate --------
-    await _downgrade_ack_note(connection)
+    await _land_pre_bound_world(connection)
     # DENIAL window: an over-cap dirty edge + a good edge, BOTH unseen.
     await _relate(connection, "md_dirty", _R_DENIAL, ack_note=_OVER_CAP_NOTE)
     await _relate(connection, "md_good", _R_DENIAL)

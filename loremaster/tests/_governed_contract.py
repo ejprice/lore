@@ -352,6 +352,7 @@ class GovernedTableCase:
 MEMORY_TABLE = "memory"
 MESSAGE_TABLE = "message"  # 63b-ii-b: the message node table (seed_message_legacy's target).
 AGENT_TABLE = "agent"  # 63c-i-a: the agent node table (seed_agent_* target; the Q1(c) population).
+TO_RELATION = "to"  # 63b-ii-b: the message->agent delivery edge (the to.ack_note captures' target).
 _PRINCIPAL_TABLE = "principal"
 _AGENT_TABLE = "agent"
 
@@ -730,6 +731,47 @@ def unbounded_message_ddl() -> str:
         f"DEFINE FIELD OVERWRITE owner_agent ON {table} TYPE option<record<{_AGENT_TABLE}>>;\n"
         f"DEFINE FIELD OVERWRITE scope ON {table} TYPE option<string>;\n"
     )
+
+
+# --------------------------------------------------------------------------- #
+# `to.ack_note` dirty-store DDL (63b-ii-b §3 R1 / §6) — the two OLD-world definitions of the delivery
+# edge's ``ack_note`` that the DD-3.c drain legs need, mirroring frozen_asserted_message_ddl /
+# unbounded_message_ddl at FIELD scope (the rest of ``to`` is unchanged by the drop, so the callers
+# land the CURRENT emitter first and OVERWRITE only this one field).
+# --------------------------------------------------------------------------- #
+
+
+def frozen_asserted_to_ack_note_ddl() -> str:
+    """A FROZEN capture of the DEPLOYED (pre-63b-ii-b) ``to.ack_note`` definition — production's shape
+    until the ii-b image boots (store reference §0a; probed on :18500's definitions 2026-11-07 as
+    ``TYPE none | string ASSERT string::len($value) <= 4000``, which is how the engine renders
+    ``option<string>``). The OLD asserted world under which a legacy over-cap edge is WRITE-POISONED,
+    so the drain's whole-window ``UPDATE … SET seen_at`` ABORTS (store reference §1.4 + §3).
+
+    ⚠ HAND-CAPTURED, NOT re-derived from the emitter: HEAD's ``generate_message_ddl()`` no longer emits
+    this ASSERT (ruling §3 R1), so an emitter-derived old world would drop it too and could never be the
+    instrument control. The bound is the LITERAL ``4000`` — NOT the live ``MESSAGE_BODY_MAX_CHARS`` — so
+    the capture stays what production FROZE even if the writer's cap later moves. ONE IMPLEMENTATION —
+    called by ``scripts/probe_drain_read_63b_ii_b.py`` (C0: the drain must ABORT under this bound, else
+    the probe is blind to the hazard). The ``test_the_ack_note_old_worlds_are_faithful_captures``
+    control (``test_comms_schema.py::TestALegacyOverCapNoteCannotDenyADrain``) pins that this text
+    still carries the ASSERT (self-consistency — NEVER a compare to the live emitter, which the ii-b
+    build changed)."""
+    return (
+        f"DEFINE FIELD OVERWRITE ack_note ON {TO_RELATION} TYPE option<string> "
+        f"ASSERT string::len($value) <= 4000;\n"
+    )
+
+
+def unbounded_to_ack_note_ddl() -> str:
+    """``to.ack_note`` with NO ASSERT — the PRE-BOUND world ("before ack_note was bounded"), under which
+    a #131 legacy over-cap edge came to exist, so the DD-3.c legs can WRITE one. (Since 63b-ii-b it is
+    also the shape HEAD's emitter lands — ruling §0 R3 — but it is HAND-CAPTURED here all the same: it
+    is the world the dirty edges were written under, and must not move if the emitter's does.) ONE
+    IMPLEMENTATION — called by ``test_comms_schema.py::TestALegacyOverCapNoteCannotDenyADrain`` (its
+    ``dirty_to_world`` fixture) and ``scripts/probe_drain_read_63b_ii_b.py`` (its dirty-edge seeding),
+    so the pin and the probe cannot drift about the world the over-cap edge was written under."""
+    return f"DEFINE FIELD OVERWRITE ack_note ON {TO_RELATION} TYPE option<string>;\n"
 
 
 # --------------------------------------------------------------------------- #
