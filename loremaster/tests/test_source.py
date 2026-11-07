@@ -45,8 +45,10 @@ logic (owner directive: real over mocks for the core).
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
+import pytest
 from loremaster.extension import SourceProvider
 from loremaster.source.local_directory import LocalDirectorySourceProvider
 from loremaster.source.snapshot import TIER_SUBDIRS, SnapshotLayout
@@ -361,3 +363,99 @@ class TestLocalDirectoryProviderAcquire:
         assert layout.resolve("community", "pkg/evil") is None
         # …while the legitimate sibling file still resolves.
         assert layout.resolve("community", "pkg/ok.py") is not None
+
+
+def _tree(root: Path) -> dict[str, str]:
+    """Every file and symlink under ``root``, as ``{relative posix path: kind/content}``.
+
+    The oracle for "the snapshot holds EXACTLY the source's file set": regular
+    files map to their text, symlinks to ``"-> <target>"`` (never followed), so
+    two trees compare equal only when they carry the same paths with the same
+    content and the same link shape. Directories are implied by their entries.
+    """
+    entries: dict[str, str] = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        here = Path(dirpath)
+        for name in [*filenames, *(d for d in dirnames if (here / d).is_symlink())]:
+            path = here / name
+            rel = path.relative_to(root).as_posix()
+            entries[rel] = (
+                f"-> {os.readlink(path)}" if path.is_symlink() else path.read_text(encoding="utf-8")
+            )
+    return entries
+
+
+class TestLocalDirectoryProviderReacquireReplaces:
+    """A re-acquire REPLACES the tier's snapshot with the current source (no merge).
+
+    The defect (measured 2026-11-07 on the live snapshot): ``acquire`` MERGED the
+    source into the existing materialisation dir, so files deleted from the source
+    survived every re-acquire and a version-bump rebuild re-indexed them under the
+    NEW version label (112/91/48 stale files across three corpus tiers after the
+    3.2 → 3.3 swap). The served set must be exactly the source's set.
+    """
+
+    def _acquire_v1(self, tmp_path: Path) -> tuple[Path, Path, LocalDirectorySourceProvider]:
+        """Acquire a source holding a nested subdir, a sibling file and a kept file."""
+        source = tmp_path / "src"
+        _write(source / "keep.md", "kept v1\n")
+        _write(source / "gone.md", "deleted file\n")
+        _write(source / "olddir" / "a.md", "deleted subdir a\n")
+        _write(source / "olddir" / "deeper" / "b.md", "deleted subdir b\n")
+        _write(source / "pkg" / "stays.md", "stays\n")
+        _write(source / "pkg" / "dropped.md", "dropped from a kept dir\n")
+        snapshot_root = tmp_path / "snap"
+        snapshot_root.mkdir()
+        provider = LocalDirectorySourceProvider(tier="surrealdb-docs", source=source)
+        provider.acquire("surrealdb-docs", snapshot_root)
+        materialized = SnapshotLayout(snapshot_root).materialization_dir("surrealdb-docs")
+        assert _tree(materialized) == _tree(source), "test setup: v1 acquire must mirror the source"
+        return source, snapshot_root, provider
+
+    def test_reacquire_drops_files_and_subdirs_deleted_from_the_source(
+        self, tmp_path: Path
+    ) -> None:
+        source, snapshot_root, provider = self._acquire_v1(tmp_path)
+        # The v2 source: one top-level file, one whole nested subdir and one file
+        # inside a SURVIVING dir are deleted; a kept file changes; a new file lands.
+        (source / "gone.md").unlink()
+        shutil.rmtree(source / "olddir")
+        (source / "pkg" / "dropped.md").unlink()
+        _write(source / "keep.md", "kept v2\n")
+        _write(source / "newdir" / "fresh.md", "new in v2\n")
+
+        provider.acquire("surrealdb-docs", snapshot_root)
+
+        layout = SnapshotLayout(snapshot_root)
+        materialized = layout.materialization_dir("surrealdb-docs")
+        assert _tree(materialized) == _tree(source)
+        assert not (materialized / "olddir").exists(), "a deleted subdir must not survive"
+        for stale in ("gone.md", "olddir/a.md", "olddir/deeper/b.md", "pkg/dropped.md"):
+            assert layout.resolve("surrealdb-docs", stale) is None, f"{stale} is still served"
+
+    def test_reacquire_leaves_no_staging_debris_beside_the_tier(self, tmp_path: Path) -> None:
+        # A replace built from a sibling staging dir must clean up after itself:
+        # the snapshot root holds the tier dir and nothing else.
+        source, snapshot_root, provider = self._acquire_v1(tmp_path)
+        (source / "gone.md").unlink()
+        provider.acquire("surrealdb-docs", snapshot_root)
+        assert sorted(p.name for p in snapshot_root.iterdir()) == ["surrealdb-docs"]
+
+    def test_failed_reacquire_leaves_the_previous_snapshot_intact(self, tmp_path: Path) -> None:
+        # A copy that fails part-way must never leave a half-materialised snapshot
+        # for the server to serve: the previous snapshot stays byte-identical, and
+        # no staging dir is left behind.
+        source, snapshot_root, provider = self._acquire_v1(tmp_path)
+        materialized = SnapshotLayout(snapshot_root).materialization_dir("surrealdb-docs")
+        before = _tree(materialized)
+        (source / "gone.md").unlink()
+        _write(source / "keep.md", "kept v2\n")  # a merge-before-failure would leak this
+        unreadable = _write(source / "zz_unreadable.md", "cannot be copied\n")
+        unreadable.chmod(0)
+        try:
+            with pytest.raises(OSError):
+                provider.acquire("surrealdb-docs", snapshot_root)
+        finally:
+            unreadable.chmod(0o644)
+        assert _tree(materialized) == before
+        assert sorted(p.name for p in snapshot_root.iterdir()) == ["surrealdb-docs"]

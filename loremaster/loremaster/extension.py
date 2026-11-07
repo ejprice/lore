@@ -205,6 +205,13 @@ class SourceProvider(Protocol):
     def acquire(self, tier: str, snapshot_root: Path) -> None:
         """Materialise ``tier``'s files into ``snapshot_root`` (the snapshot layout).
 
+        Contract: after a successful call the tier's materialisation dir holds
+        EXACTLY the source's current file set — files removed from the source are
+        removed from the snapshot (a version-bump rebuild indexes the snapshot as
+        found, so a merge would re-serve deleted files under the new version). A
+        failed call must leave the previous materialisation intact. Reference
+        implementation: ``LocalDirectorySourceProvider.acquire``.
+
         Args:
             tier: The tier being acquired (matches :attr:`tier`).
             snapshot_root: The on-disk root the tier's files are materialised

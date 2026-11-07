@@ -855,6 +855,45 @@ class TestStaticTierFreshness:
         assert "community" in summary.tiers_rebuilt
         assert await indexer_v2.tier_version_stamp("community") == "15.0.2"
 
+    async def test_version_bump_does_not_index_files_deleted_from_the_source(
+        self, tmp_path: Path
+    ) -> None:
+        # Measured 2026-11-07: a 3.2 -> 3.3 corpus swap left 112/91/48 files that
+        # exist only in the OLD corpus served under the NEW version label, because
+        # the re-acquire merged into the snapshot and the rebuild walked it. The
+        # rebuilt tier must hold exactly the v2 source's files.
+        slug = _slug()
+        static_src = tmp_path / "community_src"
+        _build_static_source(static_src)
+        _write(static_src / "lib" / "retired.py", _PY_MODULE)
+        _write(static_src / "old_pkg" / "gone.py", _PY_MODULE)
+        trio = _trio()
+        snapshot_root = tmp_path / "snap"
+
+        config_v1 = _config(slug=slug, static_source=static_src, static_version="15.0.1")
+        indexer_v1 = _make_indexer(
+            config=config_v1, trio=trio, embedder=FakeEmbedder(dim=_DIM), snapshot_root=snapshot_root,
+        )
+        await indexer_v1.index_tier(next(r for r in config_v1.roots if r.tier == "community"))
+        assert trio.store.stored_file_paths() == {
+            "lib/core.py", "lib/retired.py", "old_pkg/gone.py",
+        }, "test setup: v1 must index all three source files"
+
+        # v2 of the source deletes one file and one whole subdirectory.
+        (static_src / "lib" / "retired.py").unlink()
+        (static_src / "old_pkg" / "gone.py").unlink()
+        (static_src / "old_pkg").rmdir()
+
+        config_v2 = _config(slug=slug, static_source=static_src, static_version="15.0.2")
+        indexer_v2 = _make_indexer(
+            config=config_v2, trio=trio, embedder=FakeEmbedder(dim=_DIM), snapshot_root=snapshot_root,
+        )
+        summary = await indexer_v2.index_tier(
+            next(r for r in config_v2.roots if r.tier == "community")
+        )
+        assert "community" in summary.tiers_rebuilt
+        assert trio.store.stored_file_paths() == {"lib/core.py"}
+
 
 # --------------------------------------------------------------------------- #
 # Selective per-tier rebuild — sibling tier untouched
