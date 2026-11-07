@@ -310,15 +310,16 @@ Nobody read it. Everyone probed the engine empirically instead, and the schema w
   precisely so the next session need not rediscover the engine. Not reading it wasted a
   session and cost an outage.
 - **The vendor docs AND the engine's CI-verified specs are now IN the RAG — search them, never
-  scout or probe from scratch (that IS the #107 failure mode).** SurrealDB's 3.2 documentation is
+  scout or probe from scratch (that IS the #107 failure mode).** SurrealDB's 3.3 documentation is
   indexed as lore tier `surrealdb-docs`; the engine's own SurrealQL language tests as
-  `surrealql-tests` (pinned at the v3.2.0 tag — a spec's expected-result IS the behaviour, so it
-  CANNOT lie). Order for a "how does the engine behave" question: (1)
+  `surrealql-tests` (pinned at the v3.3.5 tag, matching both stores' engine — a spec's
+  expected-result IS the behaviour, so it CANNOT lie). Each corpus dir carries a `PROVENANCE.yaml`. Order for a "how does the engine behave" question: (1)
   `docs/reference/surrealdb-31-capabilities.md` — OUR authority, incl. §6 (where the vendor docs
   are FALSE); (2) `lore_search(tier="surrealql-tests", …)` — the executable specs; (3)
   `lore_search(tier="surrealdb-docs", …)` — vendor prose, which CAN lie → treat a hit as a lead to
-  VERIFY, never as final; (4) a live probe against the 3.2.1 test store (`ws://127.0.0.1:18000`) —
-  the LAST resort, for what none of the above cover. (Corpora added 2026-07-22.)
+  VERIFY, never as final; (4) a live probe against the 3.3.5 test store (`ws://127.0.0.1:18000`) —
+  the LAST resort, for what none of the above cover. (Corpora added 2026-07-22; moved to 3.3 with
+  the engine on 2026-11-07 — store reference §0a.)
 
 ## THE TEST ENVIRONMENT IS A FICTION (#131 + #107 — the same root, twice)
 **The suite runs on a dev host. Production is a container. EVERY difference between them is an
@@ -378,7 +379,8 @@ two fix waves and a false absolute in a docstring.
   instrument.
 - **AND VERIFY THE DOCS — a doc is a source, not an oracle.** SurrealDB's own `DEFINE FIELD`
   and `DEFINE INDEX` pages claim `IF NOT EXISTS` on an existing object *"will return an
-  error."* **That is FALSE on 3.1.5** (probed): it returns OK and silently no-ops. A careful
+  error."* **That is FALSE on 3.1.5** (probed; re-probed and still FALSE on 3.2.1 and 3.3.5): it
+  returns OK and silently no-ops. A careful
   engineer trusting that sentence would conclude a stale definition is IMPOSSIBLE — which is
   plausibly how `IF NOT EXISTS` was chosen. **Both instruments were necessary and neither was
   sufficient: the docs named the migration mechanism; only the probe caught the docs lying.**
