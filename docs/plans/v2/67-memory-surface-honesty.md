@@ -1,8 +1,8 @@
 # Packet 67 — memory-surface honesty (the Q4 Agent-Memory review, adopted)
 
 **Minted 2026-11-07 by operator ruling:** *"look up the agents recommendations regarding question 4 including the
-Fable addon and slot them in after the next incomplete packet group lands."* Slotted after the **63c group**
-(63c-i-b → 63c-ii → 63c security-auditor) and before **64**. Lead: Opus. Size: ≥0.30 in total, so it is
+Fable addon and slot them in after the next incomplete packet group lands."* then *"Move the Q4 resolution before
+65-cut."* **67a → 67b → 67c land after 64 and 65-pre and BEFORE 65-cut** (so the cutover ships them); 67d after 65-cut. Lead: Opus. Size: ≥0.30 in total, so it is
 **PRE-SPLIT** into 67a–67d (sizing law); each sub-packet has its own entry and exit.
 
 **Source (cited, never re-transcribed):** `receipts/2026-11-07-q4-memory-review/` — three independent answers
@@ -14,7 +14,7 @@ favour of, Anthropic's Agent Memory design.
 (67a drops a column; 67b backfills the ledger) · `COMPILED.md` above · the 63 governed-contract substrate
 (`loremaster/tests/_governed_contract.py`), because D1 shrinks the governed raw-write allowlist.
 
-**ENTRY CHECK (all sub-packets):** 63c is closed in the Status table and the SDK-3 packet (66) has landed. Every
+**ENTRY CHECK (all sub-packets):** 64 and 65-pre are closed in the Status table and the SDK-3 packet (66) has landed. Every
 code fact below was grep-derived by the reviewers while lore MCP was down, so re-derive each with `lore_impact`
 (after `lore_index(reconcile=True)`) before deleting anything. The Opus ledger counts came from a scratch COPY of
 the production memory ledger taken 2026-11-07; **re-measure them at kickoff** — they are inherited numbers.
