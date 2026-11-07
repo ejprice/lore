@@ -476,8 +476,10 @@ class FakeSurrealStore:
         self.db.delete_file_chunks(tier, file_path)
 
     async def delete_by_tier(self, tier: str) -> None:
-        """Purge every chunk in ``tier`` (the per-tier rebuild primitive)."""
+        """Purge every chunk and ``file_text`` body in ``tier`` (the per-tier rebuild primitive)."""
         self.db.delete_tier_chunks(tier)
+        for key in [key for key in self.db.file_text if key[0] == tier]:
+            del self.db.file_text[key]
 
     async def count(self, tier: str | None = None) -> int:
         """The live chunk count — total or tier-scoped."""

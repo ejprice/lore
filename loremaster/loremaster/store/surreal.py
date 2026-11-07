@@ -1230,7 +1230,22 @@ class SurrealStore:
         return self._entity_tables
 
     async def delete_by_tier(self, tier: str) -> None:
-        """Purge every chunk — and every extension ENTITY row — in ``tier``.
+        """Purge every chunk, ``file_text`` body and extension ENTITY row in ``tier``.
+
+        The store owns three per-file tables a file's index writes — ``chunk``,
+        ``file_text`` and the registered entity tables — and this purges all three,
+        tier-wide, so a tier rebuild keeps no row of a file the new corpus lacks
+        (measured 2026-11-07: before ``file_text`` joined this purge, a 3.2 -> 3.3
+        corpus rebuild kept every old-corpus body). Tier-wide rather than per
+        manifest row, so rows a previous rebuild already orphaned (their manifest
+        row gone) are reaped too. The manifest row and code-graph slice belong to
+        other ports; the indexer purges those per file
+        (:func:`~loremaster.index.indexer.file_purge_fragments`).
+
+        Stated bound: ``file_text`` carries no ``tier`` column — its id is
+        ``[tier, file_path]`` — so its purge filters ``id[0]`` (the manifest's
+        ``files_for_tier`` idiom), which no index serves: a scan of the table, once
+        per tier rebuild.
 
         The per-tier rebuild primitive AND the SINK for seam-12 entity co-purge
         (DG1 / design §7): the tier entity purge lives HERE, at the one point every
@@ -1250,6 +1265,7 @@ class SurrealStore:
         A tier with no chunks and no entity tables is a harmless no-op.
         """
         await self._query(f"DELETE {CHUNK_TABLE} WHERE tier = $tier", {"tier": tier})
+        await self._query(f"DELETE {FILE_TEXT_TABLE} WHERE id[0] = $tier", {"tier": tier})
         for entity_table in self._entity_tables:
             await self._query(
                 f"DELETE {entity_table} WHERE tier = $tier", {"tier": tier}

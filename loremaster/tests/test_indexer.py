@@ -40,6 +40,7 @@ is kept unchanged.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import math
 from pathlib import Path
@@ -178,6 +179,7 @@ def _config(
     live_path: Path | None = None,
     static_source: Path | None = None,
     static_version: str = "1.0.0",
+    batch: dict[str, Any] | None = None,
 ) -> LoreConfig:
     roots: list[dict[str, Any]] = []
     if live_path is not None:
@@ -218,6 +220,7 @@ def _config(
             "connect_timeout_s": 5,
             "api_key_env": _TEI_KEY_ENV,
             "tokenizer": "voyage-4-nano",
+            **({"batch": batch} if batch is not None else {}),
         },
         "roots": roots,
         "include": [],
@@ -893,6 +896,111 @@ class TestStaticTierFreshness:
         )
         assert "community" in summary.tiers_rebuilt
         assert trio.store.stored_file_paths() == {"lib/core.py"}
+
+
+# --------------------------------------------------------------------------- #
+# A tier rebuild leaves NO row of a file deleted from the source — on any path
+# --------------------------------------------------------------------------- #
+# The four orchestrator entry points that purge-and-rewalk a whole tier. Each one
+# owns a copy of the acquire + purge step, so each is driven: a fix that reaches
+# one entry point and not another is the defect this class exists to catch.
+_TIER_REBUILD_ENTRY_POINTS = (
+    "index_tier_realtime",
+    "index_all_two_pass",
+    "rebuild_all_realtime",
+    "rebuild_all_two_pass",
+)
+# A path no other row in the fake database can contain by accident (no module
+# name, version stamp or sibling path shares this substring).
+_RETIRED_PATH = "lib/retired_only_in_v1.py"
+_KEPT_PATH = "lib/core.py"
+# Two-pass dispatch: ``mode=batch`` with a batch-capable embedder, polled fast.
+_TWO_PASS_BATCH = {"mode": "batch", "poll_interval_s": 0.01}
+
+
+def _fake_tables_mentioning(trio: FakeSurrealTrio, needle: str) -> set[str]:
+    """Every fake-database TABLE whose rows mention ``needle`` anywhere.
+
+    Derived from the database's own fields (one per table the real ports share),
+    never a hand-list of the tables a file is known to write — so a per-file table
+    added tomorrow is covered without editing this test.
+    """
+    return {
+        table.name
+        for table in dataclasses.fields(trio.db)
+        if needle in repr(getattr(trio.db, table.name))
+    }
+
+
+async def _run_tier_rebuild(
+    entry_point: str, *, slug: str, static_src: Path, version: str,
+    trio: FakeSurrealTrio, snapshot_root: Path,
+) -> None:
+    """Drive one tier purge-and-rewalk through the named orchestrator entry point."""
+    two_pass = entry_point.endswith("two_pass")
+    config = _config(
+        slug=slug, static_source=static_src, static_version=version,
+        batch=_TWO_PASS_BATCH if two_pass else None,
+    )
+    indexer = _make_indexer(
+        config=config, trio=trio,
+        embedder=FakeEmbedder(dim=_DIM, supports_batch=two_pass),
+        snapshot_root=snapshot_root, with_graph=True,
+    )
+    if entry_point == "index_tier_realtime":
+        await indexer.index_tier(next(r for r in config.roots if r.tier == "community"))
+    elif entry_point == "index_all_two_pass":
+        await indexer.index_all()
+    else:
+        await indexer.rebuild_all("f" * 64)
+
+
+class TestTierRebuildPurgesEveryRowOfADeletedFile:
+    """A rebuilt tier holds NO row, in ANY table, for a file gone from the source.
+
+    Measured 2026-11-07 (after ``d160e08`` fixed the snapshot merge): the purge
+    step ``delete_by_tier`` + manifest-row drop removed the deleted file's chunks
+    and manifest row but left its ``file_text`` body and its code-graph slice
+    behind, so the old corpus's data outlived the version bump.
+    """
+
+    @pytest.mark.parametrize("entry_point", _TIER_REBUILD_ENTRY_POINTS)
+    async def test_deleted_file_has_no_row_in_any_table_after_the_rebuild(
+        self, tmp_path: Path, entry_point: str
+    ) -> None:
+        slug = _slug()
+        static_src = tmp_path / "community_src"
+        _build_static_source(static_src)
+        _write(static_src / _RETIRED_PATH, _PY_MODULE_2)
+        snapshot_root = tmp_path / "snap"
+        config_v1 = _config(slug=slug, static_source=static_src, static_version="15.0.1")
+        trio = _trio(config=config_v1, snapshot_root=snapshot_root, with_graph=True)
+
+        await _run_tier_rebuild(
+            "index_tier_realtime", slug=slug, static_src=static_src, version="15.0.1",
+            trio=trio, snapshot_root=snapshot_root,
+        )
+        # Setup control: v1 wrote the retired file into every per-file surface, so
+        # an empty answer below is a purge and not a write that never happened.
+        assert {"chunks", "file_text", "manifest_rows", "graph_slices"} <= (
+            _fake_tables_mentioning(trio, _RETIRED_PATH)
+        ), "test setup: v1 must write the retired file's chunk/file_text/manifest/graph rows"
+
+        (static_src / _RETIRED_PATH).unlink()
+        await _run_tier_rebuild(
+            entry_point, slug=slug, static_src=static_src, version="15.0.2",
+            trio=trio, snapshot_root=snapshot_root,
+        )
+
+        assert _fake_tables_mentioning(trio, _RETIRED_PATH) == set(), (
+            f"{entry_point}: a file deleted from the source still has rows after the "
+            f"tier rebuild"
+        )
+        # Positive control: the surviving file is fully re-indexed on every surface.
+        assert trio.store.identities_for("community", _KEPT_PATH)
+        assert trio.store.file_text_of("community", _KEPT_PATH) is not None
+        assert await trio.manifest.get("community", _KEPT_PATH) is not None
+        assert trio.graph.qnames_for("community", _KEPT_PATH)
 
 
 # --------------------------------------------------------------------------- #

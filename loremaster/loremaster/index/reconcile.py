@@ -47,13 +47,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
-# Seam-12 (ingest): a RUNTIME module import so ``_purge_file`` reaches
-# ``claiming_extension`` through the LIVE module — a test monkeypatching
-# ``loremaster.extension.claiming_extension`` binds here too (CF8, ONE
-# IMPLEMENTATION prove-by-mutation).
-import loremaster.extension as extension_module
 from loremaster.config import WATCH_LIVE
-from loremaster.index.indexer import META_LAST_SWEEP_AT_KEY, IndexSummary
+from loremaster.index.indexer import (
+    META_LAST_SWEEP_AT_KEY,
+    IndexSummary,
+    file_purge_fragments,
+)
 from loremaster.index.paths import is_included, walked_dirs
 
 logger = logging.getLogger(__name__)
@@ -306,25 +305,17 @@ class ReconcileEngine:
             tier: The tier the deleted file belonged to.
             file_path: The tier-relative path that vanished from disk.
         """
-        fragments: list[Any] = [
-            self._store.delete_file_fragment(tier, file_path),
-            self._store.file_text_delete_fragment(tier, file_path),
-            self._manifest.delete_fragment(tier, file_path),
-        ]
-        # Purge the deleted file's graph slice too (tier-scoped), so the graph never
-        # outlives the source it was derived from.
-        if self._code_graph is not None:
-            fragments.append(self._code_graph.purge_file_fragment(tier, file_path))
-        # Seam-12 (CF7): a claimed file's entity NODES purge in the SAME apply (its
-        # edges cascade — store §2/§4). The claiming extension is reached via THIS
-        # engine's OWN ``extensions=`` param (the code_graph precedent), through the
-        # shared ``claiming_extension`` helper (CF8 / ONE IMPLEMENTATION).
-        claimant = extension_module.claiming_extension(self._extensions, tier, file_path)
-        if claimant is not None:
-            entity_purge = claimant.entity_purge_fragment(tier, file_path)
-            if entity_purge is not None:
-                fragments.append(entity_purge)
-        await self._store.apply(fragments)
+        # The set of rows a file owns is decided ONCE, in ``file_purge_fragments``
+        # (the tier-rebuild purge composes the same set): the graph slice when a
+        # graph is wired, and a claimed file's entity NODES via THIS engine's OWN
+        # ``extensions=`` (seam-12 CF7; edges cascade — store §2/§4).
+        await self._store.apply(
+            file_purge_fragments(
+                store=self._store, manifest=self._manifest,
+                code_graph=self._code_graph, extensions=self._extensions,
+                tier=tier, file_path=file_path,
+            )
+        )
 
     def _included_files_on_disk(self, root: RootConfig, base: Path) -> set[str]:
         """Return the tier-relative included paths that currently exist under ``base``.

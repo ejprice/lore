@@ -280,6 +280,53 @@ def _tier_version_meta_key(tier: str) -> str:
     return f"{_TIER_VERSION_META_PREFIX}{tier}"
 
 
+def file_purge_fragments(
+    *,
+    store: Any,
+    manifest: Any,
+    code_graph: Any,
+    extensions: Sequence[Extension],
+    tier: str,
+    file_path: str,
+) -> list[Any]:
+    """The fragments that purge EVERY row one file's index wrote, for one ``apply``.
+
+    The ONE owner of "which rows does a file own": the store's chunks and
+    ``file_text`` body, the manifest row, the code-graph slice (when a graph is
+    wired) and a claiming extension's entity nodes (their edges cascade — store
+    law §2/§4). Every surface :meth:`Indexer._compose_file_fragments` writes has
+    its purge here, so the two paths that remove a file — reconcile's deletion
+    sweep and a tier rebuild's purge — cannot disagree about what to remove.
+    Tier- and file-scoped, so a sibling tier's copy of the same path survives.
+
+    Args:
+        store: The write store (chunk + ``file_text`` delete fragments).
+        manifest: The manifest port (row delete fragment).
+        code_graph: The code graph, or ``None`` when no graph is wired.
+        extensions: The registered extensions; a claimant's entity purge rides along.
+        tier: The tier the file belongs to.
+        file_path: The tier-relative path whose rows to purge.
+
+    Returns:
+        The fragments, ordered chunk → file_text → manifest → graph → entities.
+    """
+    fragments: list[Any] = [
+        store.delete_file_fragment(tier, file_path),
+        store.file_text_delete_fragment(tier, file_path),
+        manifest.delete_fragment(tier, file_path),
+    ]
+    if code_graph is not None:
+        fragments.append(code_graph.purge_file_fragment(tier, file_path))
+    # Reached through the LIVE module so a test monkeypatching
+    # ``loremaster.extension.claiming_extension`` binds here too (CF8).
+    claimant = extension_module.claiming_extension(extensions, tier, file_path)
+    if claimant is not None:
+        entity_purge = claimant.entity_purge_fragment(tier, file_path)
+        if entity_purge is not None:
+            fragments.append(entity_purge)
+    return fragments
+
+
 class IndexOutcome(BaseModel):
     """The result of indexing a single file.
 
@@ -1144,16 +1191,8 @@ class Indexer:
         # CHANGED/absent → acquire the snapshot via the tier's provider, then
         # selectively rebuild (purge only this tier) and walk the materialised
         # snapshot, finally re-stamping the built version.
-        provider = self._providers_by_tier.get(root.tier)
-        if provider is None:
-            raise KeyError(
-                f"static tier {root.tier!r} has no registered SourceProvider"
-            )
         logger.info("index.tier.rebuild", extra={"tier": root.tier, "watch": WATCH_STATIC})
-        provider.acquire(root.tier, self._snapshot_layout.snapshot_root)
-        await self._store.delete_by_tier(root.tier)
-        for stale in await self._manifest.files_for_tier(root.tier):
-            await self._manifest.delete(root.tier, stale.file_path)
+        await self._reset_tier_for_rebuild(root)
 
         base = self._snapshot_layout.materialization_dir(root.tier)
         outcomes = await self._walk_and_index(root, base)
@@ -1512,16 +1551,13 @@ class Indexer:
         return pending, immediate, rebuilt, skipped_tiers
 
     async def _purge_tier_for_rebuild(self, root: RootConfig) -> Path:
-        """Purge a tier's vectors + manifest rows for an unconditional rebuild pass 1.
+        """Purge a tier's rows for an unconditional rebuild pass 1; return its walk base.
 
-        Mirrors the per-tier purge of :meth:`rebuild_all` (acquire a static tier's
-        snapshot, ``delete_by_tier``, drop the manifest rows) so the pass-1 walk
-        re-collects every file (``needs_reindex`` can never short-circuit).
+        The per-tier reset of :meth:`rebuild_all` (:meth:`_reset_tier_for_rebuild`)
+        so the pass-1 walk re-collects every file (``needs_reindex`` can never
+        short-circuit).
         """
-        self._acquire_static_snapshot(root)
-        await self._store.delete_by_tier(root.tier)
-        for stale in await self._manifest.files_for_tier(root.tier):
-            await self._manifest.delete(root.tier, stale.file_path)
+        await self._reset_tier_for_rebuild(root)
         base = self._tier_base(root.tier)
         assert base is not None  # every effective root resolves a base
         return base
@@ -1543,16 +1579,8 @@ class Indexer:
         ):
             logger.info("index.tier.skip", extra={"tier": root.tier})
             return None
-        provider = self._providers_by_tier.get(root.tier)
-        if provider is None:
-            raise KeyError(
-                f"static tier {root.tier!r} has no registered SourceProvider"
-            )
         logger.info("index.tier.rebuild", extra={"tier": root.tier, "watch": WATCH_STATIC})
-        provider.acquire(root.tier, self._snapshot_layout.snapshot_root)
-        await self._store.delete_by_tier(root.tier)
-        for stale in await self._manifest.files_for_tier(root.tier):
-            await self._manifest.delete(root.tier, stale.file_path)
+        await self._reset_tier_for_rebuild(root)
         return self._snapshot_layout.materialization_dir(root.tier)
 
     async def _walk_collect_tier(
@@ -1952,14 +1980,11 @@ class Indexer:
             )
 
         for root in roots:
-            # Purge this tier's vectors + manifest rows so the walk re-embeds every
-            # file (the deleted rows make ``needs_reindex`` return True — no skip).
-            # A static tier's snapshot is acquired first (mirrors _index_static_tier)
-            # so its materialisation dir exists for the walk.
-            self._acquire_static_snapshot(root)
-            await self._store.delete_by_tier(root.tier)
-            for stale in await self._manifest.files_for_tier(root.tier):
-                await self._manifest.delete(root.tier, stale.file_path)
+            # Purge this tier's rows so the walk re-embeds every file (the deleted
+            # manifest rows make ``needs_reindex`` return True — no skip). A static
+            # tier's snapshot is acquired first so its materialisation dir exists
+            # for the walk.
+            await self._reset_tier_for_rebuild(root)
 
             base = self._tier_base(root.tier)
             assert base is not None  # every effective root resolves a base
@@ -2049,12 +2074,55 @@ class Indexer:
             regraphed += 1
         return regraphed
 
+    async def _reset_tier_for_rebuild(self, root: RootConfig) -> None:
+        """Acquire a static tier's snapshot, then purge every row the tier holds.
+
+        The ONE reset every whole-tier rebuild runs before its walk — the realtime
+        and two-pass static freshness rebuilds and both ``rebuild_all`` paths — so
+        no entry point can acquire without purging, or purge less than another.
+
+        Args:
+            root: The tier's :class:`~loremaster.config.RootConfig`.
+        """
+        self._acquire_static_snapshot(root)
+        await self._purge_tier_rows(root.tier)
+
+    async def _purge_tier_rows(self, tier: str) -> None:
+        """Purge every row ``tier``'s files own, so the rebuild walk starts empty.
+
+        Two steps, both needed. ``delete_by_tier`` reaps the store-owned tables
+        (chunk, ``file_text``, entity tables) tier-wide, including rows whose
+        manifest row an earlier rebuild already dropped. Then each manifest row's
+        file is purged through :func:`file_purge_fragments` — the same purge
+        reconcile's deletion sweep runs — which removes the manifest row AND the
+        code-graph slice (a graph slice the new corpus lacks would otherwise
+        outlive the rebuild: the walk only re-graphs files that still exist).
+
+        Stated bound: a graph slice whose manifest row is ALREADY gone (orphaned
+        by a rebuild before this purge existed) is not reachable from here — the
+        graph port exposes only a per-file purge.
+
+        Args:
+            tier: The tier to purge.
+        """
+        await self._store.delete_by_tier(tier)
+        for stale in await self._manifest.files_for_tier(tier):
+            await self._store.apply(
+                file_purge_fragments(
+                    store=self._store, manifest=self._manifest,
+                    code_graph=self._code_graph, extensions=self._extensions,
+                    tier=tier, file_path=stale.file_path,
+                )
+            )
+
     def _acquire_static_snapshot(self, root: RootConfig) -> None:
         """Materialise a STATIC tier's snapshot before the rebuild walk (no-op for live).
 
-        Mirrors the acquire step of :meth:`_index_static_tier` so the tier's
-        materialisation dir exists for :meth:`_walk_and_index`. A live tier walks
-        its on-disk path directly and needs no acquisition.
+        The ONE acquire step (provider lookup, the missing-provider ``KeyError``,
+        ``provider.acquire``) every whole-tier rebuild reaches through
+        :meth:`_reset_tier_for_rebuild`, so the tier's materialisation dir exists
+        for the walk. A live tier walks its on-disk path directly and needs no
+        acquisition.
 
         Args:
             root: The tier's :class:`~loremaster.config.RootConfig`.

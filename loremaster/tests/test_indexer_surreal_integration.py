@@ -45,6 +45,7 @@ import pytest_asyncio
 from _surreal_harness import (
     PRODUCTION_DIM,
     TIER_A,
+    TIER_B,
     SurrealEnv,
     connect_admin,
     run,
@@ -58,6 +59,7 @@ from loremaster.index.reconcile import ReconcileEngine
 from loremaster.index.records import sha512_hex
 from loremaster.index.surreal_manifest import SurrealManifest
 from loremaster.server import LoreServer
+from loremaster.source.local_directory import LocalDirectorySourceProvider
 from loremaster.store.surreal import SurrealStore
 from loremaster.store.surreal_schema import FILE_TEXT_TABLE
 from lorescribe.astroid_parse import clear_resolution_cache, reset_search_path_memo
@@ -133,8 +135,26 @@ _WIDGET_SOURCE_V2 = textwrap.dedent(
 )
 
 
-def _config(*, slug: str, live_path: Path) -> LoreConfig:
-    """A minimal single-live-root config at the real production embedding dim."""
+def _config(
+    *, slug: str, live_path: Path, static_source: Path | None = None, static_version: str = "1"
+) -> LoreConfig:
+    """A minimal live-root config at the real production embedding dim.
+
+    ``static_source`` adds a :data:`TIER_B` static root served by the
+    ``local_directory`` provider at ``static_version``.
+    """
+    static_roots: list[dict[str, Any]] = []
+    if static_source is not None:
+        static_roots.append(
+            {
+                "tier": TIER_B,
+                "watch": "static",
+                "source": str(static_source),
+                "version": static_version,
+                "provider": "local_directory",
+                "include": ["**/*.py"],
+            }
+        )
     payload: dict[str, Any] = {
         "schema_version": 1,
         "anthropic": {"api_key_env": "ANTHROPIC_API_KEY"},
@@ -160,7 +180,8 @@ def _config(*, slug: str, live_path: Path) -> LoreConfig:
                 "path": str(live_path),
                 "include": ["**/*.py"],
                 "exclude": [],
-            }
+            },
+            *static_roots,
         ],
         "include": [],
         "exclude_dirs": [".git", ".venv", "__pycache__"],
@@ -479,3 +500,112 @@ class TestReconcilePurgeRemovesEverySurface:
         assert remaining == []
         # The base survives (tier-scoped, file-scoped purge).
         assert await bench.manifest.get(TIER_A, _BASE_PATH) is not None
+
+
+# ===========================================================================
+# (e) A static-tier rebuild leaves NO row of a file deleted from the source.
+# ===========================================================================
+
+# A path no other row in the database can contain by accident.
+_RETIRED_PATH = "src/retired_only_in_v1.py"
+
+
+async def _tables_mentioning(env: SurrealEnv, needle: str) -> set[str]:
+    """Every table in the test database with a row that mentions ``needle``.
+
+    The table set is read from the database itself (``INFO FOR DB``), never a
+    hand-list of the tables a file's index is known to write — so a per-file table
+    added tomorrow is covered without editing this test. Read on a FRESH admin
+    connection, independent of the three ports under test.
+    """
+    connection = await connect_admin(env)
+    try:
+        info = await run(connection, "INFO FOR DB")
+        mentioning: set[str] = set()
+        for table in info.get("tables", {}):
+            rows = await run(connection, f"SELECT * FROM `{table}`")
+            if needle in repr(rows):
+                mentioning.add(table)
+    finally:
+        await connection.close()
+    return mentioning
+
+
+class TestStaticTierRebuildPurgesEveryRowOfADeletedFile:
+    """A version-bump rebuild of a static tier keeps no row of a removed file.
+
+    Measured 2026-11-07: after a 3.2 -> 3.3 corpus swap the rebuilt tiers kept
+    the old corpus's ``file_text`` bodies (``delete_by_tier`` never purged that
+    table) and the removed files' code-graph slices.
+    """
+
+    async def test_removed_file_has_no_row_in_any_table_after_the_version_bump(
+        self, surreal_env: SurrealEnv, tmp_path: Path  # noqa: F811
+    ) -> None:
+        clear_resolution_cache()
+        reset_search_path_memo()
+        live_root = tmp_path / "live"
+        live_root.mkdir()
+        static_src = tmp_path / "community_src"
+        (static_src / "src").mkdir(parents=True)
+        (static_src / _BASE_PATH).write_text(_BASE_SOURCE, encoding="utf-8")
+        # Imports the base, so the removed file owns refers edges as well as nodes.
+        (static_src / _RETIRED_PATH).write_text(_WIDGET_SOURCE, encoding="utf-8")
+        snapshot_root = tmp_path / "snap"
+        connection_args: dict[str, Any] = {
+            "url": surreal_env.url, "namespace": surreal_env.namespace,
+            "database": surreal_env.database, "user": surreal_env.user,
+            "password": surreal_env.password,
+        }
+        config_v1 = _config(
+            slug=surreal_env.database, live_path=live_root,
+            static_source=static_src, static_version="3.2",
+        )
+        tier_roots, project_roots = graph_roots(config_v1, snapshot_root)
+        store = SurrealStore(dim=_DIM, **connection_args)
+        manifest = SurrealManifest(**connection_args)
+        graph = SurrealCodeGraph(
+            tier_roots=tier_roots, project_roots=project_roots, **connection_args
+        )
+        await store.ensure_ready()
+        await manifest.ensure_ready()
+        await graph.ensure_ready()
+
+        def _indexer(config: LoreConfig) -> Indexer:
+            return Indexer(
+                store=store, embedder=FakeEmbedder(dim=_DIM), manifest=manifest,
+                registry=LoreServer(config).registry,
+                source_providers=[LocalDirectorySourceProvider(TIER_B, static_src)],
+                config=config, snapshot_root=snapshot_root, code_graph=graph,
+            )
+
+        try:
+            static_root_v1 = next(r for r in config_v1.roots if r.tier == TIER_B)
+            await _indexer(config_v1).index_tier(static_root_v1)
+            # Setup control: v1 wrote the removed file into every per-file surface,
+            # so an empty answer below is a purge and not a write that never landed.
+            assert {"chunk", "file_text", "file", "code_node", "refers", "answers_to"} <= (
+                await _tables_mentioning(surreal_env, _RETIRED_PATH)
+            ), "test setup: v1 must write the removed file's rows to every per-file table"
+
+            (static_src / _RETIRED_PATH).unlink()
+            config_v2 = _config(
+                slug=surreal_env.database, live_path=live_root,
+                static_source=static_src, static_version="3.3",
+            )
+            summary = await _indexer(config_v2).index_tier(
+                next(r for r in config_v2.roots if r.tier == TIER_B)
+            )
+            assert TIER_B in summary.tiers_rebuilt
+
+            assert await _tables_mentioning(surreal_env, _RETIRED_PATH) == set()
+            # Positive control: the surviving file is re-indexed on every surface.
+            assert {"chunk", "file_text", "file", "code_node"} <= (
+                await _tables_mentioning(surreal_env, _BASE_PATH)
+            )
+        finally:
+            await store.close()
+            await manifest.close()
+            await graph.close()
+            clear_resolution_cache()
+            reset_search_path_memo()

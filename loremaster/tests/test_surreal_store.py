@@ -593,6 +593,25 @@ class TestDeletes:
         assert await store.count(tier=TIER_A) == 0
         assert await store.count(tier=TIER_B) == 1
 
+    async def test_delete_by_tier_purges_that_tiers_file_text_bodies_only(
+        self, store: SurrealStore
+    ) -> None:
+        # A tier rebuild must not leave the previous corpus's verbatim bodies behind
+        # (2026-11-07: three corpus tiers went 3.2 -> 3.3 and kept every file_text
+        # row of the old corpus). Tier-scoped: the SAME path in a sibling tier, and
+        # another path in the sibling, survive.
+        await store.apply([store.file_text_fragment(TIER_A, "a.py", "alpha = 1\n", "sha-a")])
+        await store.apply([store.file_text_fragment(TIER_A, "gone.py", "g = 1\n", "sha-g")])
+        await store.apply([store.file_text_fragment(TIER_B, "a.py", "beta = 2\n", "sha-b")])
+        # Setup control: the reader sees every row before the purge.
+        assert await store.file_text(TIER_A, "gone.py") is not None
+
+        await store.delete_by_tier(TIER_A)
+
+        assert await store.file_text(TIER_A, "a.py") is None
+        assert await store.file_text(TIER_A, "gone.py") is None
+        assert await store.file_text(TIER_B, "a.py") == {"text": "beta = 2\n", "sha512": "sha-b"}
+
     async def test_delete_missing_tier_is_a_noop(self, store: SurrealStore) -> None:
         await store.upsert(
             [(chunk_record(tier=TIER_A, file_path="a.py", identity="x"), unit_vector(0, PRODUCTION_DIM))]
