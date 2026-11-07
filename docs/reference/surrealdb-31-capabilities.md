@@ -109,6 +109,13 @@ byte-identical with `diff -rq`. Restore = stop the unit, swap the dir, set the q
     `WHERE tags = 'x'` → `[]` **and whole-array `WHERE tags = ['x','y']` → `[]` too**, while the same
     queries on an UNINDEXED table return the row for the whole-array form — **adding the index changes
     the answer**, on 3.2.4 and 3.3.5 alike. `CONTAINS` is correct either way.
+- **[PROBED 2026-11-07, 3.3.5] Field ASSERTs still fire under 3.3's second-pass ASSERT ordering.**
+  The deployed production definitions, verbatim: `role ON agent TYPE string ASSERT
+  string::len(string::trim($value)) > 0` rejects `''` and `'   '` on CREATE and accepts `'member'`;
+  `ack_note ON to TYPE none | string ASSERT string::len($value) <= 4000` rejects 4001 chars on RELATE
+  **and** on UPDATE and accepts 4000. (The `probe_governed_63c` / `probe_drain_read_63b_ii_b` C-controls
+  that fail on these fields test HEAD's generated DDL, where 63b-ii-b / 63c-i-a deliberately DROPPED
+  those store ASSERTs into the writers — a stale probe premise, not an engine change.)
 - **[PROBED 2026-11-07] CHANGED on 3.3.5: `DEFINE SEQUENCE OVERWRITE` resets the counter** (§1.1
   SEQUENCE row). Production declares sequences `IF NOT EXISTS`, so no live path is affected.
 - **Correction to §0 below:** SurrealDB **does** now tag patch releases (`v3.2.1`–`v3.2.4` were tagged
