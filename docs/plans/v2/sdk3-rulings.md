@@ -480,3 +480,20 @@ checkable by construction:
   inventory.
 - **Interim reds are owned.** SDK-3-only fakes (F-a) redden HEAD until the build: register those nodes under F6
   `red_nodeids` (owner: SDK3 builder; trigger: the build commit), so currency never reads RED_ORPHANED in the interim.
+
+## R23 — the builder does NOT edit tests; a standing contract author services its requests (operator, 2026-11-08)
+Operator, verbatim: *"Let's not have the builder editing tests. Have it send it back and keep a contract author alive
+to service those requests."* **R21's builder clause is REVOKED** (contract authors keep R21's authority to update,
+modernize or remove SDK-2.0 tests); R22's riders now bind the SERVICING AUTHOR's edits instead of the builder's.
+- **Builder:** never edits a test file. A test that fails on its build for a reason it believes is SDK-2.0-encoded, a
+  contradiction, or a defect goes back as a REQUEST (file::test, the failure line, the cause it believes, the edit it
+  proposes), posted on lore_comms to the servicing author, plus a native wake while that author is at rest. The builder
+  keeps building and drains its lore_comms inbox at its turn boundaries for the answer.
+- **Servicing contract author (long-running, Opus, keeps the last contract round's context — the round-7 author if
+  round 7 runs, else a fresh one briefed on rounds 1–6):** stands by at rest; per request it rules REWRITE / REMOVE
+  (with an am-37 verdict row: carried-by pin · retired-with drop-list row · old-bug) / REFUSE (the build is wrong —
+  the test stays), edits only tests, proves the edit (RED→GREEN on the build for the stated reason; no weakening of an
+  R1–R22 pin or an R17 behaviour), and replies on the thread. The design sidecar rules any fork it raises.
+- **Lead:** commits each servicing batch by explicit path in a commit SEPARATE from the builder's production commits
+  (R22 rider 1's both-ways diff runs over those commits); the cold audit's contract-blind pass adjudicates every
+  servicing edit, and any test edit authored by the builder is a NO-GO.
