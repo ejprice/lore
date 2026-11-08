@@ -42,6 +42,7 @@ import pytest
 from loremaster.findings import Finding
 from loremaster.render import Rendered, render_fenced
 from loremaster.sanitise import FENCE_CHAR, MIN_FENCE_WIDTH, max_backtick_run, sanitise_line
+from loremaster.store import _txn
 from loremaster.tasks import ClaimResult, Task
 from pydantic import BaseModel
 
@@ -2318,6 +2319,24 @@ def _probes() -> list[RenderProbe]:
         P("_format_finding_ref", lambda g: [
             _served("_format_finding_ref", 7),
             _served("_format_finding_ref", (_T("ref", "id") if g else BENIGN)),
+        ]),
+        # Packet 66 (servicer REQ-B, R9 D1 + R19 Q6): the batch item's connection-loss line, BOTH
+        # branches — outcome unknown (may have landed: verify) and a definite loss (ABORTED). Its door
+        # is ``ref_label``, which its one call site (``_resolve_or_acknowledge_many``) always builds as
+        # ``_format_finding_ref(item.id_or_number)``; the forgery is driven through that same
+        # composition. STATED BOUND: a future caller handing this helper an UN-formatted label is not
+        # seen here (the helper relies on its caller's containment, as the call site does today).
+        P("_batch_connection_loss_line", lambda g: [
+            _served(
+                "_batch_connection_loss_line",
+                _served("_format_finding_ref", (_T("ref", "id") if g else BENIGN)),
+                _txn.SurrealOutcomeUnknownError("the write was sent and no answer came"),
+            ),
+            _served(
+                "_batch_connection_loss_line",
+                _served("_format_finding_ref", (_T("ref", "id") if g else BENIGN)),
+                _txn.SurrealConnectionError("store connection lost before the write was sent"),
+            ),
         ]),
         # ---- MEMORY render ----
         # `_render_recalled_memories(recalled, *, subject)` is subject-KEYWORD-REQUIRED (design
