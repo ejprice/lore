@@ -76,6 +76,7 @@ from loremaster.store._txn import (
     stored_datetime,
 )
 from loremaster.tasks import TaskLedger
+from sdk3_shape_fakes import SdkRequestTimeoutMixin
 from surrealdb import RecordID
 from surrealdb.errors import ConnectionUnavailableError, InternalError, QueryError
 from websockets.exceptions import ConnectionClosedError
@@ -128,7 +129,7 @@ def _empty_peek() -> MessageDrainResult:
     return MessageDrainResult(entries=[], total_pending=0, directive_pending=0, stamped_seqs=[], peeked=True)
 
 
-class _RaisingConnection:
+class _RaisingConnection(SdkRequestTimeoutMixin):
     """A connection whose every SDK await raises ``error`` — the one place a test injects an SDK failure."""
 
     def __init__(self, error: BaseException) -> None:
@@ -151,7 +152,7 @@ class _RaisingConnection:
         raise self._error
 
 
-class _ParkingLiveConnection:
+class _ParkingLiveConnection(SdkRequestTimeoutMixin):
     """SDK 3.0's parking shape on a dropped socket: ``kill()`` never answers (the SDK waits on its reconnect
     until the 30 s request timeout; this fake waits FOREVER — strictly harder). ``query`` hands back a LIVE
     id, the subscription yields nothing, ``close`` returns at once."""
@@ -172,7 +173,7 @@ class _ParkingLiveConnection:
 
     async def kill(self, live_uuid: Any) -> None:
         self.kill_started.set()
-        await asyncio.Event().wait()
+        await self.park_like_the_sdk()  # forever with no budget; the SDK's typed timeout inside one
 
     async def close(self) -> None:
         self.closed = True

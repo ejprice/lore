@@ -120,7 +120,7 @@ from loremaster.store.surreal_schema import (
     SNAPSHOT_TABLE,
 )
 from loresigil.testing import FakeEmbedder
-from sdk3_shape_fakes import one_statement_answer
+from sdk3_shape_fakes import SdkRequestTimeoutMixin, one_statement_answer
 from surrealdb.errors import ConnectionUnavailableError
 from test_comms_await import drop_the_sdk_transport_error_from_the_shared_boundary
 
@@ -862,7 +862,7 @@ class TestCommandDispatchPolicy:
 # =========================================================================== #
 # 6) CommandSubscriber transport (fake connection: LIVE / poll / reconnect)
 # =========================================================================== #
-class _FakeCommandConnection:
+class _FakeCommandConnection(SdkRequestTimeoutMixin):
     """A method-level fake WS connection modelling the ``command`` table.
 
     Records every ``query(statement, params)`` call. ``pending`` is a shared

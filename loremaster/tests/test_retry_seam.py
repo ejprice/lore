@@ -203,7 +203,7 @@ from loremaster.store._txn import (
 from loremaster.store.surreal import SurrealStore
 from loremaster.store.surreal_schema import AGENT_TABLE, BRIEF_TABLE, BRIEFED_RELATION
 from pydantic import SecretStr
-from sdk3_shape_fakes import one_statement_answer, route_connections
+from sdk3_shape_fakes import SdkRequestTimeoutMixin, one_statement_answer, route_connections
 from surrealdb import (
     AsyncHttpSurrealConnection,
     AsyncWsSurrealConnection,
@@ -2874,7 +2874,7 @@ def _await_inbox_awaiter() -> Any:
 
 
 @dataclass
-class _ScoutFakeConnection:
+class _ScoutFakeConnection(SdkRequestTimeoutMixin):
     """A command-table connection for the BEHAVIOURAL ladder pins.
 
     Models exactly what ``run()`` drives: a pending SELECT, a CAS stamp that removes the
@@ -3170,7 +3170,7 @@ class TestScoutCommandClaimRidesTheSeam:
 
 
 @dataclass
-class _AllMethodsConflictConnection:
+class _AllMethodsConflictConnection(SdkRequestTimeoutMixin):
     """Every method conflicts ``conflicts`` times, then succeeds. Counts per method."""
 
     conflicts: int
@@ -6587,7 +6587,7 @@ class TestTheSeamsRejectionLogSurvivesTheCollapse:
 
 
 @dataclass
-class _BootstrapFailsThenHealthy:
+class _BootstrapFailsThenHealthy(SdkRequestTimeoutMixin):
     """Connection #1's bootstrap dies with ``error``, forever. Connection #2 is a healthy
     command channel holding one pending command, inserted during the gap.
 
@@ -9838,7 +9838,7 @@ class _ForeverConflictingSubscription:
 
 
 @dataclass
-class _ForeverConflictingKill:
+class _ForeverConflictingKill(SdkRequestTimeoutMixin):
     """A connection whose every ``kill`` conflicts — scout's cleanup seam, exhausted."""
 
     calls: int = field(default=0, init=False)

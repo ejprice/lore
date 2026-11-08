@@ -64,7 +64,7 @@ from uuid import NAMESPACE_URL, uuid5
 import pytest
 from loremaster.sanitise import max_backtick_run
 from loremaster.server import AppContext
-from sdk3_shape_fakes import one_statement_answer
+from sdk3_shape_fakes import SdkRequestTimeoutMixin, one_statement_answer
 from surrealdb.errors import ConnectionUnavailableError
 from test_comms_tool import (  # noqa: F401 - _governed_ambient_token is an autouse fixture
     _03b_fleet,
@@ -448,7 +448,7 @@ class _GatedDrain:
         return self._chooser(len(self.calls), now)
 
 
-class _FakeLiveConnection:
+class _FakeLiveConnection(SdkRequestTimeoutMixin):
     """A minimal LIVE-wake connection mirroring test_scout's ``_FakeCommandConnection``.
 
     ``dead`` raises the SDK's in-flight-drop error on establish — SDK 3.0's typed

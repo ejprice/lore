@@ -26,13 +26,46 @@ Three helpers, each the ONE home for its rule (C1, C2, C8 in packet doc §R4.7):
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import sys
 import uuid
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Callable, Iterator
+from typing import Any, NoReturn
 
 import pytest
 import surrealdb
+
+
+class SdkRequestTimeoutMixin:
+    """SDK 3.0's ``connection.timeout(seconds)`` for a test double — ONE home (sidecar RULING-13 FORK T, R41).
+
+    The teardown cap is ``with connection.timeout(TEARDOWN_KILL_TIMEOUT_SECONDS): await connection.kill(id)``;
+    every double a ``_safe_kill`` can reach inherits this instead of growing its own ``timeout()``. It is a
+    ``nullcontext`` that RECORDS the budget for the block's duration (``request_budget_s``), so a double
+    whose request parks (:meth:`park_like_the_sdk`) can do what the SDK does: wait out the budget and raise
+    its typed ``TransportTimeoutError`` — or, with no budget set, park forever (SDK: until the 30 s
+    default)."""
+
+    request_budget_s: float | None = None
+
+    @contextlib.contextmanager
+    def timeout(self, seconds: float | None) -> Iterator[None]:
+        previous = self.request_budget_s
+        self.request_budget_s = seconds
+        try:
+            yield
+        finally:
+            self.request_budget_s = previous
+
+    async def park_like_the_sdk(self) -> NoReturn:
+        """A request on a dropped socket under SDK 3.0: no reply inside the budget raises the SDK's
+        ``TransportTimeoutError``."""
+        budget = self.request_budget_s
+        if budget is None:
+            await asyncio.Event().wait()
+        await asyncio.sleep(budget or 0)
+        raise surrealdb.errors.TransportTimeoutError(f"no reply within {budget} s (SDK-shape test double)")
 
 
 def one_statement_answer(statement_result: Any) -> Any:
