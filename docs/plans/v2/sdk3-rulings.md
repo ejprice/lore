@@ -552,3 +552,20 @@ Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-5.md`.
    mixes tables serves `record_text`.
 5. **Stale for round 7:** MP-B's slept==drawn pins and the §R6.8 draw-count note are superseded by R18/R20 (a sleep
    seam with no draws). The §R6.5 citation `final2_*` becomes `final3_*`.
+
+## R27 — design sidecar ruling 6: round-7 forks (design-sidecar-66 on daccccf+150b85b; recorded by the lead)
+Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-6.md`.
+1. **R7-1 CONFIRMED.** Harness `run()` returns the first statement's result and fails closed on a non-list or an empty answer. That is honest only because SDK 3 `query()` RAISES when a later statement fails (measured). The staged patch is the SERVICING author's FIRST commit, made right after the builder's surrealdb==3.0.0 pin commit, so no gate runs on the red interval. The builder's brief names it as its first request.
+2. **R7-2: take (a).** The upsert rule is "zero private row-building or SQL in `upsert`". ONE pure chunk-row builder serves both callers: `replace_file_fragment` composes it after its DELETE, and `upsert` composes it alone (one fragment, so no param collision, and the row cap binds). Sharing is proven by mutation: break the row builder ⇒ the upsert pins AND B1 redden. If the engine cannot overwrite in place (R4 rider 1's corpus read + probe), the fallback is (b), grouping per file. A private UPSERT loop is never acceptable. BUILDER work; no contract edits.
+3. **R7-3 CONFIRMED.** The seam text carries both halves: the bound is stated as a FACT, because the seam cannot tell the shape. A renderer that knows the shape serves only its half (pinned).
+4. **R7-4: F6 is BUILD STEP 0** (the owner was already ruled the builder, §R3.7(c)). Its tests are contract surface (R23), so contract round 8 carries the F6 gate contract:
+   - §R3.7(c)'s five semantics, verbatim;
+   - `--verify-registry` admits files with red_nodeids only and still refuses an entry with neither symbols nor ids.
+   The servicer then registers the DRAFT (sdk3r7 item5), filled from round 7's `declare/` and rounds 3–6. Interim bound: the INDEX Log line of 2026-11-08 together with `receipts/2026-11-08-sdk3/red_at_head_unregistered_29c56751.txt`.
+5. **R7-5:** R22's removed-test inventory lives in the PACKET DOC (§R7.2, plus a cumulative section at close-out) and is named in the cold-audit brief. It does not go in the test-side am-37 class tables. The am-37 §15 mirror covers R26-1's fate row only.
+6. **R7-6:** the A4 site set is a hidden constant, accepted as BOUNDED: 2 sites, written down, trigger packet 68. Stated escape: the empty-allowlist perimeter does NOT catch a direct `wait_exponential_jitter`/`wait_fixed` construction. Packet 68's instrument is a RUNTIME reach check: wrap `tenacity.BaseRetrying.__init__` in the targeted run; every wait observed under loremaster/loresigil frames must be factory-made, and the observed count must be ≥ the derived floor.
+7. **(a) Q7 is acceptable as adjudicated-BY-INSTRUMENT** (q7_trace counts the calls). Riders for round 8: re-run on the final tree (batch 2's receipt is void, because it ran before item 4d), and add a RAISING mutation of `bare_record_key` for the five silent files (errors ⇒ shared; green ⇒ attach a per-hit sweep list).
+   **(b)** ⊆ is acceptable for the DERIVED 360-candidate F-a closure only. R19's "=" binds the 33 declared pins, and that held. The receipt keeps the two separate.
+   **(c) NOT a concern.** It is a pristine-baseline artefact: `lore.yaml` is gitignored, so it is absent from a git-archive tree. Method rider: copy `lore.yaml` into every pristine baseline, or have the diff script verify every pristine failure that cites `lore.yaml`.
+   **(d)** fold `_FactoryMutation` into `_driver_sleeps` in round 8, after adversary 3.
+Sequence: adversary round 3 grades round 7 now. Round 8 then carries: the F6 gate contract, the Q7 re-run plus the raising leg, the (d) fold, the cumulative inventory, and adversary 3's findings. The builder carries R7-2(a), F6 as step 0, and R7-1 as servicing commit 1.

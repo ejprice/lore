@@ -2539,3 +2539,7 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   - Operator doubt on redeploy: 66 validates in-image against a COPY of :18500; prod deploy remains 65-cut's.
 - **2026-11-07 — tenacity for every hand-rolled retry (operator)**: *"If our retry is hand rolled use tenacity."* Supersedes R10's measured conditional and #202's "deliberately NOT churned" fence.
   - Store side (`_txn.retry_on_conflict` + `_txn_conflict_backoff_seconds`, `scout._backoff` loop) → packet **66** (ruling R11). The other five loops → minted **68**, after 66, before 65-cut.
+- **2026-11-08 — packet 66 PROVISIONAL adjudication of its RED@HEAD set (R27 / sidecar RULING-6 FORK-R7-4)**: `scripts/pending_contracts.yaml` cannot register files whose reds are pytest-only (#579; F6 is 66's build step 0). Until F6 lands, the **284 nodes in 25 files** listed in `receipts/2026-11-08-sdk3/red_at_head_unregistered_29c56751.txt` are owned by the **packet-66 SDK3 builder**.
+  - That list = the targeted reds at TREE 29c56751 (= 150b85b) in files no registry entry names. Other packets' full-currency close-outs subtract EXACTLY that node list and cite this line.
+  - Named bound: the list is not attributed node by node. A node in it that is still red after the 66 build is an orphan, never 66's.
+  - Trigger: F6 lands → RED_ORPHANED 0 with this line retired.
