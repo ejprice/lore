@@ -45,16 +45,20 @@ that matches by prefix (killed by the per-parameter pins); one that makes per-no
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import re
 import sys
+import tempfile
 import textwrap
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import wave_gate  # noqa: E402
 from pending_contract_gate import (  # noqa: E402
     GateCurrency,
     GateManifest,
@@ -62,9 +66,11 @@ from pending_contract_gate import (  # noqa: E402
     MypyOutputReader,
     PendingContractGate,
     PendingContractRegistry,
+    RawGateResult,
     RegistryError,
     _currencies_for,
     _render_currency,
+    _run_selected_gates,
 )
 from test_pending_contract_gate import _mypy_output  # noqa: E402
 
@@ -575,15 +581,296 @@ def test_a_run_whose_listed_id_is_only_SKIPPED_or_XFAIL_is_GREEN_not_adjudicated
     )
 
 
-@pytest.mark.parametrize("kind", ["skipped", "xfail"])
-def test_the_render_says_a_SKIPPED_or_XFAIL_listed_id_is_KEPT(tmp_path: Path, kind: str) -> None:
-    gate = _gate(tmp_path, [_LISTED_CLASS_NODE, _LISTED_PARAM_NODE])
-    xml = _junit_with_skips(
-        [(_LISTED_CLASS_NODE, True), (_SIBLING_PARAM_NODE, False)], {_LISTED_PARAM_NODE: kind}
+# MP5-2 (adversary round 5, R35): "the render says so" holds on EVERY render of the pytest leg — the
+# ``--currency`` render AND ``wave_gate``'s (full and ``--wave``), the fleet's non-omittable entrypoint — and
+# on a GREEN verdict too (RULING-9's own case: a run whose only listed id is skipped). Kills: notes rendered
+# only when the verdict is not GREEN (adversary 5 N9); a renderer that drops them (the reference's
+# ``wave_gate``).
+_KEPT_LEGS: dict[str, tuple[list[str], list[tuple[str, bool]]]] = {
+    "adjudicated": (
+        [_LISTED_CLASS_NODE, _LISTED_PARAM_NODE],
+        [(_LISTED_CLASS_NODE, True), (_SIBLING_PARAM_NODE, False)],
+    ),
+    "all_skip": ([_LISTED_PARAM_NODE], [(_SIBLING_PARAM_NODE, False)]),
+}
+
+
+def _rendered(renderer: str, gate: PendingContractGate, tmp_path: Path, xml: str) -> list[str]:
+    """The served lines of ONE renderer over the same run: ``currency`` (``--currency``) or ``wave_gate``'s
+    full / scoped (``--wave <file>``) render."""
+    manifest = _manifest(tmp_path)
+    results = {"pytest": JUnitReportReader.read(xml)}
+    if renderer == "currency":
+        return _render_currency(gate, manifest, results)[0]  # type: ignore[arg-type]
+    currencies = _currencies_for(gate, manifest, results)  # type: ignore[arg-type]
+    scoped = renderer == "wave_scoped"
+    lines, _ok = wave_gate._render(
+        manifest, currencies, results, wave=scoped, selector=[_NODE_FILE] if scoped else []
     )
-    lines, _ok = _render_currency(gate, _manifest(tmp_path), {"pytest": JUnitReportReader.read(xml)})
+    return lines
+
+
+@pytest.mark.parametrize("renderer", ["currency", "wave_full", "wave_scoped"])
+@pytest.mark.parametrize("leg", sorted(_KEPT_LEGS))
+@pytest.mark.parametrize("kind", ["skipped", "xfail"])
+def test_the_render_says_a_SKIPPED_or_XFAIL_listed_id_is_KEPT(
+    tmp_path: Path, kind: str, leg: str, renderer: str
+) -> None:
+    listed, cases = _KEPT_LEGS[leg]
+    gate = _gate(tmp_path, listed)
+    lines = _rendered(renderer, gate, tmp_path, _junit_with_skips(cases, {_LISTED_PARAM_NODE: kind}))
     said = [line for line in lines if _LISTED_PARAM_NODE in line]
     assert any(kind in line and "kept" in line.lower() and "ORPHAN" not in line for line in said), (
-        f"the currency render does not tell the consumer that the {kind} listed id adjudicated neither way "
-        f"and stays registered (R31 rider): {said or lines}"
+        f"[{renderer} · {leg}] the render does not tell the consumer that the {kind} listed id adjudicated "
+        f"neither way and stays registered (R31 rider): {said or lines}"
     )
+
+
+# --------------------------------------------------------------------------------------------------------
+# MP5-1 (adversary round 5, R35) — R31's CLASS on the pytest self-destruct side: a MIXED-claim entry's listed
+# ids are discharged and stale-checked PER ID exactly like a pytest-only entry's ("never on the other claims
+# on the entry"). Kills: a mixed entry exempt from the pytest self-destruct because its mypy claim
+# self-destructs on the typecheck leg (adversary 5 N8) — not masked when a node id goes green or is renamed
+# before that claim does.
+# --------------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("claim", ["code", "symbol"])
+def test_a_MIXED_claim_file_self_destructs_a_PASSING_and_a_STALE_listed_id(
+    tmp_path: Path, claim: str
+) -> None:
+    gate = _mixed_gate(tmp_path, [_LISTED_CLASS_NODE, _LISTED_PARAM_NODE, _RENAMED_NODE], claim=claim)
+    currency = _pytest_currency(
+        tmp_path,
+        gate,
+        [(_LISTED_CLASS_NODE, True), (_LISTED_PARAM_NODE, False), (_SIBLING_PARAM_NODE, False)],
+    )
+    leg_1 = f"not collected in this run's {_NODE_FILE}"
+    assert not currency.ok, (
+        f"[{claim}] a mixed entry's passing and renamed ids went unreported: {currency.orphans}"
+    )
+    assert any(_LISTED_PARAM_NODE in orphan and "green" in orphan.lower() for orphan in currency.orphans), (
+        f"[{claim}] the passing listed id of a mixed entry is not discharged: {currency.orphans}"
+    )
+    assert any("test_renamed_away" in orphan and leg_1 in orphan for orphan in currency.orphans), (
+        f"[{claim}] the renamed listed id of a mixed entry is not reported stale in Leg-1 words: "
+        f"{currency.orphans}"
+    )
+
+
+# --------------------------------------------------------------------------------------------------------
+# MP5-3 (adversary round 5, R35) — REACH past small-N: the self-destruct covers EVERY listed id of an entry,
+# not the first few (the planned entry averages 11 ids a file; no earlier pin listed more than 3). Kills: the
+# scan truncated (a display cap reused, an early exit — adversary 5 N12, ``red_nodeids[:3]``).
+# --------------------------------------------------------------------------------------------------------
+
+_REACH_NODES = [f"{_NODE_FILE}::test_reach_{index}" for index in range(2)]
+
+
+def test_the_self_destruct_reaches_EVERY_listed_id_past_the_third(tmp_path: Path) -> None:
+    listed = [_LISTED_CLASS_NODE, _LISTED_PARAM_NODE, _REACH_NODES[0], _REACH_NODES[1], _RENAMED_NODE]
+    gate = _gate(tmp_path, listed)
+    currency = _pytest_currency(
+        tmp_path,
+        gate,
+        [
+            (_LISTED_CLASS_NODE, True),
+            (_LISTED_PARAM_NODE, True),
+            (_REACH_NODES[0], True),
+            (_REACH_NODES[1], False),
+            (_SIBLING_PARAM_NODE, False),
+        ],
+    )
+    assert any(_REACH_NODES[1] in orphan and "green" in orphan.lower() for orphan in currency.orphans), (
+        f"the 4th listed id passed and is not discharged — the self-destruct stopped short: "
+        f"{currency.orphans}"
+    )
+    assert any("test_renamed_away" in orphan and "not collected" in orphan for orphan in currency.orphans), (
+        f"the 5th listed id is gone and is not reported stale: {currency.orphans}"
+    )
+    assert len(currency.orphans) == 2, (
+        f"exactly the 4th (green) and 5th (stale) ids are reported: {currency.orphans}"
+    )
+
+
+# --------------------------------------------------------------------------------------------------------
+# MP5-4 (adversary round 5, R35) — reading (b) keys on whether this run ENUMERATED the file's items. A
+# module-level ``pytest.skip(allow_module_level=True)``, a module-level ``importorskip`` or a collection error
+# writes ONE testcase for the MODULE (``classname=""``, ``name`` = the dotted module, measured on pytest 9.0.3
+# — adversary 5 LIVE-JUNIT S4/S5/S6), not for any item: the file's listed ids are adjudicated neither way,
+# never STALE ("renamed or deleted; update the registry" would tell the consumer to delete registrations that
+# are still red). The collection error itself stays an orphan. STATED BOUND: whether a module-level skip ALSO
+# renders a KEPT note is not pinned here (the rider's note is pinned per listed id, above).
+# --------------------------------------------------------------------------------------------------------
+
+_MODULE_LEVEL_BODIES = {
+    "module_skip": (
+        "skipped",
+        '<skipped message="collection skipped">'
+        "('{file}', 2, 'Skipped: store-backed module skipped wholesale')"
+        "</skipped>",
+    ),
+    "importorskip": (
+        "skipped",
+        "<skipped message=\"collection skipped\">('{file}', 2, \"Skipped: could not import 'an_sdk': "
+        "No module named 'an_sdk'\")</skipped>",
+    ),
+    "collection_error": (
+        "errors",
+        "<error message=\"collection failure\">ImportError while importing test module '{file}'.</error>",
+    ),
+}
+
+
+def _junit_module_level(shape: str, file: str) -> str:
+    """The junit pytest 9.0.3 writes when ``file`` is skipped or fails at COLLECTION: one module testcase."""
+    counter, body = _MODULE_LEVEL_BODIES[shape]
+    module = file[: -len(".py")].replace("/", ".")
+    opening = f'<testcase classname="" name="{module}" file="{file}" time="0.000">'
+    case = f"{opening}{body.format(file=file)}</testcase>"
+    counts = {"errors": "0", "skipped": "0"} | {counter: "1"}
+    return (
+        '<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest" '
+        f'tests="1" failures="0" errors="{counts["errors"]}" skipped="{counts["skipped"]}">{case}'
+        "</testsuite></testsuites>"
+    )
+
+
+@pytest.mark.parametrize("shape", sorted(_MODULE_LEVEL_BODIES))
+def test_a_file_pytest_never_ENUMERATED_says_nothing_about_its_listed_ids(tmp_path: Path, shape: str) -> None:
+    gate = _gate(tmp_path, [_LISTED_CLASS_NODE, _LISTED_PARAM_NODE])
+    currency = _currency(
+        tmp_path, gate, "pytest", JUnitReportReader.read(_junit_module_level(shape, _NODE_FILE))
+    )
+    about_listed = [
+        orphan
+        for orphan in currency.orphans
+        if _LISTED_CLASS_NODE in orphan or _LISTED_PARAM_NODE in orphan or "not collected" in orphan
+    ]
+    assert about_listed == [], (
+        f"[{shape}] a file whose items were never enumerated had its listed ids judged (stale / green): "
+        f"{about_listed}"
+    )
+    if shape == "collection_error":
+        assert currency.verdict == "RED_ORPHANED" and len(currency.orphans) == 1, (
+            f"[{shape}] the collection error itself must stay the one orphan: {currency.orphans}"
+        )
+    else:
+        assert currency.ok and currency.verdict == "GREEN", (currency.verdict, currency.orphans)
+
+
+# ========================================================================================================
+# MP5-D2 (sidecar RULING-12 §ADDENDUM D2, adopted R37): "collected" is SELECTION-level. An id is judged STALE
+# iff the run's SELECTION covered it and it was not collected; an id outside the selection gets NO verdict
+# (registration kept, nothing said); a FULL run (empty selection) covers everything — reading (b) exactly. A
+# selector is a node-id prefix on ``::`` boundaries with ``[param]`` the leaf. ⚠ The prefix walk decides SCOPE
+# ("did pytest look here?"), NEVER ADJUDICATION: MP-F6-2 stands — a class selector owns none of its members.
+# The seam these pins fix: ``PytestRun.selection`` (the ruling's word; ``()`` = a full run), set by
+# ``_run_selected_gates`` from the pytest args it forwards (``wave_gate --wave``). STATED BOUND (RULING-12): a
+# selector pytest expands differently from the prefix walk (a directory path, a ``::`` inside a parameter)
+# reads "not in scope" — silence, never a false stale.
+# ========================================================================================================
+
+_OTHER_CLASS_ID = f"{_NODE_FILE}::TestAnotherClass"
+_OTHER_CLASS_NODE = f"{_OTHER_CLASS_ID}::test_red_elsewhere"
+_OTHER_CLASS_RENAMED = f"{_OTHER_CLASS_ID}::test_renamed_too"
+
+
+def _scoped_currency(
+    tmp_path: Path, gate: PendingContractGate, cases: list[tuple[str, bool]], selection: tuple[str, ...]
+) -> GateCurrency:
+    """The pytest leg's currency for a run whose SELECTION was ``selection`` (``()`` = a full run)."""
+    run = dataclasses.replace(JUnitReportReader.read(_junit(cases)), selection=selection)
+    return _currency(tmp_path, gate, "pytest", run)
+
+
+def _stale_line_for(node_id: str, currency: GateCurrency) -> list[str]:
+    return [orphan for orphan in currency.orphans if node_id in orphan and "not collected" in orphan]
+
+
+def test_D2_a_CLASS_scoped_run_judges_only_what_it_SELECTED(tmp_path: Path) -> None:
+    """(1) ``--wave file::ClassA``: ClassA's renamed id is STALE naming the selector; ClassB's listed ids (not
+    selected) get no verdict; and the selector owns nothing — an unlisted red in ClassA stays orphaned."""
+    gate = _gate(tmp_path, [_LISTED_CLASS_NODE, _RENAMED_NODE, _OTHER_CLASS_NODE, _OTHER_CLASS_RENAMED])
+    currency = _scoped_currency(
+        tmp_path, gate, [(_LISTED_CLASS_NODE, True), (_UNLISTED_NODE, True)], selection=(_CLASS_ID,)
+    )
+    stale = _stale_line_for(_RENAMED_NODE, currency)
+    assert stale and f"selected by '{_CLASS_ID}'" in stale[0] and "--collect-only" in stale[0], (
+        f"the selected-and-gone id must be STALE naming its selector and saying to confirm with "
+        f"--collect-only "
+        f"(R17 Leg 1): {currency.orphans}"
+    )
+    assert not any(_OTHER_CLASS_ID in orphan for orphan in currency.orphans), (
+        f"ClassB was not selected: its listed ids get NO verdict (registration kept): {currency.orphans}"
+    )
+    assert any("test_a_new_regression" in orphan for orphan in currency.orphans), (
+        f"the class selector OWNED an unlisted red in its class — scope is not adjudication (MP-F6-2): "
+        f"{currency.orphans}"
+    )
+
+
+def test_D2_CONTROL_a_FILE_scoped_run_judges_every_listed_id_of_the_file(tmp_path: Path) -> None:
+    """(2) ``--wave file``: ClassB's renamed id IS stale — the file selector covered it."""
+    gate = _gate(tmp_path, [_LISTED_CLASS_NODE, _OTHER_CLASS_RENAMED])
+    currency = _scoped_currency(
+        tmp_path, gate, [(_LISTED_CLASS_NODE, True), (_SIBLING_PARAM_NODE, False)], selection=(_NODE_FILE,)
+    )
+    stale = _stale_line_for(_OTHER_CLASS_RENAMED, currency)
+    assert stale and f"selected by '{_NODE_FILE}'" in stale[0], (
+        f"a file selector covers every id of the file; the gone one must be stale naming it: "
+        f"{currency.orphans}"
+    )
+
+
+def test_D2_a_FULL_run_is_reading_b_exactly(tmp_path: Path) -> None:
+    """(3) No selection = a full run: everything is in scope and the stale line is reading (b)'s Leg-1 text.
+    Kills a build that reads an EMPTY selection as "nothing in scope" (a full run that can never go stale)."""
+    gate = _gate(tmp_path, [_LISTED_CLASS_NODE, _OTHER_CLASS_RENAMED])
+    currency = _scoped_currency(
+        tmp_path, gate, [(_LISTED_CLASS_NODE, True), (_SIBLING_PARAM_NODE, False)], selection=()
+    )
+    stale = _stale_line_for(_OTHER_CLASS_RENAMED, currency)
+    assert stale and f"not collected in this run's {_NODE_FILE}" in stale[0], (
+        f"a full run must judge every collected file's listed ids exactly as reading (b): {currency.orphans}"
+    )
+    default = _pytest_currency(tmp_path, gate, [(_LISTED_CLASS_NODE, True), (_SIBLING_PARAM_NODE, False)])
+    assert (default.verdict, default.orphans) == (currency.verdict, currency.orphans), (
+        "a run read without a selection must be the full run, byte-for-byte"
+    )
+
+
+def test_D2_a_PARAM_leaf_selector_covers_only_that_parameter(tmp_path: Path) -> None:
+    """(4) ``--wave file::test[x]``: the sibling parameter was not selected — no verdict, never stale."""
+    gate = _gate(tmp_path, [_LISTED_PARAM_NODE, _SIBLING_PARAM_NODE])
+    currency = _scoped_currency(tmp_path, gate, [(_LISTED_PARAM_NODE, True)], selection=(_LISTED_PARAM_NODE,))
+    assert currency.ok and currency.verdict == "RED_ADJUDICATED", (currency.verdict, currency.orphans)
+    assert not any("[letter-led]" in orphan for orphan in currency.orphans), (
+        f"an unselected sibling parameter was judged: {currency.orphans}"
+    )
+
+
+def test_D2_a_listed_id_whose_FILE_is_outside_every_selector_gets_no_verdict(tmp_path: Path) -> None:
+    """(5) R31 (b) unchanged under a selection: a file no selector names says nothing about its ids."""
+    gate = _gate(tmp_path, [_LISTED_CLASS_NODE, _RENAMED_NODE])
+    other_file = _OTHER_FILE_NODE.split("::", 1)[0]
+    currency = _scoped_currency(tmp_path, gate, [(_OTHER_FILE_NODE, False)], selection=(other_file,))
+    assert currency.ok and currency.verdict == "GREEN", (currency.verdict, currency.orphans)
+
+
+def test_D2_the_wave_selector_reaches_the_run_as_its_SELECTION() -> None:
+    """The plumbing: ``_run_selected_gates`` records the pytest args it forwarded as the run's selection,
+    and a full run records none. Kills a scoped run whose selection was never recorded (read as a full
+    run)."""
+
+    class _JunitRunner:
+        def run(self, spec: Any) -> RawGateResult:
+            return RawGateResult(spec=spec, text=_junit([(_LISTED_CLASS_NODE, True)]), exit_code=1)
+
+    manifest_path = Path(tempfile.mkdtemp()) / "gates.yaml"
+    manifest_path.write_text(_MANIFEST_YAML)
+    manifest = GateManifest.load(manifest_path)
+    scoped = _run_selected_gates(_JunitRunner(), manifest, ["pytest"], [_CLASS_ID])  # type: ignore[arg-type]
+    full = _run_selected_gates(_JunitRunner(), manifest, ["pytest"], [])  # type: ignore[arg-type]
+    assert scoped["pytest"].selection == (_CLASS_ID,), scoped["pytest"]  # type: ignore[union-attr]
+    assert full["pytest"].selection == (), full["pytest"]  # type: ignore[union-attr]

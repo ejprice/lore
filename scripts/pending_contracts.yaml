@@ -287,3 +287,21 @@ bounds:
       count: 1
       reason: _act_as returns arm_finding_identity(...), which mypy types Any while the import is unresolved (the arm lands
         with §HELD part B) — the same missing symbol, surfacing as a return-type line
+# Packet 66 / SDK3 F6 contract delta 2 (contract-sdk3-r7, 2026-11-08; R35 MP5 + R37 RULING-12 D2). The F6 pins drive
+# `PytestRun.selection` (RULING-12 D2), which the gate grows only at F6 build step 0; until then the one
+# `dataclasses.replace(run, selection=...)` is a call-arg error. SELF-DESTRUCTS: the F6 build lands the field, the
+# file stops erroring — delete with the build.
+- id: packet-66-f6-contract
+  owner: the SDK3 builder (packet 66)
+  reopen_trigger: the F6 build (step 0) adds PytestRun.selection — the file below produces no mypy error and this
+    entry self-destructs (deleted with the build)
+  ruling: docs/plans/v2/sdk3-rulings.md R32 / R35 / R37 (sidecar RULING-12 §ADDENDUM D2)
+  rationale: contract-ahead — the MP5-D2 pins build a scoped PytestRun through the field the ruling names, absent
+    from the gate at HEAD
+  files:
+  - path: scripts/test_pending_contract_gate_f6.py
+    unsymboled_codes:
+    - code: call-arg
+      count: 1
+      reason: '`dataclasses.replace(run, selection=...)` — PytestRun has no `selection` field until the F6 build
+        (RULING-12 D2); mypy names the keyword, not a resolvable symbol'
