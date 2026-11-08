@@ -1297,7 +1297,9 @@ class FindingLedger:
             area=str(row.get(_COL_AREA, "")),
             category=str(row.get(_COL_CATEGORY, "")),
             created_by=str(row.get(_COL_CREATED_BY, "")),
-            created_at=required_datetime(row.get(_COL_CREATED_AT), row="finding", column=_COL_CREATED_AT),
+            created_at=required_datetime(
+                row.get(_COL_CREATED_AT), table="finding", row_id=row.get(_ID_KEY), column=_COL_CREATED_AT
+            ),
             supersedes=record_key_or_none(row.get(_COL_SUPERSEDES)),
             provenance=dict(row.get(_COL_PROVENANCE) or {}),
         )

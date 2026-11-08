@@ -780,34 +780,39 @@ def one_statement_result(results: object) -> Any:
     return results[0]
 
 
-def required_datetime(value: object, *, row: str, column: str) -> datetime:
-    """A REQUIRED datetime column's value, refused loudly when it is missing or not a tz-aware datetime.
+def required_datetime(value: object, *, table: str, row_id: object, column: str) -> datetime:
+    """A REQUIRED datetime column's value — THE one stamp check for store rows (rulings R6 S2, R34).
 
-    Validation only, never coercion (operator ruling R6 S2): SDK 3.0.0 decodes every ``datetime`` column as a
-    tz-aware UTC ``PreciseDatetime`` that keeps the engine's nanoseconds (R6 F3, measured), so the six
-    per-module ``_to_aware_utc`` coercers were DELETED (drop list #8 — every column they read is declared
-    ``datetime`` / ``option<datetime>``, so their string and naive branches were unreachable from the store).
-    What survives is the corrupt-row guard: a required stamp that is absent or of another type is refused,
-    never silently coerced.
+    Validation only, never coercion: SDK 3.0.0 decodes every ``datetime`` column as a tz-aware UTC
+    ``PreciseDatetime`` keeping the engine's nanoseconds, so a value that is absent, naive or of another type
+    can only be schema drift or a corrupt row. It is refused LOUDLY, before any model sees it (a pydantic
+    ``datetime`` field would otherwise coerce an ISO string silently).
+
+    The refusal is a SERVED surface (R17): it names the unreadable ROW (``record_text``, R7 (d)), the column
+    and what it held, and says it is a store-integrity fault scoped to that row — never a caller error.
 
     Args:
         value: The column's decoded value.
-        row: The row's noun for the message (``"task"``, ``"agent"``, …).
-        column: The column's name for the message.
+        table: The row's table, for the message (``"task"``, ``"agent"``, …).
+        row_id: The row's record id (``RecordID``) or id text, for the message.
+        column: The column's name, for the message.
 
     Raises:
         SurrealStoreError: ``value`` is not a tz-aware ``datetime``.
     """
     if isinstance(value, datetime) and value.tzinfo is not None:
         return value
+    held = "a naive datetime" if isinstance(value, datetime) else type(value).__name__
     raise SurrealStoreError(
-        f"{row} row column {column!r} is missing or not a tz-aware datetime (got {type(value).__name__})"
+        f"{table} {record_text(row_id) if row_id is not None else '(id unknown)'} is unreadable: column "
+        f"{column!r} holds {held}, a tz-aware datetime was required — a store-integrity fault (report it "
+        f"with lore_findings); other rows are unaffected"
     )
 
 
-def stored_datetime(value: object, *, row: str, column: str) -> datetime | None:
+def stored_datetime(value: object, *, table: str, row_id: object, column: str) -> datetime | None:
     """An ``option<datetime>`` column's value: ``None`` when unset, else :func:`required_datetime`'s check."""
-    return None if value is None else required_datetime(value, row=row, column=column)
+    return None if value is None else required_datetime(value, table=table, row_id=row_id, column=column)
 
 
 #: The record-key escapes the engine (``<string> id``) and the SDK (``str(RecordID)``) wrap a digit-led or

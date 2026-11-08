@@ -48,6 +48,7 @@ from loremaster.store._txn import (
     record_key_or_none,
     run_query,
     signin_credentials,
+    stored_datetime,
 )
 from loremaster.store.surreal_schema import (
     FLOOR_HEAD_ADOPTED_AT_COLUMN,
@@ -479,8 +480,13 @@ class FloorCalibrationStore:
         measurement_id = record_key_or_none(row.get(FLOOR_HEAD_MEASUREMENT_COLUMN))
         if measurement_id is None:
             return None
-        adopted_at = row.get(FLOOR_HEAD_ADOPTED_AT_COLUMN)
-        if not isinstance(adopted_at, datetime):
+        adopted_at = stored_datetime(
+            row.get(FLOOR_HEAD_ADOPTED_AT_COLUMN),
+            table="floor_head",
+            row_id=head_identity,
+            column=FLOOR_HEAD_ADOPTED_AT_COLUMN,
+        )
+        if adopted_at is None:
             raise FloorCalibrationError(
                 f"head {head_identity!r} names adopted measurement {measurement_id!r} but "
                 f"carries no adoption timestamp ({FLOOR_HEAD_ADOPTED_AT_COLUMN}="

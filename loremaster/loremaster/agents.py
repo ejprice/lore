@@ -1126,14 +1126,20 @@ class AgentRegistry:
             self._deny_capability("owner-inactive")
             return None
         owner_expires_at = stored_datetime(
-            row.get(_OWNER_EXPIRES_AT_ALIAS), row="agent", column=_OWNER_EXPIRES_AT_ALIAS
+            row.get(_OWNER_EXPIRES_AT_ALIAS),
+            table="agent",
+            row_id=row.get(_ID_KEY),
+            column=_OWNER_EXPIRES_AT_ALIAS,
         )
         if owner_expires_at is not None and owner_expires_at <= now:
             self._deny_capability("owner-expired")
             return None
         # (4b, ESC-3) the OPTIONAL capability expiry — enforced only when SET.
         capability_expires_at = stored_datetime(
-            row.get(_COL_CAPABILITY_EXPIRES_AT), row="agent", column=_COL_CAPABILITY_EXPIRES_AT
+            row.get(_COL_CAPABILITY_EXPIRES_AT),
+            table="agent",
+            row_id=row.get(_ID_KEY),
+            column=_COL_CAPABILITY_EXPIRES_AT,
         )
         if capability_expires_at is not None and capability_expires_at <= now:
             self._deny_capability("capability-expired")
@@ -1460,9 +1466,11 @@ class AgentRegistry:
             checkpoint=row.get(_COL_CHECKPOINT),
             last_note=row.get(_COL_LAST_NOTE),
             registered_at=required_datetime(
-                row.get(_COL_REGISTERED_AT), row="agent", column=_COL_REGISTERED_AT
+                row.get(_COL_REGISTERED_AT), table="agent", row_id=row.get(_ID_KEY), column=_COL_REGISTERED_AT
             ),
-            heartbeat_at=required_datetime(row.get(_COL_HEARTBEAT_AT), row="agent", column=_COL_HEARTBEAT_AT),
+            heartbeat_at=required_datetime(
+                row.get(_COL_HEARTBEAT_AT), table="agent", row_id=row.get(_ID_KEY), column=_COL_HEARTBEAT_AT
+            ),
             # #304: NONE-tolerant — a legacy row omits the column entirely (store
             # reference §2: ``SELECT *`` omits a NONE-valued option column), so a
             # required-datetime decode would wrongly raise. The write-side stamp

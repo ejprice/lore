@@ -1276,8 +1276,15 @@ class MessageLedger:
             task_id=row.get("task_id"),
             body=str(row.get("body") or ""),
             refs=list(row.get("refs") or []),
-            created_at=required_datetime(row.get("created_at"), row="message", column="created_at"),
-            acked_at=stored_datetime(row.get("acked_at"), row="delivery", column="acked_at"),
+            created_at=required_datetime(
+                row.get("created_at"), table="message", row_id=row.get("message_id"), column="created_at"
+            ),
+            acked_at=stored_datetime(
+                row.get("acked_at"),
+                table="delivery of message",
+                row_id=row.get("message_id"),
+                column="acked_at",
+            ),
             ack_note=row.get("ack_note"),
             question=bool(row.get("question")),
         )
@@ -1495,9 +1502,9 @@ class MessageLedger:
                 continue
             stamp = row.get("acked_at")
             indexed[record_key(row[id_key])] = (
-                required_datetime(stamp, row="delivery", column="acked_at")
+                required_datetime(stamp, table="delivery", row_id=row[id_key], column="acked_at")
                 if require_stamp
-                else stored_datetime(stamp, row="delivery", column="acked_at")
+                else stored_datetime(stamp, table="delivery", row_id=row[id_key], column="acked_at")
             )
         return indexed
 
@@ -1673,7 +1680,10 @@ class MessageLedger:
                     thread=thread,
                     question_seq=question_seq,
                     asked_at=required_datetime(
-                        question.get("created_at"), row="message", column="created_at"
+                        question.get("created_at"),
+                        table="message",
+                        row_id=question.get(_ID_KEY),
+                        column="created_at",
                     ),
                 )
         return None
@@ -1805,7 +1815,9 @@ class MessageLedger:
             question=bool(row.get("question")),
             thread=str(row.get("thread") or ""),
             task_id=row.get("task_id"),
-            created_at=required_datetime(row.get("created_at"), row="message", column="created_at"),
+            created_at=required_datetime(
+                row.get("created_at"), table="message", row_id=row.get(_ID_KEY), column="created_at"
+            ),
         )
 
     # -- result narrowing / mapping ----------------------------------------

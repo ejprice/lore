@@ -62,7 +62,6 @@ from loremaster.store._txn import (
     _CONNECTION_ERRORS,
     StoreHandle,
     SurrealConnectionError,
-    SurrealStoreError,
     TxnContentionExhaustedError,
     TxnDomainRejectionError,
     TxnFragment,
@@ -75,8 +74,10 @@ from loremaster.store._txn import (
     open_surreal_connection,
     record_key,
     record_key_or_none,
+    required_datetime,
     run_query,
     signin_credentials,
+    stored_datetime,
 )
 
 # The shared hybrid-search lexical-arm bounding mechanism (finding #69): this
@@ -809,8 +810,17 @@ class LocalMemoryBackend:
                         {"id": memory_id},
                     )
                 )
-                closed_at = closed_rows[0].get(_COL_VALID_UNTIL) if closed_rows else None
-                if isinstance(closed_at, datetime):
+                closed_at = (
+                    stored_datetime(
+                        closed_rows[0].get(_COL_VALID_UNTIL),
+                        table="memory",
+                        row_id=memory_id,
+                        column=_COL_VALID_UNTIL,
+                    )
+                    if closed_rows
+                    else None
+                )
+                if closed_at is not None:
                     self._ledger.retire(
                         memory_id, valid_until=closed_at.isoformat(), superseded_by=None
                     )
@@ -1252,10 +1262,18 @@ class LocalMemoryBackend:
             labels=plain_labels,
             refs=refs,
             source=self._source_from_value(row.get(_COL_SOURCE)),
-            valid_from=self._row_datetime(row, _COL_VALID_FROM),
-            valid_until=row.get(_COL_VALID_UNTIL),
-            expires_at=row.get(_COL_EXPIRES_AT),
-            created_at=self._row_datetime(row, _COL_CREATED_AT),
+            valid_from=required_datetime(
+                row.get(_COL_VALID_FROM), table="memory", row_id=row.get(_ID_KEY), column=_COL_VALID_FROM
+            ),
+            valid_until=stored_datetime(
+                row.get(_COL_VALID_UNTIL), table="memory", row_id=row.get(_ID_KEY), column=_COL_VALID_UNTIL
+            ),
+            expires_at=stored_datetime(
+                row.get(_COL_EXPIRES_AT), table="memory", row_id=row.get(_ID_KEY), column=_COL_EXPIRES_AT
+            ),
+            created_at=required_datetime(
+                row.get(_COL_CREATED_AT), table="memory", row_id=row.get(_ID_KEY), column=_COL_CREATED_AT
+            ),
             supersedes=row.get(_COL_SUPERSEDES),
             superseded_by=row.get(_COL_SUPERSEDED_BY),
         )
@@ -1659,7 +1677,11 @@ class LocalMemoryBackend:
 
     @staticmethod
     def _parse_iso(value: Any) -> datetime | None:
-        """Parse an ISO-8601 datetime string (or ``None``) back into a datetime."""
+        """Parse an ISO-8601 datetime string (or ``None``) back into a datetime.
+
+        NOT a store-row stamp reader: it parses the sqlite LEDGER's JSON metadata text on replay — a different
+        input domain from a SurrealDB row (whose stamps go through ``_txn.required_datetime``; ruling R34).
+        """
         if not isinstance(value, str):
             return None
         return datetime.fromisoformat(value)
@@ -1683,19 +1705,4 @@ class LocalMemoryBackend:
         """The fused RRF score of a recalled row (``0.0`` when absent)."""
         return float(row.get(_RRF_SCORE_KEY, 0.0))
 
-    @staticmethod
-    def _row_datetime(row: dict[str, Any], key: str) -> datetime:
-        """Read a REQUIRED datetime column, refusing a corrupt/missing value loudly.
-
-        ``valid_from`` / ``created_at`` are non-``option`` schema columns the
-        backend always sets, so a faithful row always carries a real datetime; a
-        missing/wrong-typed one is a corrupt row, refused rather than silently
-        coerced (and it satisfies :class:`RecalledMemory`'s non-optional datetime).
-        """
-        value = row.get(key)
-        if not isinstance(value, datetime):
-            raise SurrealStoreError(
-                f"memory row column {key!r} is not a datetime (got {type(value).__name__})"
-            )
-        return value
 

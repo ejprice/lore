@@ -74,7 +74,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, SecretStr
@@ -98,6 +97,7 @@ from loremaster.store._txn import (
     ensure_ready_operation,
     open_surreal_connection,
     record_text,
+    required_datetime,
     run_query,
     signin_credentials,
 )
@@ -694,12 +694,12 @@ class DiffEngine:
         ISO-8601 string the public contract carries (mirrors
         :meth:`SurrealManifest._row_to_model`'s ``updated_at`` handling).
         """
-        created_at = row["created_at"]
+        created_at = required_datetime(
+            row.get("created_at"), table="snapshot", row_id=row.get("id"), column="created_at"
+        )
         return SnapshotSummary(
             id=record_text(row["id"]),
-            created_at=(
-                created_at.isoformat() if isinstance(created_at, datetime) else str(created_at)
-            ),
+            created_at=created_at.isoformat(),
             git_ref=row.get("git_ref"),
             git_branch=row.get("git_branch"),
             files_total=row["files_total"],

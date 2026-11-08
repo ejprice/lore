@@ -1328,7 +1328,9 @@ class BriefLedger:
             body=str(row.get(_COL_BODY, "")),
             created_by=str(row.get(_COL_CREATED_BY, "")),
             note=row.get(_COL_NOTE),
-            created_at=required_datetime(row.get(_COL_CREATED_AT), row="brief", column=_COL_CREATED_AT),
+            created_at=required_datetime(
+                row.get(_COL_CREATED_AT), table="brief", row_id=row.get(_ID_KEY), column=_COL_CREATED_AT
+            ),
         )
 
 

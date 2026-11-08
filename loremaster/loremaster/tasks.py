@@ -2612,12 +2612,18 @@ class TaskLedger:
             description=str(row.get(_COL_DESCRIPTION, "")),
             status=cast(TaskStatus, row.get(_COL_STATUS)),
             owner=row.get(_COL_OWNER),
-            claimed_at=stored_datetime(row.get(_COL_CLAIMED_AT), row="task", column=_COL_CLAIMED_AT),
+            claimed_at=stored_datetime(
+                row.get(_COL_CLAIMED_AT), table="task", row_id=row.get(_ID_KEY), column=_COL_CLAIMED_AT
+            ),
             blocked_by=[str(blocker) for blocker in (row.get(_COL_BLOCKED_BY) or ())],
             provenance=dict(row.get(_COL_PROVENANCE) or {}),
             superseded_by=row.get(_COL_SUPERSEDED_BY),
-            created_at=required_datetime(row.get(_COL_CREATED_AT), row="task", column=_COL_CREATED_AT),
-            updated_at=stored_datetime(row.get(_COL_UPDATED_AT), row="task", column=_COL_UPDATED_AT),
+            created_at=required_datetime(
+                row.get(_COL_CREATED_AT), table="task", row_id=row.get(_ID_KEY), column=_COL_CREATED_AT
+            ),
+            updated_at=stored_datetime(
+                row.get(_COL_UPDATED_AT), table="task", row_id=row.get(_ID_KEY), column=_COL_UPDATED_AT
+            ),
             summary=row.get(_COL_SUMMARY),
             report_path=row.get(_COL_REPORT_PATH),
         )

@@ -393,7 +393,9 @@ class KeepStore:
         required self-stamped datetime, checked (never coerced) by the shared
         :func:`~loremaster.store._txn.stored_datetime` — the SDK decodes it tz-aware UTC.
         """
-        created_at = stored_datetime(row.get("created_at"), row="keep", column="created_at")
+        created_at = stored_datetime(
+            row.get("created_at"), table="keep", row_id=row.get("id"), column="created_at"
+        )
         if created_at is None:
             raise KeepStoreError("a keep row is missing its required created_at stamp")
         return Keep(
@@ -411,7 +413,7 @@ class KeepStore:
         each reduced to its bare id. ``rank``/``since`` are always present (``rank``
         DEFAULTs, ``since`` self-stamps). ``since`` coerces to tz-aware UTC.
         """
-        since = stored_datetime(row.get("since"), row="member_of", column="since")
+        since = stored_datetime(row.get("since"), table="member_of", row_id=row.get("id"), column="since")
         if since is None:
             raise KeepStoreError("a member_of row is missing its required since stamp")
         return Membership(

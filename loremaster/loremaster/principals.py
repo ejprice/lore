@@ -912,8 +912,12 @@ class PrincipalStore:
             display_name=self._optional_str(row.get(_COL_DISPLAY_NAME)),
             status=str(row[_COL_STATUS]),
             role=str(row[_COL_ROLE]),
-            expires_at=stored_datetime(row.get(_COL_EXPIRES_AT), row="principal", column=_COL_EXPIRES_AT),
-            created_at=required_datetime(row.get(_COL_CREATED_AT), row="principal", column=_COL_CREATED_AT),
+            expires_at=stored_datetime(
+                row.get(_COL_EXPIRES_AT), table="principal", row_id=row.get(_COL_ID), column=_COL_EXPIRES_AT
+            ),
+            created_at=required_datetime(
+                row.get(_COL_CREATED_AT), table="principal", row_id=row.get(_COL_ID), column=_COL_CREATED_AT
+            ),
         )
 
     @staticmethod

@@ -82,6 +82,7 @@ from loremaster.store._txn import (
     ensure_ready_operation,
     execute_transaction,
     open_surreal_connection,
+    required_datetime,
     run_query,
     signin_credentials,
 )
@@ -342,7 +343,9 @@ class SurrealManifest:
         """
         record_id = row[_ID_KEY]
         tier, file_path = record_id.id
-        updated_at = row["updated_at"]
+        updated_at = required_datetime(
+            row.get("updated_at"), table="file", row_id=record_id, column="updated_at"
+        )
         return FileRow(
             tier=str(tier),
             file_path=str(file_path),
@@ -352,7 +355,7 @@ class SurrealManifest:
             n_chunks=row["n_chunks"],
             chunk_ids=list(row["chunk_ids"]),
             state=row["state"],
-            updated_at=updated_at.isoformat() if isinstance(updated_at, datetime) else str(updated_at),
+            updated_at=updated_at.isoformat(),
         )
 
     # -- CRUD ------------------------------------------------------------
