@@ -55,7 +55,6 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -409,12 +408,6 @@ def now_utc() -> datetime:
 # ---------------------------------------------------------------------------
 # Fixtures — ONE backend factory routes every test (fake-parity ready).
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture()
-def ledger_path(tmp_path: Path) -> str:
-    """A throwaway SQLite ledger path on a tmp volume (mirrors the state-dir layout)."""
-    return str(tmp_path / "lore_test.memory.db")
 
 
 @pytest_asyncio.fixture()

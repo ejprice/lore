@@ -43,7 +43,6 @@ pytest runs ``-n auto``.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any
 
 import pytest_asyncio
@@ -109,12 +108,12 @@ def _build_ledger_backend(env: Any, ledger: MemoryLedger) -> LocalMemoryBackend:
 
 
 @pytest_asyncio.fixture()
-async def dirty_world() -> Any:
+async def dirty_world(ledger_path: str) -> Any:
     """A ledger-backed backend + admin connection, with the memory table + audit table ready. The
     test body builds the DIRTY store (every lifecycle state) through the backend so every row is BOTH
     in the store (snapshottable) AND in the ledger (replayable). Reaped on exit."""
     env = make_env(database=unique_database(), dim=_DIM)
-    ledger = MemoryLedger(str(Path(env.database + ".memory.db")))
+    ledger = MemoryLedger(ledger_path)
     backend = _build_ledger_backend(env, ledger)
     await backend.ensure_ready()
     await backend.audit_store.ensure_ready()
@@ -126,7 +125,6 @@ async def dirty_world() -> Any:
         await backend.close()
         ledger.close()
         await drop_database(env)
-        Path(env.database + ".memory.db").unlink(missing_ok=True)
 
 
 async def _snapshot_stamps(connection: Any) -> dict[str, dict[str, Any]]:

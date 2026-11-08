@@ -34,7 +34,6 @@ pytest runs ``-n auto``.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import pytest_asyncio
@@ -233,10 +232,10 @@ async def _no_chunks(_keys: Any) -> set[str]:
 
 
 @pytest_asyncio.fixture()
-async def ledger_backend() -> Any:
+async def ledger_backend(ledger_path: str) -> Any:
     """A ledger-backed backend + admin subject for the composed-supersede observation (design §5.1)."""
     env = make_env(database=unique_database(), dim=_DIM)
-    ledger = MemoryLedger(str(Path(env.database + ".memory.db")))
+    ledger = MemoryLedger(ledger_path)
     backend = LocalMemoryBackend(
         url=env.url, namespace=env.namespace, database=env.database, dim=_DIM,
         user=env.user, password=env.password, embedder=FakeEmbedder(dim=_DIM),
@@ -252,7 +251,6 @@ async def ledger_backend() -> Any:
         await backend.close()
         ledger.close()
         await drop_database(env)
-        Path(env.database + ".memory.db").unlink(missing_ok=True)
 
 
 class TestAComposedSupersedeIsOneObservedWriteUnderRemember:

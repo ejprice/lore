@@ -56,7 +56,6 @@ for an unreachable store — a LOUD failure, never a skip. pytest runs ``-n auto
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -121,12 +120,12 @@ async def _poison_note_text(connection: Any, url: str) -> None:
 
 
 @pytest_asyncio.fixture()
-async def supersede_world() -> Any:
+async def supersede_world(ledger_path: str) -> Any:
     """A ledger-backed :class:`LocalMemoryBackend` on a fresh DB + an admin governance Subject +
     the admin connection (for seeding foreign rows / installing the poison ASSERT / snapshotting).
     The ledger is REQUIRED (#441 compensation is a ledger ``delete``). Reaped on exit."""
     env = make_env(database=unique_database(), dim=_DIM)
-    ledger = MemoryLedger(str(Path(env.database + ".memory.db")))
+    ledger = MemoryLedger(ledger_path)
     backend = LocalMemoryBackend(
         url=env.url,
         namespace=env.namespace,
@@ -150,7 +149,6 @@ async def supersede_world() -> Any:
         await backend.close()
         ledger.close()
         await drop_database(env)
-        Path(env.database + ".memory.db").unlink(missing_ok=True)
 
 
 @pytest_asyncio.fixture()

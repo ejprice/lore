@@ -51,6 +51,18 @@ set_hypothesis_home_dir(_HYPOTHESIS_HOME)
 _ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY"
 
 
+@pytest.fixture()
+def ledger_path(tmp_path: Path) -> str:
+    """A throwaway SQLite memory-ledger path on a pytest-owned tmp volume — the ONE home for a test
+    ledger's location (#584).
+
+    Never derive it from the store slug relative to the working directory: four fixtures once built
+    ``Path(env.database + ".memory.db")`` and unlinked it in a ``finally`` their own setup could skip,
+    so every setup failure left ``test_<pid>_<uuid>.memory.db`` at the repo root. A tmp path is reaped by
+    pytest whether or not the fixture's teardown runs."""
+    return str(tmp_path / "lore_test.memory.db")
+
+
 @pytest.fixture(autouse=True)
 def _dummy_anthropic_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """Export a dummy ``ANTHROPIC_API_KEY`` so eager key resolution passes.

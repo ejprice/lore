@@ -442,13 +442,13 @@ async def _observed_member_writes(backend: Any, capability: Any) -> list[Observe
 
 
 @pytest_asyncio.fixture()
-async def rebuild_world() -> Any:
+async def rebuild_world(ledger_path: str) -> Any:
     """A ledger-backed ``LocalMemoryBackend`` on a fresh DB with ONE stored+ledgered memory note —
     enough to drive ``rebuild_embeddings`` (REMOVE → ensure_ready → replay) under observation. The
     retrofit fixture's backend is ledger-LESS (rebuild is a no-op there), so this builds a ledgered
     one the test_schema_rebuild idiom (``MemoryLedger(...)`` + ``ledger=``). Reaped on exit."""
     env = make_env(database=unique_database(), dim=_DIM)
-    ledger = MemoryLedger(str(Path(env.database + ".memory.db")))
+    ledger = MemoryLedger(ledger_path)
     backend = LocalMemoryBackend(
         url=env.url,
         namespace=env.namespace,
@@ -470,7 +470,6 @@ async def rebuild_world() -> Any:
         await backend.close()
         ledger.close()
         await drop_database(env)
-        Path(env.database + ".memory.db").unlink(missing_ok=True)
 
 
 async def _no_chunks(_keys: Any) -> set[str]:
