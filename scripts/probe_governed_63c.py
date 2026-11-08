@@ -1,4 +1,15 @@
 #!/usr/bin/env python3
+# ⚠ SDK-3 BOUND (packet 66, operator ruling R19 Q5) — NOT PORTED, NOT RE-RUN on surrealdb 3.0.0.
+# Written and last run against surrealdb 2.0.0. No cron or timer runs it (the R19 Q5 finding), so it was
+# left unported; its results describe the SDK and engine it ran on. SDK 3.0.0 differences a re-run meets:
+#   * ``query()`` answers ONE ENTRY PER STATEMENT (2.0 answered the first statement's bare result) — select a
+#     single statement's result with ``loremaster.store._txn.one_statement_result``;
+#   * a connection built with ``AsyncSurreal(url)`` bypasses lore's shared policy (reconnect-forever, finite
+#     request timeout, streaming) — build it with ``loremaster.store._txn.open_surreal_connection``;
+#   * ``str(RecordID)`` brackets a digit-led or non-word key (``keep:⟨01J…⟩``) — compare record ids by their
+#     parts (``loremaster.store._txn.record_key`` / ``record_text``), never by that text;
+#   * a dropped request raises ``ConnectionUnavailableError`` (2.0 raised a raw ``KeyError``).
+# Re-open trigger: the next re-run of this script — port it first, then re-run.
 # Built to measure the PRE-63c-i-a world; PART D's prose ("agent has NO scope column") still
 # describes that world. PART C-agent was RE-POINTED 2026-11-07 at where the rule now lives:
 # 63c-i-a (ruling §4.2 Q3 DROP + MOVE) dropped the agent.role store ASSERT into the ONE writer

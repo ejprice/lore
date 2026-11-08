@@ -52,10 +52,10 @@ from loremaster.store._txn import (  # noqa: E402
     _SurrealConnection,
     compose,
     execute_transaction,
+    open_surreal_connection,
     signin_credentials,  # noqa: E402
 )
 from pydantic import SecretStr  # noqa: E402
-from surrealdb import AsyncSurreal  # noqa: E402
 
 URL = "ws://127.0.0.1:18000/rpc"
 USER = "root"
@@ -76,7 +76,8 @@ async def _connect(database: str) -> _SurrealConnection:
     # ``valid-type`` error, and every attribute read off the result then reports as
     # missing. ``loremaster.store._txn._SurrealConnection`` is exactly the factory's
     # return union and is already the house alias for a live connection (#188).
-    connection = AsyncSurreal(URL)
+    # The shared factory (packet 66, R5): the survey measures the seam production runs, policy included.
+    connection = open_surreal_connection(URL)
     # Through the ONE shared seam, not a hand-rolled copy of the payload (#211/#102).
     await connection.signin(signin_credentials(user=USER, password=PASSWORD))
     await connection.use(NAMESPACE, database)
