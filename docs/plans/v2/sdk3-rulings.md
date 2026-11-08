@@ -618,3 +618,10 @@ Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-9.md`. Adversa
   - **The 302-id entry does not register until the F6 pins exist or the operator rules (ii).** Registration is the step that touches the fleet.
   - The interim INDEX bound (2026-11-08) stays in force until then.
   - The builder brief carries (b), the class and the skip rider as NAMED requirements, and the probe file (`ADVERSARY4.md` §INSTRUMENTS) as the cold audit's instrument.
+
+## R32 — F6 probes become pins before the F6 code: route (i) GRANTED (operator, 2026-11-08)
+Operator, verbatim: *"You may run a contract author."* This answers R31's routing question in favour of (i).
+- The standing contract author (`contract-sdk3-r7`, the F6 contract's own author and the R23 servicer) converts adversary 4's §INSTRUMENTS probes into F6 pins: MP-F6-1..3, the MP-F6-4 reading-(b) pin, and R31's skip/xfail rider.
+- The pins are declared RED@HEAD, pair-proven against a reference F6 fixed to reading (b), and committed by explicit path, separate from the build.
+- **Adversary round 5** (in budget, R25) then grades that delta. The builder writes no F6 code until both have happened; the channel is `build66/OPERATOR-F6.md`.
+- The 302-id registration still follows F6 (R31).
