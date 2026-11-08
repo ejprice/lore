@@ -730,6 +730,10 @@ _TEXT_TEST_ALLOWLIST: dict[str, str] = {
     ),
     "compose": "a params-dict KEY membership test",
     "is_connection_error": "a TYPED kind membership (``error.kind in _CONNECTION_ERROR_KINDS``)",
+    "record_key": (
+        "THE id-to-key rule (R7, R8 F16, adversary-3 R12): partitions and unescapes a served RECORD ID's "
+        "text (``table:key`` / ``⟨…⟩``), never engine error text (servicer REQ-C, packet 66)"
+    ),
 }
 #: The SDK kinds whose TEXT may still decide a label (measured 3.2.4: the U prefix / ASSERT / coercion arrive
 #: as ``Internal``; recursion depth as ``Validation`` — FK-a28c-9) plus ``Thrown``, whose OUR-authored
