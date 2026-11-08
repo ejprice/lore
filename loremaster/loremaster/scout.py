@@ -65,6 +65,7 @@ from loremaster.store._txn import (
     _CONNECTION_ERRORS,
     _SDK_AWAIT_BOUNDARY_ERRORS,
     _SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION,
+    TEARDOWN_KILL_TIMEOUT_SECONDS,
     RetryableConflictSignal,
     bootstrap_session,
     is_retryable_conflict_error,
@@ -623,7 +624,10 @@ class CommandSubscriber:
 
         async def _attempt() -> None:
             try:
-                await connection.kill(live_uuid)
+                # Bounded (``TEARDOWN_KILL_TIMEOUT_SECONDS``): on a dropped socket SDK 3.0 parks the kill
+                # on the reconnect; the stdlib ``TimeoutError`` is an ``OSError``, swallowed below.
+                async with asyncio.timeout(TEARDOWN_KILL_TIMEOUT_SECONDS):
+                    await connection.kill(live_uuid)
             except _SDK_AWAIT_BOUNDARY_ERRORS as error:
                 if is_retryable_conflict_error(error):
                     raise RetryableConflictSignal() from error

@@ -28,7 +28,7 @@ section; do not repeat the conflation here).
 
    * a transport failure — the socket died mid-life and the SDK silently
      reconnected *unauthenticated*, surfacing as a ``NotAllowed`` server error
-     (verified live on 3.1.5), or a raw ``OSError`` / ``WebSocketException`` —
+     (verified live on 3.1.5), an SDK ``TransportError``, or a raw ``OSError`` —
      must drop the cached handle so the next call transparently reconnects (the
      mid-life self-heal);
    * a domain/schema rejection — an ``ASSERT`` violation or a type-coercion
@@ -125,7 +125,6 @@ from tenacity import (
     stop_all,
     stop_any,
 )
-from websockets.exceptions import WebSocketException
 
 from lorerunes import reclassify
 from loresigil import backoff
@@ -161,6 +160,14 @@ class SurrealOutcomeUnknownError(SurrealConnectionError):
     it; a handler that SERVES a definite failure must catch this class first (R9 D1).
     """
 
+
+#: The bound on a best-effort LIVE ``kill()`` at teardown (scout's command channel, the ``await`` verb's
+#: LIVE). Under SDK 3.0 a request on a dropped socket PARKS on the factory's reconnect until the request
+#: timeout (measured: ``kill()`` with the store down → ``TransportTimeoutError`` after 30 s, 40/40, build-66
+#: probe ``probe_c_proxy.py``); SDK 2.0 failed at once. Without this bound a teardown during an outage holds
+#: its caller 30 s — past the ``await`` verb's budget and the ~60 s MCP ceiling. The kill is cleanup the
+#: server also performs when the session ends, so giving up after this bound loses nothing.
+TEARDOWN_KILL_TIMEOUT_SECONDS = 2.0
 
 #: The advice an outcome-unknown error carries (R19 Q6, R27-3): the seam cannot tell a read from a write, so
 #: it states BOTH halves as a fact; a renderer that knows its request's shape serves only its own half.
@@ -859,9 +866,14 @@ def record_text(value: object) -> str:
 # us" — the broad set an operation's ``except`` must catch so a domain rejection
 # is never left unwrapped. ``OSError`` covers ``ConnectionRefusedError``;
 # ``SurrealError`` covers the SDK's server/auth errors AND an ``ASSERT``/coercion
-# rejection (:func:`is_connection_error` then separates the two); ``WebSocket
-# Exception`` covers a broken/closed WS transport.
-_CONNECTION_ERRORS = (OSError, SurrealError, WebSocketException)
+# rejection (:func:`is_connection_error` then separates the two) — and, on SDK 3.0, every transport
+# failure, which the SDK raises as its own ``TransportError`` (``ConnectionUnavailableError`` /
+# ``TransportTimeoutError``). ``websockets.exceptions.WebSocketException`` is RETIRED from the set (drop list
+# #9, F10): measured on SDK 3.0.0 + 3.3.5 through the store-bounce proxy (build-66 probe ``probe_c_proxy.py``,
+# 20 runs x {abort, close-frame}), a LIVE iterator, a ``kill()`` and a ``close()`` over a dead socket and a
+# first connect to a down store raised only ``surrealdb.errors`` classes — no ``websockets.*`` class reached
+# lore. A raw one would now propagate as the bug it is.
+_CONNECTION_ERRORS = (OSError, SurrealError)
 
 # The ONE SDK-await-boundary error-classification set (packet 05a-ii, R-2): what a query IN FLIGHT on the
 # socket can raise when the transport fails. Under SDK 2.0.0 that included a raw ``builtins.KeyError(request-
@@ -1210,9 +1222,8 @@ def is_connection_error(error: BaseException) -> bool:
         # transport; every other kind (``Internal``/``Query``/``Validation``/…)
         # is the engine rejecting the write we sent — a domain rejection.
         return error.kind in _CONNECTION_ERROR_KINDS
-    # A raw ``OSError`` / ``WebSocketException`` (a dead or refused socket), or a
-    # non-``ServerError`` SDK error such as ``ConnectionUnavailableError``, is
-    # always transport-class.
+    # A raw ``OSError`` (a dead or refused socket), or a non-``ServerError`` SDK
+    # error such as ``ConnectionUnavailableError``, is always transport-class.
     return True
 
 
@@ -1662,8 +1673,8 @@ async def bootstrap_session(
         TxnContentionExhaustedError: The DDL or ``use()`` contended past the shared
             budget (or the attempt ceiling). Never wrapped here — see above.
 
-    This function's OWN body raises nothing else: a transport fault (a raw ``OSError``/
-    ``SurrealError``/``WebSocketException``) or a domain rejection of the bootstrap DDL
+    This function's OWN body raises nothing else: a transport fault (a raw ``OSError`` or
+    an SDK ``SurrealError``) or a domain rejection of the bootstrap DDL
     propagates UNTRANSLATED, exactly as the SDK (or :func:`retry_on_conflict`) raised it
     — by design, so scout's reconnect ladder (which catches those raw types directly)
     and each of the ten seams' own translation (into :class:`SurrealConnectionError`)
