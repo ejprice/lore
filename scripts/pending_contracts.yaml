@@ -287,8 +287,9 @@ bounds:
       count: 1
       reason: _act_as returns arm_finding_identity(...), which mypy types Any while the import is unresolved (the arm lands
         with §HELD part B) — the same missing symbol, surfacing as a return-type line
-# Packet 66 / SDK3 contract (contract-sdk3-r7, 2026-11-08, at 0d9b8c2). Item 5 of the round-7 brief: the packet's
-# RED@HEAD set is owned here. ⚠ ONLY the file with a TYPECHECK red is registrable today: the schema refuses a file
+# Packet 66 / SDK3 contract (contract-sdk3-r7, 2026-11-08, at 0d9b8c2; round 8 added the MP-1 file). Item 5 of the
+# round-7 brief: the packet's RED@HEAD set is owned here. ⚠ ONLY the files with a TYPECHECK red are registrable
+# today: the schema refuses a file
 # with pytest reds and no mypy error ("names neither a missing symbol nor a code allowance"), so the packet's other
 # declared RED@HEAD files wait for F6's `red_nodeids` (R6; FORK-R7-4 in the packet doc §ROUND 7). SELF-DESTRUCTS: the
 # build commit pins surrealdb==3.0.0, the SDK-3-only class resolves, the file stops erroring — delete with the build.
@@ -301,6 +302,12 @@ bounds:
   rationale: contract-ahead — R19 Q6's read-shape pin drives the seam with SDK 3.0's own transport timeout class,
     absent from the SDK 2.0 the main venv type-checks against until the build lands
   files:
+  - path: loremaster/tests/test_sdk3_refused_file_reason.py
+    unsymboled_codes:
+    - code: attr-defined
+      count: 1
+      reason: MP-1's row-cap leg raises `TxnRowCapExceededError` (SDK3's row bound, R8 F12) through the `_txn` module
+        alias; the class does not exist at HEAD and mypy names no symbol for a module-alias attribute
   - path: loremaster/tests/test_sdk3_served_outcome.py
     unsymboled_codes:
     - code: attr-defined
