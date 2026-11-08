@@ -1,6 +1,6 @@
 # Packet SDK3 — Python SDK `surrealdb` 2.0.0 → 3.0.0 (on the 3.3.5 stores)
 
-Status: CONTRACT ROUND 7 (R18/R20 native retry, R19 routing, R21/R22, R26 — §ROUND 7, newest first). Previously: CONTRACT ROUND 5 (R11 tenacity + R12 F18/C9-class/F-a/F-b/F-d/F22/X18/X19/RS7 — §ROUND 5, newest first). Previously: CONTRACT ROUND 4 (adversary round 1's MP1–MP3 + R9 D1–D3 + residuals closed — §ROUND 4, newest first). Previously: CONTRACT ROUND 3 (rulings R2–R7 pinned; §ROUND 3 below supersedes the round-1/2 forks — the round-1/2 sections stay as history). Round 1: DISCOVERY + CONTRACT (tdd Phase 0 + Phase 1), written 2026-11-07 by the SDK3 contract author
+Status: CONTRACT ROUND 8 (MP-1, F6 gate contract, landmine 1 staged, cumulative inventory — §ROUND 8, newest first). Previously: CONTRACT ROUND 7 (R18/R20 native retry, R19 routing, R21/R22, R26 — §ROUND 7). Previously: CONTRACT ROUND 5 (R11 tenacity + R12 F18/C9-class/F-a/F-b/F-d/F22/X18/X19/RS7 — §ROUND 5, newest first). Previously: CONTRACT ROUND 4 (adversary round 1's MP1–MP3 + R9 D1–D3 + residuals closed — §ROUND 4, newest first). Previously: CONTRACT ROUND 3 (rulings R2–R7 pinned; §ROUND 3 below supersedes the round-1/2 forks — the round-1/2 sections stay as history). Round 1: DISCOVERY + CONTRACT (tdd Phase 0 + Phase 1), written 2026-11-07 by the SDK3 contract author
 against HEAD `4624daf` (branch `feat/surreal-unification`; the brief named `c05bf3f`, HEAD moved
 under another builder's commit while this ran), SDK 2.0.0 in lore's venv, SDK 3.0.0 in the
 research40 scratch venv. Operator approved the packet 2026-11-07. **This contract STOPS for operator
@@ -8,6 +8,150 @@ review** (§5 forks); then `contract-adversary` grades it, then a builder implem
 
 Inputs: `docs/research/2026-11-07-surrealdb-3.3-4.0-for-lore.md` (SUMMARY, §B4–B6/B18, §C, §D-4/D-10,
 §E 7/11/12), finding #576, `docs/reference/surrealdb-31-capabilities.md` §0a/§2/§3/§6.5.
+
+## ROUND 8 — MP-1, B-2 letter legs, F6 gate contract, Q7, the fold, landmine 1, cumulative inventory (contract-sdk3-r7; 2026-11-08, base `3374a6b`, HEAD `942aa20` docs-only)
+
+Answers WORKORDER-r8 (scratchpad/sdk3r8), R27 (sidecar RULING-6), R28 and R29 (sidecar RULING-7). The last contract round
+in the budget (R25); adversary round 4 grades it, then BUILD. Receipts, counts and the both-ways diff: the hand-back
+`scratchpad/sdk3r8/REPORT.md`. Reference: `scratchpad/sdk3r8/ref` (= the round-7 reference + the reference F6 of §R8.6 + the
+STAGED C10 `run()` + the STAGED landmine-1 patch); pristine baseline `scratchpad/sdk3r8/headtree` = `3374a6b` + `lore.yaml`
+(R27-7c method rider).
+
+### R8.1 New and changed pins
+| item | node(s) | kills | receipt |
+|---|---|---|---|
+| MP-1 (R28/R29) | `test_sdk3_refused_file_reason::TestARefusedFileNamesItsBoundInEitherSweepShape::…[batch|realtime]` (a premise per leg: the leg reaches its own arm) | an arm (`_commit_batch_file` / `_index_chunks`) serving a row-cap refusal with no bound | declared mutations `mp1_batch` → exactly `[batch]`, `mp1_realtime` → exactly `[realtime]` |
+| MP-1 sibling (RULING-7 §4) | `::TestAnEmbedFailureIsServedTheSameInEitherSweepShape::…[batch|realtime]` | an arm serving a different embed-failure reason | `embed_batch`, `embed_realtime` |
+| B-2 letter legs (R26-3 rider; adversary R18) | `test_sdk3_record_ids::TestTheMigrationRefusalRenderersServeBareKeys` ×2, now digit-led + non-word + LETTER-LED | a renderer slicing brackets off `str(RecordID)` (right for bracketed keys, wrong for letter-led) | `b2_idsample` (both legs: `_owned_unscoped_part` renders its ids through `_id_sample`), `b2_owner` |
+| R13 (adversary) | `test_sdk3_outcome_reach::TestAServerAnsweredErrorIsADefiniteFailure::test_a_domain_rejection_on_{the_single_statement,the_transaction}_seam` | a DOMAIN rejection served as outcome-unknown (the class name over-claimed: its legs drove only NotAllowed) | `fb_domain` (single-statement); the transaction leg rides the T-family kill (adversary `fb_txn_domain_unknown`) |
+| F6 gate contract (R27-4) | `scripts/test_pending_contract_gate_f6.py` ×12 — §R3.7(c)'s five semantics + R27-4's two registry legs + three consequences (per-node in a node-listed file; symbol-only files keep file-level; no typecheck self-destruct of a pytest-only file) | the wrong builds named in its docstring | RED at HEAD ×12 (the registry rejects `red_nodeids`); GREEN ×12 on the reference F6 with the existing gate suites still green |
+| R27-7a Q7 | file-level proof re-run on the final tree + the RAISING mutation for the five suffix-silent files (`scratchpad/sdk3r8/mut/q7_raise.py`) | a surviving private `_bare` | receipts in the hand-back |
+| R27-7d fold | `_driver_sleeps.mutate_the_wait_factory` — the ONE home; `test_retry_seam._sleeps_through_the_one_wait_factory` and `test_sdk3_native_retry._mutate_the_factory` call it | — | the 19 sharing pins + the A4 pins green on the reference |
+
+### R8.2 Cumulative removed/rewritten-test inventory, rounds 3–8 (R22 rider 2; R27-5) — NAMED FOR THE COLD AUDIT
+The cold audit's contract-blind pass reads every row here against the both-ways diff (R24 #3). Rounds 3–6: drafted from this
+doc's own tables (a Sonnet draft, four rows sampled against the cited sections by the author, one fate corrected: C6-1);
+round 7: §R7.2 (R7-1 … R7-8, by reference — not duplicated); round 8: R8-1 … R8-3 below. Every fact is the doc's; where
+the doc states no fate the row says so.
+
+| # | round | test (as the doc names it) | REMOVED / REWRITTEN | behaviour it certified before | fate | doc citation |
+|---|---|---|---|---|---|---|
+| C3-1 | 3 | `lifecycle::TestRecoveryLatencyAfterALongOutage` (L6) | REWRITTEN | UNSTATED IN DOC (round 3 gives only the new form: for all owners, 15 s outage, first call answers <= 3.0 s after the store returns; round 4 later moves outage to 45 s) | carried-by L6 (the rewritten node itself) | §R3.1 row L6; §R3.0 |
+| C3-2 | 3 | retirement file `TestTheSdkTypesALiveTransactionConflict` (RP3), transactional leg | REWRITTEN | UNSTATED IN DOC (new form: runs `query_raw` -> `_failed_statements` -> `_rollback_verdict`, requires `is_transaction_conflict` on the selector's root cause; never reads `query()`) | carried-by RP3 itself (+ M-W6 declared reds RP3, T1, T2); retired-with drop-list row #2 | §R3.0; §R3.4 W6; §R3.5 row #2 |
+| C3-3 | 3 | `test_sdk3_result_shapes.py` round-1/2 R7 `…every_minted_key_shape_round_trips` | REMOVED | minted key shapes (ULID, digit-led, letter-led, uuid5, path, int): type, table, key, symmetric render AND SDK-2.0 rendering | carried-by `test_sdk3_record_ids.py` (doc: "absorbs round-1/2 R7-R9"); removed because contradicted ruling R7; per-node mapping UNSTATED IN DOC | §R3.10 last bullet; §R3.0; round-1/2 table row R7 |
+| C3-4 | 3 | `test_sdk3_result_shapes.py` round-1/2 R8 `TestTheIdLoreServesNamesTheEnginesKey` and R9 `TestAKeeperCannotBeDeletedWhileKeeping…` | REMOVED (moved out of result_shapes) | `Keep.id == "keep:<engine key>"` and `get_keep` finds it; a digit-led keeper principal is refused deletion while keeping | carried-by `test_sdk3_record_ids.py` ("absorbs"); K3 `TestAKeeperCannotBeDeletedWhileKeeping[installed|angle|backtick]` is the keeper pin | §R3.0 ("R7-R9 moved out"); §R3.1 row K3 |
+| C4-1 | 4 | `_surreal_fakes.py::FakeSurrealStore.__init__` | REWRITTEN | statement cap in the fake | carried-by rewritten node; ruling statement cap -> row cap (R8 F12) | §R4.7 row 1 |
+| C4-2 | 4 | `_surreal_fakes.py::fake_surreal_trio` | REWRITTEN | statement cap in the fake trio | carried-by rewritten node; ruling R8 F12 | §R4.7 row 2 |
+| C4-3 | 4 | `test_indexer.py:255-271, :694` `_trio` kwarg | REWRITTEN (deviation, §R4.1) | fake kwarg named for the statement cap | carried-by rewritten kwarg (rename); ruling F12 | §R4.7 last statement-cap row |
+| C4-4 | 4 | `test_ingest_entity_seam::TestOneImplementation::test_entity_write_reddens_with_the_shared_compose_cap` | REWRITTEN | shrinking the shared STATEMENT cap reddens the entity write | carried-by rewritten node (shrink row cap); ruling R8 F12 | §R4.7 row 3; §R4.0 MP1 row |
+| C4-5 | 4 | `test_surreal_apply.py:158` P5-C2 fallback `TXN_STATEMENT_WARN_THRESHOLD = 800` | REWRITTEN (removed) | fallback constant for the statement warn | carried-by row warn (R9 D2): `test_sdk3_row_bound::TestTheSizeWarnFiresOnRows` ×2 | §R4.7 row 4; §R4.0 D2 row |
+| C4-6 | 4 | `test_surreal_apply.py:191` P5-C3a fallback `TXN_STATEMENT_HARD_CAP = 5000` | REWRITTEN (removed) | fallback constant for the statement hard cap | carried-by row cap (R8 F12) pins `test_sdk3_row_bound::TestTheRowCapIsTheOneBound` | §R4.7 row 5; §R4.0 MP1 row |
+| C4-7 | 4 | `test_surreal_apply::TestApplyTxnSizeTelemetry::test_apply_warns_above_statement_threshold` -> `…_above_the_row_threshold` | REWRITTEN | apply warns above the statement threshold | carried-by rewritten node (R9 D2) | §R4.7 row 6; §R4.0 D2 |
+| C4-8 | 4 | `test_surreal_apply::TestComposeStatementHardCap::test_compose_raises_…` -> `TestComposeRowHardCap::…` | REWRITTEN | compose raises above the statement hard cap | carried-by `TestComposeRowHardCap` ×3 (R8 F12) | §R4.7 row 7; §R4.0 MP1 |
+| C4-9 | 4 | `test_surreal_apply` `…test_compose_accepts_exactly_at_the_hard_cap` | REWRITTEN | accepts exactly at the (statement) hard cap; doc: stayed GREEN at 5,000 statements under F12 | carried-by rewritten node; ruling R8 F12 | §R4.7 row 8 |
+| C4-10 | 4 | `test_surreal_apply` `…test_compose_still_succeeds_above_warn_threshold_but_below_hard_cap` | REWRITTEN | succeeds above warn threshold, below hard cap (statements) | carried-by rewritten node; ruling F12 + D2 | §R4.7 row 9 |
+| C4-11 | 4 | `test_surreal_apply::TestApplyStatementHardCap…` -> `TestApplyRowHardCapNeverReachesTheServer::…` | REWRITTEN | apply refuses over the statement cap before anything is sent | carried-by `TestApplyRowHardCapNeverReachesTheServer` (R8 F12) | §R4.7 row 10; §R4.0 MP1 |
+| C4-12 | 4 | `test_reanchor_58_r3_convergence.py:136` module `CAP` | REWRITTEN (collection-safe read only) | read the statement-cap constant | carried-by rewritten read; ruling F12; 58 re-size owed (F19) | §R4.7 row 11 |
+| C4-13 | 4 | `test_comms_await.py:218,:222` `TestTheSharedSdkAwaitBoundaryConstant::…` -> `::test_the_boundary_catches_the_sdk_transport_error_and_not_a_keyerror` | REWRITTEN | boundary constant contains KeyError; exact-set equality | carried-by rewritten node (catches SDK transport error, lets KeyError through; exact-set dropped per F10) | §R4.7 KeyError family rows 10-11 |
+| C4-14 | 4 | `test_comms_await.py:454` `_FakeLiveConnection` dead path -> `TestSocketDropNonLoss` ×2 | REWRITTEN | dead connection raises KeyError | carried-by rewritten fake (raises `ConnectionUnavailableError`) | §R4.7 KeyError family row 12 |
+| C4-15 | 4 | `test_comms_await.py:461` `_FakeLiveConnection.subscribe_live` | REWRITTEN | raises KeyError | carried-by rewritten fake (raises `ConnectionUnavailableError`) | §R4.7 KeyError family row 13 |
+| C4-16 | 4 | `test_comms_await.py:562,:563` `…dropping_keyerror…` -> `::test_dropping_the_transport_error_from_the_shared_constant_breaks_await_recovery` | REWRITTEN | mutation drops KeyError from the shared constant | carried-by rewritten node (mutation drops the members that catch the SDK transport error, derived from the live value) | §R4.7 rows 14-15 |
+| C4-17 | 4 | `test_graph_surreal.py:2878` `TestQuerySeamSdkKeyErrorClassification` -> `TestQuerySeamSdkTransportErrorClassification::{test_an_sdk_transport_error_surfaces_as_outcome_unknown_and_heals, test_a_keyerror_propagates_as_a_bug_not_as_transport}` | REWRITTEN | KeyError -> `SurrealConnectionError` + heal | carried-by the two rewritten nodes | §R4.7 row 19 |
+| C4-18 | 4 | `test_memory_ownerfold_63a_iv.py:63` `_bare_s` | REWRITTEN | partitioned `str(RecordID)` (53/200 engine ids digit-led -> latent flake on SDK 3.0.0) | carried-by rewritten helper (`.table_name` / `.id`, R7 d) | §R4.7 row 20 |
+| C4-19 | 4 | `test_memory_reinforce_63a_iv.py:47` `_bare_s` | REWRITTEN | same as C4-18 | carried-by rewritten helper (R7 d); doc C8 notes the pre-existing duplicate | §R4.7 row 21; C8 |
+| C4-20 | 4 | `test_memory_supersede_atomicity_63b_ib.py:772` `TestTransportAndContentionKeepTheSupersedeLedgerRow::test_a_transport_failure_on_the_composed_supersede_keeps_the_ledger_row` | REWRITTEN | injected KeyError | carried-by rewritten node (SDK transport error, surfaces as unknown, F14) | §R4.7 row 22 |
+| C4-21 | 4 | `test_memory_supersede_atomicity_63b_ib.py:877` `TestCompensationIsDomainScopedAcrossShapesAndCauses[*transport*]` | REWRITTEN | injected KeyError | carried-by rewritten params (SDK transport error) | §R4.7 row 23 |
+| C4-22 | 4 | `test_retry_seam.py:312,:316` `_mutate_shared_marker` consumers | REWRITTEN | setattr of `_RETRYABLE_CONFLICT_KIND` | carried-by rewritten consumers (`move_the_sdk_conflict_predicate`, rebinds `QueryError.is_transaction_conflict`); retired-with drop-list row #2 | §R4.7 rows 26-27 |
+| C4-23 | 4 | `test_retry_seam.py:385` param `sdk-KeyError-routing-drop` -> `sdk-transport-inflight-drop` + new `::test_a_keyerror_propagates_as_a_bug_not_as_transport` | REWRITTEN | KeyError = transport: unknown, zero retries, drop | carried-by the renamed param + new node | §R4.7 row 28 |
+| C4-24 | 4 | `test_retry_seam.py:3000,:3031,:3035` `TestScoutCommandClaimRidesTheSeam::test_a_transport_fault_still_reaches_the_reconnect_ladder[…]` | REWRITTEN | KeyError param; `raises((*_CONNECTION_ERRORS, KeyError))`; isinstance with KeyError | carried-by rewritten node (transport error; no KeyError) | §R4.7 rows 29-31 |
+| C4-25 | 4 | `test_scout.py:1157` `…recovers_from_a_keyerror_inflight_drop` -> `::test_reconnect_recovers_from_an_sdk_transport_inflight_drop` | REWRITTEN | recovery from a KeyError in-flight drop | carried-by rewritten node | §R4.7 row 32 |
+| C4-26 | 4 | `test_scout.py:1199,:1200,:1206` `…dropping_keyerror…` -> `::test_dropping_the_transport_error_from_the_shared_constant_breaks_recovery` | REWRITTEN | shared mutation helper drops KeyError; drop error = KeyError | carried-by rewritten node (doc: VACUOUS on REF until C1 fakes fixed) | §R4.7 rows 33-35 |
+| C4-27 | 4 | `test_surreal_harness.py:1483` `TestTheHarnessRetryPolicyIsTheSeamsPolicy::test_detection_follows_the_seams_one_conflict_kind` | REWRITTEN | literal setattr of the conflict kind | carried-by rewritten node (predicate mutation); drop-list row #2 | §R4.7 row 36 |
+| C4-28 | 4 | `test_surreal_harness.py:1516` `::test_the_bootstrap_paths_detection_follows_the_seams_kind` | REWRITTEN | literal setattr | carried-by rewritten node (predicate mutation) | §R4.7 row 37 |
+| C4-29 | 4 | `test_surreal_harness.py:1565` `::test_run_detection_follows_the_seams_one_conflict_kind` | REWRITTEN | literal setattr | carried-by rewritten node (predicate mutation) | §R4.7 row 38 |
+| C4-30 | 4 | `test_surreal_manifest.py:1231` -> `TestQuerySeamSdkTransportErrorClassification` ×2 | REWRITTEN | KeyError classification (as graph) | carried-by the two rewritten nodes | §R4.7 row 39 |
+| C4-31 | 4 | `test_surreal_store.py:2347` -> `TestQuerySeamSdkTransportErrorClassification` ×2 (a READ) | REWRITTEN | KeyError classification on a read | carried-by the two rewritten nodes | §R4.7 row 40 |
+| C4-32 | 4 | `test_surreal_store.py:2375` `TestTxnSdkKeyErrorClassification` -> `TestTxnSdkTransportErrorClassification` ×2 | REWRITTEN | fake `query_raw` KeyError -> unknown + dropped once | carried-by the two rewritten nodes (transport error; KeyError propagates) | §R4.7 row 41 |
+| C4-33 | 4 | `test_retry_seam.py` imports (drop #13): 2-line `AsyncEmbeddedSurrealConnection` deletion | REMOVED (PORTED from round-3 reference) | embedded-connection imports | retired-with drop-list row #13 | §R4.7 last KeyError-family row |
+| C5-1 | 5 | `test_comms_await.py::TestAwaitSharesTheSdkBoundaryConstantByMutation::test_no_inline_sdk_await_boundary_tuple_survives_in_scout_or_the_awaiter` (F-d) | REMOVED (DELETED) | no bare `KeyError` inside an inline `(*_CONNECTION_ERRORS, KeyError)` tuple (AST reach check) | doc: pattern cannot occur after R6 F10 (vacuous); sibling runtime-mutation sharing pin "stays" (node id UNSTATED IN DOC); C7 prose elsewhere NOT edited (residual R5-r4) | §R5.5 F-d; §R5.0 item 6; §R4.7 C7/F-d |
+| C5-2 | 5 | `test_backoff_seam.py::TestNoNewHandRolledBackoff::test_the_allowlisted_file_still_contains_what_it_was_exempted_for` (F22) | REMOVED (DELETED) | source-text check that `_txn.py` still contains what its `_POW_ALLOWLIST` exemption was for | doc: behaviour clauses kept (every declared site draws from the mutated policy; perimeter scan; positive control); `_POW_ALLOWLIST` left exempting `_txn.py` (fork F-r5-1) | §R5.5 F22; §R5.0 item 6; §R5.10 F-r5-1 |
+| C5-3 | 5 | `test_retry_seam._point_at` and the counting factories (`_plain_counting_connection_factory` / `_counting_connection_factory` clones; 6 call sites: test_surreal_store ×4, _manifest ×1, _graph ×1) (C2) | REWRITTEN | patched the per-module `AsyncSurreal` name | carried-by `sdk3_shape_fakes.route_connections` (R5.0 item 10); NOT applied to ~7 other `test_retry_seam` sites, test_comms_cli, test_ingest_entity_seam, test_surreal_harness (residual R5-r5) | §R5.7 C2; §R5.0 item 10 |
+| C5-4 | 5 | `test_surreal_store.py` `if TYPE_CHECKING:` import of `_RETRYABLE_CONFLICT_KIND`, helper `_ruled_a28c_store`, and the `TYPE_CHECKING` import (C3) | REMOVED | type-only import of the retired literal; unreferenced helper | doc: grep shows no reference anywhere (incl. `scripts/pending_contracts.yaml`); no behaviour pin named | §R5.7 C3; §R5.0 item 10 |
+| C5-5 | 5 | `_bare_s` in `test_memory_ownerfold_63a_iv.py` and `test_memory_reinforce_63a_iv.py` (C8) | REWRITTEN | duplicated `str(RecordID)` partitioner | carried-by `sdk3_shape_fakes.bare_record_key` (`_bare_s = bare_record_key`) | §R5.7 C8 |
+| C5-6 | 5 | F-a doubles: `test_retry_seam._ScriptedConnection.query`, `test_scout._FakeCommandConnection.query` ×4, `test_comms_await._FakeLiveConnection.query` ×2 | REWRITTEN | answered with SDK 2.0's bare first-statement shape | carried-by `sdk3_shape_fakes.one_statement_answer` (version-aware); its SDK-2.0 branch retired-with drop-list row #37 (builder deletes in the pin-3.0.0 commit) | §R5.4; §R5.0 item 5 |
+| C6-1 | 6 | `test_sdk3_served_outcome::…::test_every_pin_row_names_a_real_behaviour_pin` (R14) | REMOVED (deleted) | each adjudication row names a real behaviour pin | retired by operator ruling R14 ("Round 5's clause that checks each 'pinned' verdict row names an existing test is REMOVED (a test about tests)"); no behaviour carried — the walker-derived reach checks stay | §R6.0 R14 |
+| C6-2 | 6 | MP-C 3a: `test_retry_seam` ~47 nodes (`{'next':N} == [{'next':N}]` asserts, brief/ack doubles, scout fakes) and `test_surreal_harness` ×2 `run` identity fakes | REWRITTEN | doubles answered SDK-2-shaped | carried-by `one_statement_answer` at every `query()` return of every `test_retry_seam` double (16 sites); harness `run` identity fakes fed SDK-shaped answers (C10) | §R6.2 row 3a; §R6.8 C10 |
+| C6-3 | 6 | MP-C 3b: 6 `AsyncSurreal` monkeypatches in `test_retry_seam` | REWRITTEN | patched per-module `AsyncSurreal` | carried-by `route_connections` | §R6.2 row 3b |
+| C6-4 | 6 | MP-C 3c: every cloned `_bare` — 19 by helper c9-sweep-r6 + a19; `_bare_id` in `test_pdp_oracle_61b`; `_governed_contract_64.bare` (now alias); split/endswith sites in test_agent_registry, _comms_fakes, test_preboot…, test_memory_replay…, test_principals_store, test_comms_tool, test_audit_schema, test_keeps_schema, test_enforced_relations (nodes a28/a28b/a28c, comms_schema, governed_migration, agent_governance, comms_send, governed_schema, …) | REMOVED (clones deleted) / REWRITTEN (call sites) | text-split of `str(RecordID)` to get the bare key | carried-by shared helpers `sdk3_shape_fakes.record_parts` / `bare_record_key` / `same_record` | §R6.2 row 3c |
+| C6-5 | 6 | MP-C 3c determinism: `_governed_contract.digit_led_record_key` + `rekey_principal` replace random engine-key comparisons | REWRITTEN | compared keys SDK 2 rendered bare (SDK 3 brackets digit-led keys, so compare failed every run on SDK 3) | carried-by fixed digit-led keys (`digit_led_record_key`, `rekey_principal`) | §R6.2 row 3c |
+| C6-6 | 6 | MP-C 3d: `test_blocks_edge` ×7 via `StoreTraffic.COUNTABLE_DOORS` / `_delegating` (instrument) | REWRITTEN (instrument) | door reach derived from coroutine-only classification (SDK 2.0 doors) | carried-by rewritten `COUNTABLE_DOORS` (follows delegation through the connection class's private helpers); same 11 doors on SDK 2.0; reach stays deny-by-default (`require_full_reach`) | §R6.2 row 3d |
+| C6-7 | 6 | MP-C 3f: socket-owner scans ×2 | REWRITTEN (R15: rewrite or retire) | spelling scan for socket owners | carried-by behavioural discovery (`_ensure_connection` driven once with every constructor routed to a counting factory; same 17 at HEAD and on ref) | §R6.2 row 3f |
+| C6-8 | 6 | MP-C 3f: derivation RELATE regex ×3 | REWRITTEN | regex over derivation source | carried-by instrument that EXECUTES the fragment in one transaction under ENFORCED code-graph edges (live store) | §R6.2 row 3f |
+| C6-9 | 6 | MP-C 3f: governed SDK-name scan | REWRITTEN (narrowed) | name scan for SDK method names | carried-by scan narrowed to receivers that are not module `ContextVar`s (+ control that the same name on another receiver still flags) | §R6.2 row 3f |
+| C6-10 | 6 | MP-C 3g: `test_ingest_entity_seam` ×8 via `_ingest_entity_fixtures.FakeDomainStore.fetch_nodes` | REWRITTEN (fixture; TEST read shape, not a production regression) | read via raw `connection.query` (SDK 2 shape); SDK 3 answers `[[rows]]` so every row was filtered | carried-by routing through `_txn.run_query` (reference production unchanged: 45/45) | §R6.2 row 3g; §R6.8 F-a |
+| C6-11 | 6 | MP-C 3h: `test_fixwave_a19_63c_i_a::TestTheRefusalRendersStoredIdsThroughTheSanitiser63cIAa19` (1 node) | REWRITTEN | refusal rendering accepted the SDK `str(RecordID)` form | carried-by rewritten `_renderings` / `_forbidden_rendering` (a19 3h pin); reference bug B-2 | §R6.2 row 3h; §R6.1 row a19 3h |
+| C6-12 | 6 | MP-C beyond-the-117: q1b ×6, q1c ×1 (class/kind tables) | REWRITTEN | SDK 2.0 conflict kinds; `TransactionConflict` assumed rejection/proven/unknown | carried-by rewritten tables: `TransactionConflict` ruled `retried` (fourth fate; FORK-R6-1); drop-list row #2 / R11; q1b gains `TxnRowCapExceededError` (proven), `SurrealOutcomeUnknownError` (unknown) | §R6.2 last row; §R6.7 FORK-R6-1 |
+| C6-13 | 6 | MP-C beyond-the-117: `pdp_oracle` ×13 | REWRITTEN | three raw `connection.query` reads (SDK 2 shape) | carried-by the harness `run` funnel (F-a/C10 reach) | §R6.2 last row |
+| C6-14 | 6 | MP-C beyond-the-117: a19a `_names` | REWRITTEN | keyed on a rendered id form | carried-by `_names` keyed on the sanitised bare key every allowed form contains | §R6.2 last row |
+| R7-1 … R7-8 | 7 | see §R7.2 | — | — | — | §R7.2 |
+| R8-1 | 8 | `test_sdk3_native_retry._FactoryMutation` / `test_retry_seam._sleeps_through_the_one_wait_factory` (helpers) | REWRITTEN (folded) | the one-factory mutation (R20 A4) | carried-by the same node ids through `_driver_sleeps.mutate_the_wait_factory` | §R8.1 |
+| R8-2 | 8 | `test_sdk3_record_ids::TestTheMigrationRefusalRenderersServeBareKeys` ×2 | REWRITTEN (+ letter-led key) | bare-key served ids for digit-led + non-word keys | carried-by the same node ids | §R8.1 |
+| R8-3 | 8 | `test_sdk3_outcome_reach::TestAServerAnsweredErrorIsADefiniteFailure` (class docstring) | REWRITTEN (scope stated; +2 domain legs) | NotAllowed-branch definiteness | carried-by the same 2 nodes + 2 new | §R8.1 |
+
+Coverage (rounds 3–6, the draft's own): round 3 ×4, round 4 ×33, round 5 ×6, round 6 ×14 (57 rows). Excluded: rows ADDED
+rather than removed/rewritten (am-37 3e, the bootstrap allowance), §R4.7's KEPT and DORMANT-BOUND rows, and §R3.10's
+builder-routed rows (rewritten in round 4, listed there). Partial gaps the doc leaves: C3-1/C3-2 (prior behaviour unstated),
+C3-3 (no per-node mapping), C5-1 (the sibling pin's node id).
+
+### R8.3 Landmine 1 — "tenacity in name only": the STAGED instrument (A) and the cold-audit diff check (B)
+- **A, staged (R29: adopted by the sidecar, OVERTURNABLE by the operator; it does NOT land in the main tree this round):**
+  `scratchpad/sdk3r8/lm1_narrowing.patch` — `_driver_sleeps.DRIVER_SLEEP_CALLER_MODULES = {"tenacity.asyncio"}` with the
+  threat model in the instrument (rider 1), `NO_DRIVER_SLEEP_HINT` rewritten to teach "port it, never widen this set"
+  (rider 3), and scout's ladder held the same way: the ladder pins' injected `sleep` records its caller and asserts
+  `tenacity.asyncio` (rider 4). It lands WITH the build as a servicing commit; the HEAD nodes it reddens go into the F6
+  `red_nodeids` entry (rider 2). Proofs on the reference (patch applied): the reference green; the author's own declared
+  hand-loop mutations `lm1_txn` (26 declared) and `lm1_scout` (2 declared) RED.
+- **B, the cold audit's NAMED diff check (keep beside A; the only instrument for a loop that games A):** "`_txn.retry_on_conflict`
+  and `scout.CommandSubscriber.run` contain NO loop around the attempt; tenacity's `AsyncRetrying` IS the loop; no wait
+  object is CALLED outside tenacity (`backoff.full_jitter(...)` is passed as `wait=`, never invoked by lore)." Scout's
+  ladder is reachable by B; A reaches it only through the staged caller attribution.
+
+### R8.4 Builder notes (adversary-3 residuals and round-8 consequences; no pins)
+- **MP-1 chokepoint:** ONE helper shared by the two cloned `except SurrealStoreError` arms (`_index_chunks`,
+  `_commit_batch_file`): `_landed_after_unknown` → refused reason → log → `_mark_file_failed`. Prove the sharing by
+  mutation at audit (break the helper ⇒ both MP-1 legs red).
+- **R1 / R27-2(a):** `upsert` = ONE pure chunk-row builder composed alone (and by `replace_file_fragment` after its DELETE);
+  in-tree prior art for the batched overwrite form: `graph_surreal`'s `INSERT INTO name $rows ON DUPLICATE KEY UPDATE
+  value = $input.value`. The named audit check: break the row builder ⇒ the upsert pins AND B1 redden.
+- **R4 (F11/CF4):** CF4 is masked by the seam's drop-on-timeout; changing timeout→drop makes `SURREAL_STREAMING`
+  load-bearing, and CF4 guards it (proven by construction by adversary 3).
+- **R11:** `loresigil.backoff.jittered_backoff_delay` constructs the same `wait_random_exponential(...)` as `full_jitter` —
+  delegate it to `full_jitter` in 66, or fold it in packet 68 (two homes for one law until then).
+- **R12:** collapse the five id-text homes (`record_text`, `governed._bare`, `keeps`/`principal_keys._record_id_part`,
+  `floor_calibration._bare_record_id`) onto RecordID parts / `record_text`.
+- **R14:** B-2's backtick leg cannot fire on SDK 3.0.0 (`str()` never emits backticks); it fires the day the pin moves to
+  3.0.1 — a strip-⟨⟩ renderer passes today.
+- **R15 (F-a):** the doubles' `async def query` returns a coroutine; SDK 3.0.0 `query()` returns an `AsyncQueryBuilder`.
+  Re-open trigger: the first production use of a builder-only method (`.first()`/`.into()`) or of `create_task` on `query()`.
+- **F6 (build step 0):** implement per `scripts/test_pending_contract_gate_f6.py`; write `red_nodeids` entries
+  SINGLE-QUOTED in YAML (double quotes decode pytest's `\u2014` escapes into the character, and the id stops matching).
+  The servicer then registers `scratchpad/sdk3r8/item5/packet66_entry.yaml` (filled; see the hand-back).
+
+### R8.5 Forks (written down, not silently resolved)
+- **FORK-R8-1 (low) — where `red_nodeids` lives.** Taken: a field of each FILE entry (RULING-6's "`red_nodeids`-only
+  `PendingFile`"). Alternative: §R3.7(c)'s field on the BOUND. The F6 tests assume per-file; switching is a fixture edit.
+- **FORK-R8-2 (low) — writable set.** The F6 contract is a NEW file under `scripts/` (`test_pending_contract_gate_f6.py`),
+  outside round 7's writable set; taken as granted by WORKORDER-r8 item 3a + R27-4 ("its tests are contract surface").
+- ~~FORK-R8-3~~ RESOLVED: WORKORDER-r8 Amendment 1 (lead, after R29) arrived mid-round and matches what was built — A
+  adopted as the staged patch with riders 1–4, B kept beside it, the embed-failure arm under the same parametrisation.
+
+### R8.6 The round-8 reference delta
+1. `scripts/pending_contract_gate.py`: a reference F6 (`PendingFile.red_nodeids`; the claim validator counts it;
+   `JUnitReportReader` derives node ids and the collected set; per-node partition for node-listed files, file-level
+   otherwise; the pass/stale self-destruct legs on the pytest residuals; no typecheck self-destruct for a pytest-only
+   entry). Satisfiability instrument only — the builder writes F6.
+2. Test-side, reference only: the STAGED C10 `run()` rule (round 7) and the STAGED landmine-1 patch (§R8.3).
+Pristine copies: `scratchpad/sdk3r8/ref_pristine/`.
 
 ## ROUND 7 — R18/R20 native retry, R19 routing, R21/R22, R26 (contract-sdk3-r7; 2026-11-08, graded tree HEAD `0d9b8c2`)
 

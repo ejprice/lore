@@ -82,6 +82,42 @@ def record_driver_sleeps(monkeypatch: pytest.MonkeyPatch) -> DriverSleepRecorder
     return recorder
 
 
+@dataclass
+class WaitFactoryMutation:
+    """What :func:`mutate_the_wait_factory` observed: every ``(base_s, cap_s)`` the factory was asked for."""
+
+    calls: list[tuple[float, float]] = field(default_factory=list)
+
+
+def mutate_the_wait_factory(
+    monkeypatch: pytest.MonkeyPatch, wait: Callable[[float, float], Any]
+) -> WaitFactoryMutation:
+    """THE sharing instrument for R20 A4 (contract round 8 folded the two private copies into this one home).
+
+    Replaces ``loresigil.backoff.full_jitter`` — the ONE native wait factory — with a recording factory that
+    returns ``wait(base_s, cap_s)``. A retry site that builds its wait through the factory (as a module
+    attribute looked up at call time) sleeps what ``wait`` decides; a site with a private wait is UNCHANGED,
+    which is the definition of not sharing it. Callers pair it with :func:`record_driver_sleeps` (the conflict
+    driver) or with scout's injected ``sleep`` (the reconnect ladder).
+    """
+    from loresigil import backoff as backoff_module  # noqa: PLC0415 - keeps this module import-light
+
+    assert hasattr(backoff_module, "full_jitter"), (
+        "loresigil.backoff.full_jitter — the ONE native wait factory (SDK3 R20 A4) — does not exist. Every "
+        "in-66 retry site builds its tenacity wait through it (`wait=backoff.full_jitter(base_s, cap_s)`, "
+        "the module attribute looked up at call time); identity is the only way a pin can tell 'shares the "
+        "policy' from 'hand-rolled one that looks like it'."
+    )
+    mutation = WaitFactoryMutation()
+
+    def _recording_factory(base_s: float, cap_s: float) -> Any:
+        mutation.calls.append((base_s, cap_s))
+        return wait(base_s, cap_s)
+
+    monkeypatch.setattr(backoff_module, "full_jitter", _recording_factory)
+    return mutation
+
+
 #: The message every "the driver never backed off" premise failure carries.
 NO_DRIVER_SLEEP_HINT = (
     "the conflict driver slept NO backoff. Either the run never retried (a never-retrying driver serves "

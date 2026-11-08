@@ -35,12 +35,16 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
-from _driver_sleeps import NO_DRIVER_SLEEP_HINT, DriverSleepRecorder, record_driver_sleeps
+from _driver_sleeps import (
+    NO_DRIVER_SLEEP_HINT,
+    DriverSleepRecorder,
+    WaitFactoryMutation,
+    mutate_the_wait_factory,
+    record_driver_sleeps,
+)
 from loremaster.scout import CommandSubscriber
 from loremaster.store import _txn
 from tenacity import wait_exponential, wait_fixed
-
-from loresigil import backoff as backoff_module
 
 _REAL_SLEEP = asyncio.sleep
 
@@ -286,29 +290,11 @@ class TestALambdaShapedCallerGetsTheAttemptsValue:
 # --- R20 A4: ONE wait factory, proven by mutation ----------------------------------------------------------
 
 
-class _FactoryMutation:
-    """Replaces ``loresigil.backoff.full_jitter`` with a recording factory returning ``wait(base, cap)``."""
-
-    def __init__(self, wait: Callable[[float, float], Any]) -> None:
-        self._wait = wait
-        self.calls: list[tuple[float, float]] = []
-
-    def __call__(self, base_s: float, cap_s: float) -> Any:
-        self.calls.append((base_s, cap_s))
-        return self._wait(base_s, cap_s)
-
-
 def _mutate_the_factory(
     monkeypatch: pytest.MonkeyPatch, wait: Callable[[float, float], Any]
-) -> _FactoryMutation:
-    assert hasattr(backoff_module, "full_jitter"), (
-        "loresigil.backoff.full_jitter — the ONE native wait factory (R20 A4) — does not exist. Every "
-        "in-66 retry site builds its tenacity wait through it (`wait=backoff.full_jitter(base_s, cap_s)`, "
-        "the module attribute looked up at call time), so one mutation of it reaches every site."
-    )
-    mutation = _FactoryMutation(wait)
-    monkeypatch.setattr(backoff_module, "full_jitter", mutation)
-    return mutation
+) -> WaitFactoryMutation:
+    """R20 A4's mutation, from its one home (``_driver_sleeps.mutate_the_wait_factory``)."""
+    return mutate_the_wait_factory(monkeypatch, wait)
 
 
 def _sentinel_wait(_base_s: float, _cap_s: float) -> Any:

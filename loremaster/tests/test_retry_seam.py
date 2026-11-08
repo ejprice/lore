@@ -172,7 +172,7 @@ import pytest_asyncio
 # ``_caught_classes``; folded from ``REPORT-contract-58-r3.md`` §HELD part 2 D-AM10).
 from _catch_sites import _parents_of, catch_sites_in
 from _catch_sites import caught_classes as _caught_classes
-from _driver_sleeps import DriverSleepRecorder, record_driver_sleeps
+from _driver_sleeps import DriverSleepRecorder, mutate_the_wait_factory, record_driver_sleeps
 from _engine_shapes import CASCADE_KIND, RETRYABLE_CONFLICT_KIND
 from _sdk_guard import GuardCannotSubstantiate, GuardReport, _witness_file, artifact_root
 from _sdk_guard import install as _install_shared_guard
@@ -221,7 +221,6 @@ from tenacity import wait_fixed
 
 from loremaster import briefs as briefs_module
 from loremaster import scout as scout_module
-from loresigil import backoff as backoff_module
 
 if TYPE_CHECKING:
     # packet 63c-i-a a28b (amendment 32 §1.3 f): the STATIC reference that owns this file's pending pins in
@@ -620,23 +619,13 @@ _SENTINEL_BACKOFF_S = 1234.5
 
 
 def _sleeps_through_the_one_wait_factory(monkeypatch: pytest.MonkeyPatch) -> DriverSleepRecorder:
-    """THE sharing instrument (SDK3 contract round 7; R18 retires the draw recorder, R20 A4 replaces it).
-
-    Mutates ``loresigil.backoff.full_jitter`` — the ONE native wait factory — to ``wait_fixed(SENTINEL)``
-    and records what the conflict driver then SLEEPS. A seam that routes through the shared driver sleeps
-    the sentinel; a seam with a private retry loop or its own tenacity wait is UNCHANGED by the mutation,
-    which is the definition of not sharing it. Call AFTER ``_silence_sleep`` (the recorder wraps whatever
-    ``asyncio.sleep`` is installed).
+    """THE sharing instrument for the conflict driver (R20 A4): the ONE wait factory mutated to
+    ``wait_fixed(SENTINEL)`` (``_driver_sleeps.mutate_the_wait_factory``, the one home), plus the driver's
+    sleeps. A seam that routes through the shared driver sleeps the sentinel; a seam with a private retry loop
+    or its own tenacity wait is UNCHANGED by the mutation. Call AFTER ``_silence_sleep`` (the recorder wraps
+    whatever ``asyncio.sleep`` is installed).
     """
-    assert hasattr(backoff_module, "full_jitter"), (
-        "loresigil.backoff.full_jitter — the ONE native wait factory (SDK3 R20 A4) — is gone or not yet "
-        "built. The conflict driver builds its tenacity wait through it (`wait=backoff.full_jitter(...)`, "
-        "module attribute looked up at call time); identity is the only way a pin can tell 'shares the "
-        "policy' from 'hand-rolled one that looks like it'."
-    )
-    monkeypatch.setattr(
-        backoff_module, "full_jitter", lambda _base_s, _cap_s: wait_fixed(_SENTINEL_BACKOFF_S)
-    )
+    mutate_the_wait_factory(monkeypatch, lambda _base_s, _cap_s: wait_fixed(_SENTINEL_BACKOFF_S))
     return record_driver_sleeps(monkeypatch)
 
 

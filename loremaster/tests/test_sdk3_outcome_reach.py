@@ -459,11 +459,27 @@ async def anonymous_connection() -> AsyncIterator[tuple[SurrealEnv, Any]]:
         await drop_database(env)
 
 
+@pytest_asyncio.fixture()
+async def signed_in_connection() -> AsyncIterator[tuple[SurrealEnv, Any]]:
+    """A signed-in admin connection on a fresh TEST-store database: a statement the ENGINE rejects (a
+    ``THROW``) is a server-answered DOMAIN refusal, the branch the NotAllowed legs below do not reach
+    (adversary-3 R13)."""
+    env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+    connection = await connect_admin(env)
+    try:
+        yield env, connection
+    finally:
+        await connection.close()
+        await drop_database(env)
+
+
 class TestAServerAnsweredErrorIsADefiniteFailure:
-    """R12 F-b: F14 covers TRANSPORT only. When the server answers — here a permission refusal of an anonymous
-    write — the outcome is KNOWN (nothing was written), so the seam raises a store error that is NOT
-    ``SurrealOutcomeUnknownError``. A build mapping every connection-classified error to "unknown" fails both
-    legs."""
+    """R12 F-b: F14 covers TRANSPORT only. When the server answers, the outcome is KNOWN (nothing written),
+    so the seam raises a store error that is NOT ``SurrealOutcomeUnknownError`` — on BOTH answered
+    branches: the permission refusal of an anonymous write (the NotAllowed/auth branch), and, since
+    contract round 8 (adversary-3 residual R13: the class name over-claimed its reach), a DOMAIN
+    rejection the engine evaluated (a ``THROW``). A build mapping either branch to "unknown" fails that
+    branch's legs."""
 
     @staticmethod
     def _assert_definite(error: BaseException, seam: str) -> None:
@@ -517,3 +533,48 @@ class TestAServerAnsweredErrorIsADefiniteFailure:
                 url=env.url,
             )
         self._assert_definite(caught.value, "execute_transaction")
+
+    async def test_a_domain_rejection_on_the_single_statement_seam(
+        self, signed_in_connection: tuple[SurrealEnv, Any]
+    ) -> None:
+        env, connection = signed_in_connection
+
+        async def _acquire() -> Any:
+            return connection
+
+        async def _drop(_connection: Any) -> None:
+            return None
+
+        with pytest.raises(SurrealStoreError) as caught:
+            await run_query(
+                acquire=_acquire,
+                drop=_drop,
+                url=env.url,
+                noun="sdk3 F-b domain probe",
+                label="sdk3.fb.domain.rejected",
+                statement="THROW 'sdk3-fb-domain-refusal'",
+                params={},
+                logger=logger,
+            )
+        self._assert_definite(caught.value, "run_query (domain)")
+
+    async def test_a_domain_rejection_on_the_transaction_seam(
+        self, signed_in_connection: tuple[SurrealEnv, Any]
+    ) -> None:
+        env, connection = signed_in_connection
+
+        async def _acquire() -> Any:
+            return connection
+
+        async def _drop(_connection: Any) -> None:
+            return None
+
+        with pytest.raises(SurrealStoreError) as caught:
+            await execute_transaction(
+                "BEGIN;\nTHROW 'sdk3-fb-domain-refusal';\nCOMMIT;",
+                {},
+                acquire=_acquire,
+                drop=_drop,
+                url=env.url,
+            )
+        self._assert_definite(caught.value, "execute_transaction (domain)")

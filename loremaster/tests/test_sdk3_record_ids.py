@@ -711,9 +711,10 @@ class TestTheMigrationRefusalRenderersServeBareKeys:
     """SDK3 contract round 7 — R26-4 (builder finding B-2): ONE store-free pin on the CHOKEPOINT renderers of
     every governed-migration refusal — ``principals._id_sample`` ("the ONE bounded id render every
     governed-migration refusal serves") and ``_owned_unscoped_part`` (its owner names). Fed RecordIDs with
-    a DIGIT-LED key and a NON-WORD key, the served text carries each id's BARE key and no ``⟨``, ``⟩`` or
-    backtick (SDK 3.0's ``str(RecordID)`` brackets both shapes; 3.0.1 re-brackets with backticks — R7 (d):
-    served text never comes from ``str(RecordID)``). a19's live refusal leg stays the end-to-end witness.
+    a DIGIT-LED, a NON-WORD and a LETTER-LED key, the served text carries each id's BARE key and no ``⟨``,
+    ``⟩`` or backtick (SDK 3.0's ``str(RecordID)`` brackets the digit-led and non-word shapes and renders the
+    letter-led one bare; 3.0.1 re-brackets with backticks — R7 (d): served text never comes from
+    ``str(RecordID)``). a19's live refusal leg stays the end-to-end witness.
 
     Stated bound (R26-4): a BARE key is honest only because each sentence NAMES its table ("N agent row(s)…",
     "N other principal(s)…", "N message row(s)…"); a sentence that ever mixes tables must serve
@@ -722,6 +723,9 @@ class TestTheMigrationRefusalRenderersServeBareKeys:
 
     _DIGIT_LED = "01JC9R7Z5Q3V8M2N4P6R8T0W2Y"
     _NON_WORD = "sdk3-non-word.key"
+    #: Round 8 (R26-3 rider, adversary-3 residual R18): the LETTER-LED shape (~72% of principals) — the one a
+    #: renderer that slices brackets off ``str(RecordID)`` mangles, since SDK 3.0 renders it unbracketed.
+    _LETTER_LED = "zq7m4k2p9r1s5t8v3w6x0y2a4b"
 
     def _assert_bare(self, served: str, keys: tuple[str, ...]) -> None:
         for key in keys:
@@ -735,15 +739,17 @@ class TestTheMigrationRefusalRenderersServeBareKeys:
     def test_the_id_sample_serves_each_ids_bare_key(self) -> None:
         from loremaster import principals  # noqa: PLC0415 - the renderer under test
 
-        ids = [RecordID("agent", self._DIGIT_LED), RecordID("agent", self._NON_WORD)]
-        self._assert_bare(principals._id_sample(ids), (self._DIGIT_LED, self._NON_WORD))
+        keys = (self._DIGIT_LED, self._NON_WORD, self._LETTER_LED)
+        ids = [RecordID("agent", key) for key in keys]
+        self._assert_bare(principals._id_sample(ids), keys)
 
     def test_the_owner_names_serve_each_principals_bare_key(self) -> None:
         from loremaster.governed import MigratePreconditionCounts  # noqa: PLC0415
 
         from loremaster import principals  # noqa: PLC0415 - the renderer under test
 
-        owners = (RecordID("principal", self._DIGIT_LED), RecordID("principal", self._NON_WORD))
+        keys = (self._DIGIT_LED, self._NON_WORD, self._LETTER_LED)
+        owners = tuple(RecordID("principal", key) for key in keys)
         owned_unscoped = tuple((RecordID("agent", f"a{index}"), owner) for index, owner in enumerate(owners))
         counts = MigratePreconditionCounts(
             owned_but_unscoped_agents=len(owned_unscoped),
@@ -751,4 +757,4 @@ class TestTheMigrationRefusalRenderersServeBareKeys:
             owner_classification="foreign",
         )
         served = principals._owned_unscoped_part(owned_unscoped, None, counts)
-        self._assert_bare(served, (self._DIGIT_LED, self._NON_WORD))
+        self._assert_bare(served, keys)
