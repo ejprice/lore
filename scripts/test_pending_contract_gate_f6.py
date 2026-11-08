@@ -891,10 +891,12 @@ def test_D2_the_wave_selector_reaches_the_run_as_its_SELECTION() -> None:
 # 5's grep, §RE-GRADE-2, 2026-11-08 at 2f07c0a).
 # NAMED BOUND (W5, adversary 5 §RE-GRADE-2): "the walk's ∀ over selectors is pinned only at the plumbing; a
 # stale verdict for an id covered by a 2nd+ selector is unpinned." RE-OPEN TRIGGER: any edit to
-# `selecting_selector`.
-# NAMED BOUND (W6, adversary 5 §RE-GRADE-2): "under an unrecognised selector, owned listed reds are pinned
-# only through currency-ok, not through the RED_ADJUDICATED label." RE-OPEN TRIGGER: any edit to
-# `partition_pytest`.
+# `selecting_selector`. (R43: still a bound — the audit's W5 demo case lists an id in a SECOND file, which
+# `_registry_yaml` cannot express; promoting it needs a two-file registry helper, not a transcription.)
+# pinned (W6, adversary 5 §RE-GRADE-2, R43): "under an unrecognised selector, owned listed reds are pinned
+# only through currency-ok, not through the RED_ADJUDICATED label" — now pinned through the label by
+# `test_W6_a_directory_selector_keeps_owned_listed_reds_RED_ADJUDICATED` (the audit-66 replay's demo case,
+# transcribed). RE-OPEN TRIGGER (unchanged): any edit to `partition_pytest`.
 # ========================================================================================================
 
 #: Selector shapes ``wave_gate`` forwards and pytest accepts but the prefix walk does not recognise.
@@ -939,6 +941,22 @@ def test_D2_an_UNRECOGNISED_selector_still_judges_every_COLLECTED_id(tmp_path: P
     assert not currency.ok and any(
         _LISTED_PARAM_NODE in orphan and "green" in orphan.lower() for orphan in currency.orphans
     ), f"[{shape}] a collected, passing listed id got no verdict: {currency.verdict} {currency.orphans}"
+
+
+def test_W6_a_directory_selector_keeps_owned_listed_reds_RED_ADJUDICATED(tmp_path: Path) -> None:
+    """W6 (adversary 5 §RE-GRADE-2; the audit-66 replay's demo case, R43): ``--wave loremaster/tests`` whose
+    only reds are LISTED serves RED_ADJUDICATED ok=True — never GREEN. Kills a partition that drops a listed
+    red no selector covers (it serves GREEN ok=True, which currency-ok alone cannot tell apart). CONTROL: the
+    same reds under the FILE-spelled selector are RED_ADJUDICATED on every build."""
+    gate = _gate(tmp_path, [_LISTED_CLASS_NODE, _LISTED_PARAM_NODE], with_symbol_bound=False)
+    cases = [(_LISTED_CLASS_NODE, True), (_LISTED_PARAM_NODE, True)]
+    directory = _scoped_currency(tmp_path, gate, cases, selection=(_UNRECOGNISED_SELECTORS["directory"],))
+    assert (directory.verdict, directory.ok) == ("RED_ADJUDICATED", True), (
+        f"listed reds under a directory selector lost their owner's label: {directory.verdict} "
+        f"ok={directory.ok} {directory.orphans}"
+    )
+    by_file = _scoped_currency(tmp_path, gate, cases, selection=(_NODE_FILE,))
+    assert (by_file.verdict, by_file.ok) == ("RED_ADJUDICATED", True), (by_file.verdict, by_file.orphans)
 
 
 def test_D2_a_class_selector_stops_at_the_name_boundary(tmp_path: Path) -> None:
