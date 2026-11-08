@@ -818,55 +818,41 @@ class TestKnownBoundsOfThisInstrument:
         )
 
 
-def test_the_shared_policy_is_backed_by_tenacity_not_a_hand_roll() -> None:
-    """The policy is the PACKAGE's, not ours (operator: packages over hand-rolling).
+def test_the_shared_policy_is_backed_by_tenacity_not_a_hand_roll(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The policy is the PACKAGE's, not ours (operator: packages over hand-rolling) — pinned by BEHAVIOUR.
 
-    Pinned structurally because the alternative — re-deriving Full Jitter by hand — is
-    exactly what the rule forbids, and because a future edit could quietly replace the
-    import with three lines of ``random.uniform`` that pass every behavioural pin in
-    ``loresigil/tests/test_backoff.py`` while re-taking on the maintenance burden.
+    (a) The ONE wait factory IS tenacity's Full Jitter: ``full_jitter(base, cap)`` is exactly a
+    ``wait_random_exponential`` carrying the caller's base and cap and the doubling growth — never
+    ``wait_exponential_jitter`` (EQUAL jitter, a fixed floor plus a 1 s jitter: the policy #102 rejected;
+    not a subclass, so the exact-type check refuses it) and never a hand-rolled callable.
+    (b) ``jittered_backoff_delay`` draws THROUGH that factory: swap the factory for a fixed wait and the
+    delay IS the fixed value. A hand-rolled body (``min(base_s * 2**attempt, cap_s)``, three lines of
+    ``random.uniform``) or a second construction of ``wait_random_exponential`` (R11's "two homes for one
+    law") ignores the swap and reddens here.
 
-    It also pins WHICH tenacity strategy: ``wait_exponential_jitter`` (equal jitter around a
-    floor) would satisfy the word "jitter" and silently re-ship the policy #102 rejected.
-    """
-    source = (_REPO_ROOT / "loresigil/loresigil/backoff.py").read_text(encoding="utf-8")
+    REWRITTEN (packet 66 servicing, REQ 2) from an AST check that required ``jittered_backoff_delay`` to CALL
+    ``wait_random_exponential`` itself: R11 delegates it to ``full_jitter``, so that spelling check fired on
+    correct code. The 2026-07-25 hand-roll mutation it was built for is killed by leg (b)."""
+    import tenacity  # noqa: PLC0415
 
-    # Inspect the CALL inside the policy function, not the file's text. A substring
-    # check over the whole module cannot tell "uses tenacity" from "still imports
-    # tenacity while hand-rolling the maths underneath" — measured 2026-07-25: a
-    # mutation that replaced this function's entire body with
-    # ``min(base_s * 2**attempt, cap_s)`` left the import and the docstring intact and
-    # this pin STAYED GREEN. The both-ways mutation diff caught it; the pin now reads
-    # the AST so it cannot be fooled the same way.
-    tree = ast.parse(source)
-    policy_fn = next(
-        (
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.FunctionDef) and node.name == "jittered_backoff_delay"
-        ),
-        None,
+    base_s, cap_s = 0.05, 2.0
+    wait = backoff_module.full_jitter(base_s, cap_s)
+    assert type(wait) is tenacity.wait_random_exponential, (
+        f"the one wait factory is {type(wait).__name__}, not tenacity's wait_random_exponential (AWS Full "
+        f"Jitter) — equal jitter re-ships the policy #102 rejected, a hand-roll re-takes a burden the "
+        f"package carries"
     )
-    assert policy_fn is not None, "the shared policy function jittered_backoff_delay is gone"
-    called_names = {
-        node.func.id
-        for node in ast.walk(policy_fn)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-    }
-    assert "wait_random_exponential" in called_names, (
-        f"jittered_backoff_delay does not CALL tenacity's wait_random_exponential — the AWS "
-        f"Full Jitter implementation (it calls: {sorted(called_names)}). If the maths was "
-        f"hand-rolled back into this body, that re-takes a maintenance burden the package "
-        f"already carries (operator: packages over hand-rolling, verified by reading the "
-        f"installed API)."
+    assert (wait.multiplier, wait.max, wait.exp_base) == (base_s, cap_s, 2), (
+        f"the factory dropped the caller's window: multiplier/max/exp_base = "
+        f"{(wait.multiplier, wait.max, wait.exp_base)}, expected {(base_s, cap_s, 2)}"
     )
-    assert "wait_exponential_jitter" not in source, (
-        "the shared policy switched to tenacity's wait_exponential_jitter. That class is "
-        "EQUAL jitter — 'initial * 2**n + uniform(0, jitter)' with a FIXED 1s jitter width — "
-        "so it never draws below its exponential floor. This repo ruled that insufficient in "
-        "#102; test_surreal_store.py fails such builds as 'wb13-equal-jitter'."
+    sentinel = 0.123
+    fixed = tenacity.wait_fixed(sentinel)
+    monkeypatch.setattr(backoff_module, "full_jitter", lambda _base_s, _cap_s: fixed)
+    assert backoff_module.jittered_backoff_delay(3, base_s=base_s, cap_s=cap_s) == sentinel, (
+        "jittered_backoff_delay did not draw through backoff.full_jitter — a hand-rolled body or a second "
+        "construction of the law (R11: delegate to the ONE factory)"
     )
-
 
 # --- SDK3 contract round 7 (R18/R20; R26-5): round 6's MP-B sibling is RETIRED ---------------------------
 # ``TestTheSubscribersConnectLadderSleepsTheSharedDraw`` compared what scout's connect ladder SLEPT with what
