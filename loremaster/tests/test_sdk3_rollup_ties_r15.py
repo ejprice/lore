@@ -549,3 +549,66 @@ class TestCrossLegHold:
         assert [_task_hits(drained, task_id) for task_id in tied] == [1] * _TIE_WIDTH, drained
         assert _finding_hits(drained, number) == 1, drained
         assert _served_cursor(drained) == _served(_ABOVE_TIE_STAMP), drained
+
+
+# ------------------------------------------------------------------------------------------------------
+# #593 (lead 19107): PreciseDatetime's own ``==`` / ``<`` ignore everything below the microsecond, so a
+# cursor chosen with them (``max`` / ``min`` over stamps that differ ONLY below the µs) returns the FIRST
+# of two "equal" stamps — the wrong one in the orders built here. The engine orders by the full nanosecond
+# instant; the cursor must too.
+# ------------------------------------------------------------------------------------------------------
+
+_SUB_US_LOW = "2031-05-06T07:08:09.186697100Z"
+_SUB_US_MID = "2031-05-06T07:08:09.186697500Z"
+_SUB_US_HIGH = "2031-05-06T07:08:09.186697900Z"
+
+
+class TestTheCursorOrdersBelowTheMicrosecond:
+    """Two legs whose last stamps share one microsecond and differ only in the nanoseconds."""
+
+    async def test_untruncated_cursor_is_the_later_sub_microsecond_stamp(self, tie_ctx: _TieCtx) -> None:
+        """No leg truncated ⇒ the cursor is the MAX served stamp. The task (listed first) is at …100 ns and
+        the finding at …900 ns: a nanosecond-blind ``max`` returns the task's — and the next call re-serves
+        the finding."""
+        task_id = await tie_ctx.forced_task("task at the lower nanoseconds", _SUB_US_LOW)
+        number = await tie_ctx.forced_finding("finding at the higher nanoseconds", _SUB_US_HIGH)
+
+        page = await tie_ctx.served_rollup(since=_SINCE, limit=_DEFAULT_PAGE_LIMIT)
+        assert _task_hits(page, task_id) == 1 and _finding_hits(page, number) == 1, page
+        assert _served_cursor(page) == _served(_SUB_US_HIGH), (
+            f"the cursor must be the later of two stamps that differ only below the microsecond "
+            f"({_SUB_US_HIGH}), never the first-listed 'equal' one:\n{page}"
+        )
+        again = await tie_ctx.served_rollup(since=_served_cursor(page), limit=_DEFAULT_PAGE_LIMIT)
+        assert _task_hits(again, task_id) == 0 and _finding_hits(again, number) == 0, (
+            f"nothing is above the cursor, so nothing may be re-served:\n{again}"
+        )
+
+    async def test_truncated_cursor_is_the_earlier_sub_microsecond_stamp(self, tie_ctx: _TieCtx) -> None:
+        """Both legs truncated ⇒ the cursor is the MIN of their page tails: the task tail at …900 ns
+        (listed first), the finding tail at …100 ns. A nanosecond-blind ``min`` returns the task's — and the
+        finding at …500 ns, between the two, is then never served."""
+        task_tail = await tie_ctx.forced_task("task page tail", _SUB_US_HIGH)
+        task_beyond = await tie_ctx.forced_task("task beyond the page", _ABOVE_TIE_STAMP)
+        finding_tail = await tie_ctx.forced_finding("finding page tail", _SUB_US_LOW)
+        finding_between = await tie_ctx.forced_finding("finding between the two tails", _SUB_US_MID)
+
+        page = await tie_ctx.served_rollup(since=_SINCE, limit=1)
+        assert _task_hits(page, task_tail) == 1 and _finding_hits(page, finding_tail) == 1, page
+        assert _served_cursor(page) == _served(_SUB_US_LOW), (
+            f"two truncated legs resume at the EARLIER tail ({_SUB_US_LOW}); a later one skips rows:\n{page}"
+        )
+        served_tasks: set[str] = set()
+        served_findings: set[int] = set()
+        cursor = _SINCE
+        for _ in range(6):
+            walked = await tie_ctx.served_rollup(since=cursor, limit=1)
+            served_tasks |= {task for task in (task_tail, task_beyond) if _task_hits(walked, task)}
+            served_findings |= {num for num in (finding_tail, finding_between) if _finding_hits(walked, num)}
+            if _served_cursor(walked) == _served(cursor):
+                break
+            cursor = _served_cursor(walked)
+        assert served_findings == {finding_tail, finding_between}, (
+            f"the finding at {_SUB_US_MID} (between the two tails) was never served — skipped forever"
+        )
+        assert served_tasks == {task_tail, task_beyond}, served_tasks
