@@ -79,7 +79,6 @@ import pytest_asyncio
 from _governed_contract import (
     build_principal_and_keep_stores,
     derive_member_source_roots,
-    digit_led_record_key,
     frozen_asserted_message_ddl,
     frozen_asserted_to_ack_note_ddl,
     governed_table_raw_mutation_sites,
@@ -114,7 +113,7 @@ from loremaster.store.surreal_schema import (
     generate_graph_ddl,
 )
 from render_injection_scaffold import _INJECTION_THREAT_CHARS, _ROW_FORGE_PAYLOAD
-from sdk3_shape_fakes import bare_record_key, same_record
+from sdk3_shape_fakes import bare_record_key, digit_led_record_key, same_record
 from surrealdb import RecordID
 
 # --------------------------------------------------------------------------- #

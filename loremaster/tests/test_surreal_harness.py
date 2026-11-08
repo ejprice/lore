@@ -2287,3 +2287,76 @@ class TestTheHarnessMakesNoEngineCallOutsideTheSeam:
             f"the reach scan flagged a COVERED shape ({shape!r}) — it would force a correct "
             f"build red. uses={uses}"
         )
+
+
+# ---------------------------------------------------------------------------------------------------------
+# SDK3 contract round 7 — R19 C10 (``_surreal_harness.run`` is CONTRACT surface): THE RULE, stated and pinned.
+#
+# ``run`` answers the FIRST statement's result. R19 named three candidate rules (first statement · R2's
+# raise-on-≠1 · the per-statement list); measured 2026-11-08, the harness ``run`` has 917 call sites, 239 of
+# them passing non-literal text — generated multi-statement DDL among them — so R2's raise-on-≠1 would break
+# the test tree's own setup, and the per-statement list would re-shape every one-statement caller and the
+# #486 reaper (which reads ``INFO FOR NS`` through ``run`` and needs its map). The first-statement rule keeps
+# both, and SDK 3.0 adds the half SDK 2.0 lacked: a LATER failing statement raises instead of being swallowed
+# (probe: ``scratchpad/sdk3r7/probes/multi_statement.py``). FORK-R7-1 (packet doc §ROUND 7) carries the rule
+# and WHEN the matching ``run`` body lands (it cannot land before the SDK pin without reddening every live
+# ``run`` caller on SDK 2.0). RED at ``0d9b8c2`` for the intended reason: HEAD's ``run`` hands back SDK 2.0's
+# raw answer.
+# ---------------------------------------------------------------------------------------------------------
+
+
+class TestRunAnswersItsFirstStatement:
+    """C10: what ``run`` answers, for each answer shape SDK 3.0's ``query()`` can give it."""
+
+    async def test_one_statement_answers_that_statements_result(self) -> None:
+        rows = _run_result()
+        fake = _FakeConnection(query_outcomes=[[rows]])
+
+        assert await _surreal_harness.run(_as_connection(fake), _RUN_PROBE_STATEMENT) is rows, (
+            "run() must answer the ONE statement's result, not SDK 3.0's per-statement list around it"
+        )
+
+    async def test_several_statements_answer_the_first_statements_result(self) -> None:
+        first, second = _run_result(), [{"other": True}]
+        fake = _FakeConnection(query_outcomes=[[first, second]])
+
+        result = await _surreal_harness.run(_as_connection(fake), "DEFINE TABLE a; DEFINE TABLE b")
+
+        assert result is first, f"run() answered {result!r}; its rule is the FIRST statement's result"
+
+    @pytest.mark.parametrize("answer", [[], {}, None], ids=["empty-list", "map", "none"])
+    async def test_an_answer_that_is_not_one_result_per_statement_fails_closed(self, answer: Any) -> None:
+        fake = _FakeConnection(query_outcomes=[answer])
+
+        with pytest.raises(TypeError, match="not one result per statement"):
+            await _surreal_harness.run(_as_connection(fake), "INFO FOR NS")
+
+    async def test_a_later_failing_statement_raises_live(self) -> None:
+        """The half SDK 2.0 lacked (store reference §6.5: later-statement errors swallowed)."""
+        env = _surreal_harness.make_env(
+            database=_surreal_harness.unique_database(), dim=_surreal_harness.PRODUCTION_DIM
+        )
+        connection = await _surreal_harness.connect_admin(env)
+        try:
+            with pytest.raises(Exception, match="later-boom") as caught:
+                await _surreal_harness.run(connection, "RETURN 1; THROW 'later-boom'")
+            assert not isinstance(caught.value, TypeError), "the engine's own error must surface"
+        finally:
+            await connection.close()
+            await _surreal_harness.drop_database(env)
+
+    async def test_the_reapers_namespace_read_is_a_map_with_its_databases_live(self) -> None:
+        """The #486 reaper's read, through ``run``: ``INFO FOR NS`` answers the namespace MAP naming the
+        database this test minted (a list here would fail the reaper closed on every session)."""
+        env = _surreal_harness.make_env(
+            database=_surreal_harness.unique_database(), dim=_surreal_harness.PRODUCTION_DIM
+        )
+        connection = await _surreal_harness.connect_admin(env)
+        try:
+            info = await _surreal_harness.run(connection, "INFO FOR NS")
+        finally:
+            await connection.close()
+            await _surreal_harness.drop_database(env)
+        assert isinstance(info, dict) and env.database in info.get("databases", {}), (
+            f"run(INFO FOR NS) answered {info!r}: not the namespace map naming {env.database!r}"
+        )

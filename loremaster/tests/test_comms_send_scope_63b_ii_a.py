@@ -265,7 +265,7 @@ async def cred(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncIterator
         tmp_path,
         principals={"alice": "member", "bob": "member", "carol": "admin"},
         dim=_DIM,
-        digit_led_principals=True,  # R15 / MP-C 3c: a principal-id compare is deterministic on SDK 3
+        # R15 / MP-C 3c + R26-3: digit-led principals are now the shared factory's DEFAULT (deterministic)
     ) as world:
         yield {
             "ctx": world["ctx"],

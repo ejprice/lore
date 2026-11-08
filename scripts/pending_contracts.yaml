@@ -287,3 +287,23 @@ bounds:
       count: 1
       reason: _act_as returns arm_finding_identity(...), which mypy types Any while the import is unresolved (the arm lands
         with §HELD part B) — the same missing symbol, surfacing as a return-type line
+# Packet 66 / SDK3 contract (contract-sdk3-r7, 2026-11-08, at 0d9b8c2). Item 5 of the round-7 brief: the packet's
+# RED@HEAD set is owned here. ⚠ ONLY the file with a TYPECHECK red is registrable today: the schema refuses a file
+# with pytest reds and no mypy error ("names neither a missing symbol nor a code allowance"), so the packet's other
+# declared RED@HEAD files wait for F6's `red_nodeids` (R6; FORK-R7-4 in the packet doc §ROUND 7). SELF-DESTRUCTS: the
+# build commit pins surrealdb==3.0.0, the SDK-3-only class resolves, the file stops erroring — delete with the build.
+- id: packet-66-sdk3-contract
+  owner: the SDK3 builder (packet 66)
+  reopen_trigger: the packet-66 build commit that pins surrealdb==3.0.0 — `surrealdb.errors.TransportTimeoutError`
+    exists, the file below produces no mypy error, and this entry self-destructs (deleted with the build)
+  ruling: docs/plans/v2/sdk3-rulings.md R22 rider 3 / R24 item 6 + R26-2; contract receipts
+    docs/plans/v2/sdk3-python-sdk-3-migration.md §ROUND 7 (R7.1 Q6 row, R7.4 FORK-R7-4)
+  rationale: contract-ahead — R19 Q6's read-shape pin drives the seam with SDK 3.0's own transport timeout class,
+    absent from the SDK 2.0 the main venv type-checks against until the build lands
+  files:
+  - path: loremaster/tests/test_sdk3_served_outcome.py
+    unsymboled_codes:
+    - code: attr-defined
+      count: 1
+      reason: the Q6 pin reads `TransportTimeoutError` through the `surrealdb.errors` module alias (SDK 3.0-only), and
+        mypy names no symbol for a module-alias attribute ("Module has no attribute")

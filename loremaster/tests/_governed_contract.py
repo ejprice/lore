@@ -50,7 +50,7 @@ import _sdk_guard
 import yaml
 from _logging_fixtures import module_level_bindings_of
 from _surreal_harness import SurrealConnection, run
-from sdk3_shape_fakes import bare_record_key
+from sdk3_shape_fakes import bare_record_key, digit_led_record_key, letter_led_record_key
 
 # lorerunes (61) is BUILT — import the PDP surface directly (unlike the 61b oracle's importlib
 # gate, which loaded a not-yet-built package). The 63a substrate under test lives in
@@ -941,13 +941,8 @@ def _surreal_test_url() -> str:
     return str(surreal_url())
 
 
-def digit_led_record_key(seed: str) -> str:
-    """A FIXED, DIGIT-LED, word-character record key derived from ``seed`` (R15 / MP-C 3c, R12: "pins it
-    deterministically with a digit-led principal key"). SDK 3.0's ``str(RecordID)`` brackets a digit-led key
-    (``principal:⟨0…⟩``) while SDK 2.0 does not, so a test comparing two text forms of such an id fails on
-    SDK 3 EVERY run instead of on the ~28% of runs an engine-minted id happens to start with a digit. Word
-    characters only, so SDK 2.0 renders it bare (a hyphenated uuid would be bracketed by BOTH SDKs)."""
-    return f"0{uuid.uuid5(uuid.NAMESPACE_URL, f'lore://test/digit-led/{seed}').hex[1:]}"
+# ``digit_led_record_key`` / ``letter_led_record_key`` live in ``sdk3_shape_fakes`` (R26-3: pure key-shape
+# helpers, imported above); ``rekey_principal`` stays HERE because it runs admin DML against the store.
 
 
 async def rekey_principal(admin_conn: SurrealConnection, principal_id: Any, key: str) -> str:
@@ -980,7 +975,8 @@ async def credentialed_app_context(
     *,
     principals: dict[str, str],
     dim: int = 8,
-    digit_led_principals: bool = False,
+    digit_led_principals: bool = True,
+    letter_led_principals: bool = False,
 ) -> AsyncIterator[dict[str, Any]]:
     """ONE shared credentialed-AppContext harness (ii-a §11.3 F-DUP): a REAL booted
     :class:`~loremaster.server.AppContext` with a SWITCHABLE ambient transport token + ``principals``
@@ -1042,11 +1038,14 @@ async def credentialed_app_context(
     for name, role in principals.items():
         email = f"{name}@example.com"
         principal = await principal_store.create(email=email, role=role)
-        pids[name] = (
-            await rekey_principal(admin_conn, principal.id, digit_led_record_key(name))
-            if digit_led_principals
-            else bare_record_key(principal.id)
-        )
+        # R26-3: digit-led by DEFAULT (28% of production principals, every ULID); ``letter_led_principals``
+        # is the discrimination leg a served-id pin adds beside it; both False keeps the engine's own key.
+        if letter_led_principals:
+            pids[name] = await rekey_principal(admin_conn, principal.id, letter_led_record_key(name))
+        elif digit_led_principals:
+            pids[name] = await rekey_principal(admin_conn, principal.id, digit_led_record_key(name))
+        else:
+            pids[name] = bare_record_key(principal.id)
         emails[name] = email
     try:
         yield {

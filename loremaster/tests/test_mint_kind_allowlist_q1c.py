@@ -77,6 +77,11 @@ def _values_of(enum_like: type) -> set[str]:
 _SDK_TOP_KINDS: frozenset[str] = frozenset(_values_of(sdk_errors.ErrorKind) | set(sdk_errors.KIND_TO_CLASS))
 _SDK_DETAIL_KINDS: frozenset[str] = frozenset(_values_of(sdk_errors.QueryDetailKind))
 
+
+def _kinds_at_both_levels(top: frozenset[str], detail: frozenset[str]) -> set[str]:
+    """R26-1b: the kind values the SDK enumerates BOTH as a top-level kind and as a Query detail."""
+    return set(top & detail)
+
 #: GENERATED from the installed SDK: every top-level kind (bare ``Query`` included — FORK-2's detail-less
 #: Query) and every Query detail kind. A member the SDK adds later joins this list and is expected UNKNOWN
 #: by rule (§15.3: "any member the installed SDK adds later").
@@ -134,6 +139,20 @@ class TestTheFixturesDiscriminate:
     def test_the_unenumerated_cells_are_unenumerated(self) -> None:
         enumerated = _SDK_TOP_KINDS | _SDK_DETAIL_KINDS
         assert not {cell.typed for cell in _UNENUMERATED_CELLS} & enumerated
+
+    def test_no_kind_exists_at_both_levels(self) -> None:
+        """R26-1b: ``_sdk_kind_domain`` unions top-level and detail values into ONE key set and ``_sdk_error``
+        builds the DETAIL shape first, so a value present at BOTH levels would leave its top-level door
+        untested while every cell still reads as covering it."""
+        both = _kinds_at_both_levels(_SDK_TOP_KINDS, _SDK_DETAIL_KINDS)
+        assert not both, (
+            f"a kind now exists at both levels: {sorted(both)} — parametrise `_sdk_error` by (enumeration, "
+            f"value) and rule each door"
+        )
+
+    def test_CONTROL_the_disjointness_check_sees_an_overlap(self) -> None:
+        top, detail = frozenset({"Query", "TransactionConflict"}), frozenset({"TransactionConflict"})
+        assert _kinds_at_both_levels(top, detail) == {"TransactionConflict"}
 
     def test_the_generated_domain_straddles_the_allowlist(self) -> None:
         typed = {cell.typed for cell in _SDK_CELLS}

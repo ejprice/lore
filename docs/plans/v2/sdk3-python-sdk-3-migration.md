@@ -1,6 +1,6 @@
 # Packet SDK3 — Python SDK `surrealdb` 2.0.0 → 3.0.0 (on the 3.3.5 stores)
 
-Status: CONTRACT ROUND 5 (R11 tenacity + R12 F18/C9-class/F-a/F-b/F-d/F22/X18/X19/RS7 — §ROUND 5, newest first). Previously: CONTRACT ROUND 4 (adversary round 1's MP1–MP3 + R9 D1–D3 + residuals closed — §ROUND 4, newest first). Previously: CONTRACT ROUND 3 (rulings R2–R7 pinned; §ROUND 3 below supersedes the round-1/2 forks — the round-1/2 sections stay as history). Round 1: DISCOVERY + CONTRACT (tdd Phase 0 + Phase 1), written 2026-11-07 by the SDK3 contract author
+Status: CONTRACT ROUND 7 (R18/R20 native retry, R19 routing, R21/R22, R26 — §ROUND 7, newest first). Previously: CONTRACT ROUND 5 (R11 tenacity + R12 F18/C9-class/F-a/F-b/F-d/F22/X18/X19/RS7 — §ROUND 5, newest first). Previously: CONTRACT ROUND 4 (adversary round 1's MP1–MP3 + R9 D1–D3 + residuals closed — §ROUND 4, newest first). Previously: CONTRACT ROUND 3 (rulings R2–R7 pinned; §ROUND 3 below supersedes the round-1/2 forks — the round-1/2 sections stay as history). Round 1: DISCOVERY + CONTRACT (tdd Phase 0 + Phase 1), written 2026-11-07 by the SDK3 contract author
 against HEAD `4624daf` (branch `feat/surreal-unification`; the brief named `c05bf3f`, HEAD moved
 under another builder's commit while this ran), SDK 2.0.0 in lore's venv, SDK 3.0.0 in the
 research40 scratch venv. Operator approved the packet 2026-11-07. **This contract STOPS for operator
@@ -8,6 +8,104 @@ review** (§5 forks); then `contract-adversary` grades it, then a builder implem
 
 Inputs: `docs/research/2026-11-07-surrealdb-3.3-4.0-for-lore.md` (SUMMARY, §B4–B6/B18, §C, §D-4/D-10,
 §E 7/11/12), finding #576, `docs/reference/surrealdb-31-capabilities.md` §0a/§2/§3/§6.5.
+
+## ROUND 7 — R18/R20 native retry, R19 routing, R21/R22, R26 (contract-sdk3-r7; 2026-11-08, graded tree HEAD `0d9b8c2`)
+
+Answers R17 (governing test), R18 as amended by R20, R19's routing paragraph, R21 + R22 and R26 in
+`docs/plans/v2/sdk3-rulings.md`. Dated 2026-11-08, measured at HEAD `0d9b8c2` (SDK 2.0.0; pristine copy
+`scratchpad/sdk3r7/headtree`) and on the ROUND-7 REFERENCE (SDK 3.0.0, `scratchpad/sdk3r7/ref` = round 6's reference
++ §R7.3; `scratch_copy.sh --verify-only` VERIFIED). Receipts, counts and the both-ways diff: the contract-sdk3-r7
+hand-back (`scratchpad/sdk3r7/REPORT.md`). Rounds 1–6 below are history, except §R6.2's TransactionConflict cell,
+§R6.5's citation and §R6.8's draw-count note (corrected in place, dated).
+
+### R7.1 New and changed pins
+| item | node(s) | kills | RED receipt |
+|---|---|---|---|
+| R18 window | `test_sdk3_native_retry::TestEverySleptBackoffLiesInItsWindow` | uncapped / flat / floor-lifted window; a sleep after giving up | mutations `window`, `flat` |
+| R20 A3 | `::TestFullJitterReachesBothTailsOfTheWindow` (256 sleeps at n=1: min < w/8, max > 7w/8) | `w/2 + d/2` drift (the adversary's `wb_r11_sleepdrift` shape) | mutation `drift` (author-built analogue; see R7.6 BRIEF CONFLICT) |
+| R18 decorrelation | `::TestConcurrentRacersSleepDecorrelatedSequences` (16 racers) | jitter keyed on shared state | mutation `dec` |
+| R20 A1 / X22 | `::TestTheDriverLogsOnlyItsTerminalDisposition` ×2 (any logger, DEBUG+) | `before_sleep_log` / per-attempt records | mutation `log` |
+| R18 | `::TestANonConflictErrorIsNeverRetriedOrBackedOff` ×3 | a `retry=` wider than the signal | mutation `retry` |
+| R20 Leg 2 (iv) | `::TestALambdaShapedCallerGetsTheAttemptsValue` ×2 | the caller's lambda handed to tenacity raw | mutation `lambda` |
+| R20 A4 | `::TestTheOneWaitFactoryReachesEveryIn66Site` ×2 + `test_retry_seam`'s 19 per-seam/mint/control/scout-claim sharing pins (one-factory mutation) | a site building its own tenacity wait | mutations `a4txn` (20 = 20), `a4scout`; RED at HEAD (no factory) |
+| scout ladder (removed-behaviour preservation) | `::TestTheSubscriberBacksOffBeforeEveryReconnect` | an immediate reconnect after a drop; no reset after a live connection | mutations `reset`, `a4scout`; RED at HEAD (factory) |
+| R18 classifier sharing | T1/T2 (`test_sdk3_txn_classification::TestARetryableConflictIsRetriedAndLosesNothing` ×2) | a classifier copy | mutation `classifier` (2 = 2) |
+| R20 A2 controls | `test_retry_seam` empty-claim pin, live 16-way premises ×2, anti-vacuity controls ×4 → `_driver_sleeps.record_driver_sleeps` | a never-retrying driver passing T2 vacuously | unchanged controls, observed on the sleep seam |
+| A4 perimeter | `test_backoff_seam::TestNoNewHandRolledBackoff` with `_POW_ALLOWLIST` EMPTY | a private `**` window | RED at HEAD (`_txn.py` `2 ** (attempt_number - 1)`) |
+| C10 | `test_surreal_harness::TestRunAnswersItsFirstStatement` ×7 | `run` answering the per-statement list, swallowing a later failure, or reading a non-list as "nothing" | RED at HEAD ×6 (reaper leg green) |
+| B edge COUNT | `test_sdk3_index_batching::TestNoBatchedEdgeGoesMissing` (oracle: the astroid derivation, re-run) | a batched write losing edges | mutation `edges`; RED at HEAD on the R3 premise |
+| Q6 | `test_sdk3_served_outcome::TestTheUnknownOutcomeAdviceSplitsByShape` + a write-shape assertion in the D1 batch pin | read served with write advice, write served "safe to re-run" | RED at HEAD (no unknown fate) |
+| Q7 | file-level mutation proof over 36 sites (`scratchpad/sdk3r7/mut/q7_proof.py`) | a surviving `_bare` copy | proof `q7` |
+| R26-1a/b/c | q1b prose + failure text (c) 'retried'; q1c `test_no_kind_exists_at_both_levels` + CONTROL | a kind at both levels leaving a door untested | control reddens by construction |
+| R26-3 | key helpers in `sdk3_shape_fakes`; factory digit-led by default (one line); `letter_led_principals`; record_ids pin + letter-led leg | a digit-led monoculture | — |
+| R26-4 / B-2 | `test_sdk3_record_ids::TestTheMigrationRefusalRenderersServeBareKeys` ×2 | a renderer serving `str(RecordID)` | RED at HEAD on the non-word legs |
+
+### R7.2 am-37 inventory (R22 rider 2) — every test removed or rewritten this round
+| # | test (at `0d9b8c2`) | behaviour it certified | fate |
+|---|---|---|---|
+| R7-1 | `test_retry_seam::TestRetryOnConflictDriver::test_every_attempt_draws_a_fresh_backoff_from_the_shared_jitter` — REMOVED | one fresh draw per retry on a 1-based growing window; slept == drawn | carried-by `test_sdk3_native_retry::TestEverySleptBackoffLiesInItsWindow::test_every_retry_sleeps_once_inside_its_growing_window` + `::TestFullJitterReachesBothTailsOfTheWindow::test_the_first_backoff_reaches_both_tails_of_its_window` |
+| R7-2 | `test_retry_seam` sharing pins ×19 (16 seams, mint, positive control, scout claim) — REWRITTEN in place | the seam backs off through the shared jitter | carried-by the same node ids (one-factory mutation; `a4txn`) |
+| R7-3 | `test_backoff_seam::TestEveryBackoffSharesTheOnePolicy::test_command_subscriber_shares_the_policy` — REMOVED; scout legs of `test_EVERY_declared_site_draws_from_the_mutated_policy` and `test_reverting_the_shared_policy_reddens_EVERY_site` — REWRITTEN (scout leaves `_DECLARED_SITES`) | scout's reconnect backoff draws the shared policy with its own window, drawn not fixed | carried-by `test_sdk3_native_retry::TestTheOneWaitFactoryReachesEveryIn66Site::test_the_reconnect_ladder_sleeps_the_factorys_wait` (sharing + window args); drawn-ness by composition with A3 (stated bound: A3 samples the factory through the conflict driver's window) |
+| R7-4 | `test_backoff_seam::TestTheSubscribersConnectLadderSleepsTheSharedDraw::test_every_slept_connect_backoff_is_the_shared_draw` — REMOVED (R26-5) | scout's connect ladder sleeps the shared draw unchanged, on a growing attempt | carried-by the reconnect-ladder factory pin + `::TestTheSubscriberBacksOffBeforeEveryReconnect::test_a_drop_backs_off_before_reconnecting_and_a_live_connection_resets_the_ladder` |
+| R7-5 | `test_backoff_seam::TestNoNewHandRolledBackoff::…exponentiates_by_a_variable` — REWRITTEN (allowlist emptied) | no private window outside `_txn.py` | carried-by itself (F-r5-1) |
+| R7-6 | `sdk3_shape_fakes.one_statement_answer`'s SDK-2.0 branch — REMOVED (R21) | doubles answering SDK 2.0's bare shape at HEAD | retired-with drop-list row #37 (F-a) |
+| R7-7 | `test_retry_seam::TestTheAntiVacuityControlStillFires` ×4 + `_run_contending_waves` — REWRITTEN | the wave runner's anti-vacuity control | carried-by the same node ids (`DriverSleepRecorder`) |
+| R7-8 | `test_sdk3_record_ids::TestARegisteredAgentIsOwnedAndScopedByEngineIds::test_the_agent_links_its_principal_and_its_session_keeps_engine_text[angle|backtick]` — REWRITTEN (+ `key_shape`) | persisted principal link + session-keep scope through the served register path | carried-by `…[{angle,backtick}-{digit-led,letter-led}]` |
+
+### R7.3 The round-7 reference delta (beyond round 6's)
+1. `loresigil.backoff.full_jitter(base_s, cap_s)` → `wait_random_exponential(multiplier=base_s, max=cap_s, exp_base=2)`.
+2. `_txn.retry_on_conflict`: ONE native `AsyncRetrying` (`stop_any(...)`, `wait=backoff.full_jitter(...)`,
+   `retry=retry_if_exception_type(RetryableConflictSignal)`, `retry_error_callback` = the one exhaustion record + the typed
+   error), `async def _run`; DELETED `_txn_conflict_backoff_seconds`, `_conflict_wait`, `_conflict_sleep`, the stop-peeking
+   `_wait`, the `RetryError` handler.
+3. `scout.CommandSubscriber.run`: ONE native `AsyncRetrying` per outage on `backoff.full_jitter`; a mid-serve drop is the
+   outage's first failure (`_SocketDropped`), so it is backed off before the reconnect and a live connection resets the
+   ladder. DELETED `_connect_wait`, `_backoff_delay`, `_backoff`.
+4. `_txn` unknown-outcome text carries both halves of Q6's advice.
+5. Test-side, reference only: `_surreal_harness.run` = the STAGED C10 rule (`scratchpad/sdk3r7/c10/run_rule.patch`, FORK-R7-1).
+Pristine copies: `scratchpad/sdk3r7/ref_pristine/`. Packet 68 owns the five other loops, `jittered_fixed` and the shim.
+
+### R7.4 Forks (written down, not silently resolved)
+- **FORK-R7-1 (C10 run() rule + landing):** rule taken = the FIRST statement's result, fail closed on a non-list (R2's
+  raise-on-≠1 would break 239 non-literal `run` callers incl. multi-statement generated DDL; the per-statement list would
+  re-shape ~680 one-statement callers and fail the #486 reaper closed). The `run` body CANNOT land before the SDK pin:
+  on SDK 2.0 it reddens every live `run` caller (version-branching it is what R21/R26-2 forbid). Recommended: the
+  servicing author commits `run_rule.patch` as the first servicing commit right after the builder's SDK-pin commit.
+  The version-agnostic half (`_sdk_guard._is_door`, the SDK-2-only embedded class) LANDED this round.
+- **FORK-R7-2 (RS7 rider unsatisfiable as ruled):** the rider's shape (`upsert` = `apply([replace_file_fragment(...)])`)
+  measured on the reference: 48 failed / 601 passed over the 8 upsert files (`TxnParamCollisionError: parameter
+  'st_tier' bound by more than one fragment` for a multi-file batch; the replace DELETEs the file's other chunks).
+  RULING-1: "if per-record semantics cannot ride the existing builders, THAT is the fork". Options: (a) a shared pure
+  chunk-row builder both `replace_file_fragment` and `upsert` compose (one mutation reddens both); (b) per-file
+  grouping with namespaced params + accepting replace semantics (fixture rewrites); (c) re-rule RS7 to delete `upsert`
+  (R12's original, 90 fixture edits). Recommend (a). No pin written; the reference keeps round 6's `upsert`.
+- **FORK-R7-3 (Q6 reading, low):** taken — the seam's own unknown-outcome text carries BOTH halves ("a write may have
+  landed: verify before retrying; a read is safe to re-run") because the seam cannot tell a read from a write (F14) and
+  no read-serving catch site exists; the write renderer serves the write half only. Alternative: per-surface advice,
+  which needs a read-serving render site that does not exist.
+- **FORK-R7-4 (item 5 STOPPED — schema refuses a pytest-only file):** `--verify-registry` on a probe entry naming a
+  packet-66 file with no missing symbol: "names neither a missing symbol nor a code allowance — that degenerates to
+  file-only matching, which waves through a genuinely NEW defect in the file" (EXIT 2). No packet-66 file holds a
+  typecheck red, and a registered file with no mypy error self-destructs on the typecheck leg. F6's `red_nodeids` (R6,
+  a gate change) is the owner; the drafted full entry is `scratchpad/sdk3r7/item5/`. What IS registrable was
+  registered: `scripts/pending_contracts.yaml` `packet-66-sdk3-contract` holds the one packet-66 file with a TYPECHECK
+  red (`test_sdk3_served_outcome.py`, the SDK-3-only `TransportTimeoutError` via a module alias — one unsymboled
+  `attr-defined`); every other declared RED@HEAD file waits for F6.
+- **FORK-R7-5 (low):** R22 names "the am-37 adjudication table"; the am-37 tables in the writable set adjudicate store
+  CLASSES, not removed tests. Rows recorded in §R7.2; mirror into am-37 §15 at the operator's next pass with R26-1's row.
+- **FORK-R7-6 (low):** A4's in-66 site set {`retry_on_conflict`, `CommandSubscriber.run`} is DECLARED; deriving it is a
+  source scan (operator approval). Re-open trigger: packet 68.
+
+### R7.5 Builder notes (outside the contract's writable set)
+- Build the reference's §R7.3 shape; the pins name no tenacity class except through `loresigil.backoff.full_jitter`
+  (call it as a module attribute at call time — `from … import full_jitter` defeats A4's pins).
+- Driver sleeps are observed at the `asyncio.sleep` call whose IMMEDIATE caller is `loremaster.store._txn` or
+  `tenacity.asyncio` (`loremaster/tests/_driver_sleeps.py`): pass no `sleep=` to the conflict driver, or sleep from `_txn`.
+- Scout: keep the post-drop backoff and the per-outage reset (§R7.1 ladder pin).
+- `_txn` unknown-outcome message: both Q6 halves. `principals` renderers: bare keys (B-2; a mixed-table sentence serves
+  `record_text`).
+- Prose sweep at build: bare `_txn_conflict_backoff_seconds`, `_JitterRecorder`, `CommandSubscriber._backoff` survive
+  in docs/docstrings (`loresigil/backoff.py` module docstring cites the deleted function).
 
 ## ROUND 6 — adversary round 2 answered: MP-A, MP-B, MP-C (contract-sdk3-r6; 2026-11-07, graded tree HEAD `ef1b20b`)
 
@@ -59,7 +157,7 @@ not rewritten, except the two drop-list rows R15 named (§R3.5 rows #21/#22, edi
 | 3i `ensure_ready:timeout` | 1 | REFERENCE BUG | ref `store/surreal.py` `ensure_ready` dropped its inner `connection.timeout(...)` (the decorator already applies it) |
 | 3i bootstrap allowance | 2 (red at HEAD too) | CONTRACT (round-5 self-contradiction) | `_TEST_TREE_BOOTSTRAP_ALLOWANCES` row for `test_sdk3_outcome_reach.py`'s deliberately unsigned F-b fixture |
 | harness identity ×2 | 2 | CONTRACT (F-a) | see 3a |
-| beyond the 117 (found by widening the targeted set to the covering tests of the reference's changes) | q1b ×6, q1c ×1, pdp_oracle ×13 | CONTRACT | **q1b/q1c**: SDK 3.0 adds engine kind `TransactionConflict` (top-level and Query detail); the seam RETRIES it (the SDK's conflict typing is THE authority, drop row #2/R11), so it is ruled `retried` (a fourth fate: never a rejection, never proven; sustained → `TxnContentionExhaustedError`, proven by class) — derived, see FORK-R6-1; q1b's class table gains `TxnRowCapExceededError` (proven) and `SurrealOutcomeUnknownError` (unknown). **pdp_oracle**: its three raw `connection.query` reads → the harness `run` funnel (F-a/C10 reach). **a19a**: `_names` keys on the sanitised bare key every allowed form contains (a19 owns WHICH form) |
+| beyond the 117 (found by widening the targeted set to the covering tests of the reference's changes) | q1b ×6, q1c ×1, pdp_oracle ×13 | CONTRACT | **q1b/q1c**: SDK 3.0 adds engine kind `TransactionConflict` ONLY as a Query DETAIL (`QueryDetailKind.TRANSACTION_CONFLICT`; `ErrorKind` lacks it — corrected in round 7 per R26-1a, measured by the lead on the installed 3.0.0; this cell first said "top-level and Query detail", which was false); the seam RETRIES it (the SDK's conflict typing is THE authority, drop row #2/R11), so it is ruled `retried` (a fourth fate: never a rejection, never proven; sustained → `TxnContentionExhaustedError`, proven by class) — derived, see FORK-R6-1; q1b's class table gains `TxnRowCapExceededError` (proven) and `SurrealOutcomeUnknownError` (unknown). **pdp_oracle**: its three raw `connection.query` reads → the harness `run` funnel (F-a/C10 reach). **a19a**: `_names` keys on the sanitised bare key every allowed form contains (a19 owns WHICH form) |
 
 ### R6.3 Packet-doc corrections
 - §R3.5 row #22 now reads **R** (R11), row #21 notes its overlap with R11 (see the rows).
@@ -80,7 +178,8 @@ round 6 touched + the covering tests of every production symbol the reference ch
 `_owned_unscoped_part` — bare-name unions and 0-test answers per #563, so the q1b/q1c/note-q1, surreal_store/
 apply, diff, indexer, mcp_server and every importer of the shared test helpers were added by hand). Receipts,
 numbers and the both-ways red-set diff: the contract-sdk3-r6 hand-back report, §Satisfiability, over
-`scratchpad/sdk3r6/logs/final2_{ref,head,headpristine}.log` (each with `tree_id.sh` + `loremaster.__file__`).
+`scratchpad/sdk3r6/logs/final3_{ref,head,headpristine}.log` (each with `tree_id.sh` + `loremaster.__file__`;
+round 7 corrected `final2_*` → `final3_*` per R26-5: the final2 runs were killed, final3 is the receipt).
 
 ### R6.6 Per-C-row receipt table — THE COLD AUDIT FILLS THIS (named in its brief)
 Every **C** (measure-then-decide) row of the drop list gets one line. A row with no measurement is not done.
@@ -114,9 +213,10 @@ Every **C** (measure-then-decide) row of the drop list gets one line. A row with
 - **tenacity never awaits a non-coroutine callable's result** (`AsyncRetrying.__call__`, `is_coroutine_callable`
   branch): `retry_on_conflict(lambda: …)` returns an UN-awaited coroutine. Wrap the attempt in an `async def`
   (adversary round 2's `_run`), or iterate `async for attempt in AsyncRetrying(...)` with the call lexically inside.
-- **tenacity computes `wait` BEFORE `stop`** (`_post_retry_check_actions`): a wait that draws jitter must not draw on
-  the exhausting attempt (`if stop(retry_state): return 0.0`) — the draw-count pin catches it on `retry_on_conflict`;
-  scout's connect wait carries a stated one-draw bound (R6.1).
+- **tenacity computes `wait` BEFORE `stop`** (`_post_retry_check_actions`). ⚠ SUPERSEDED in round 7 (R18/R20,
+  R26-5): there is no draw-count pin any more — the driver's wait is tenacity's own `wait_random_exponential` (via
+  `loresigil.backoff.full_jitter`), an unslept final draw is native and harmless, and the pins observe only what is
+  SLEPT (`test_sdk3_native_retry`). Do NOT add a stop-peeking `wait` adapter.
 - **C10**: `_surreal_harness.run` returns the ONE statement's result on SDK 3.0 (the reference's is `chk_c10`'s:
   `results[0]`); `test_surreal_harness`'s identity pins now feed it SDK-shaped answers.
 - **`store/surreal.py` `ensure_ready`**: its timeout rides `long_operation` (`ensure_ready_operation`) like the other

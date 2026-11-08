@@ -80,8 +80,10 @@ _RULED_KIND_FATE: dict[str, str] = {
     "TimedOut": _UNKNOWN,
     "Cancelled": _UNKNOWN,
     "Query": _UNKNOWN,  # FORK-2: spec-silent, safe side
-    # SDK 3.0 adds ``ErrorKind.TRANSACTION_CONFLICT`` (absent from SDK 2.0, so this row is RED at HEAD by
-    # name — "ruled kind the SDK no longer enumerates" — until the SDK-3.0 pin lands; intended).
+    # SDK 3.0 adds this kind ONLY as ``QueryDetailKind.TRANSACTION_CONFLICT`` — a Query DETAIL, never an
+    # ``ErrorKind`` (measured on the installed 3.0.0, R26-1a; contract round 7 corrected the earlier "adds
+    # ErrorKind.TRANSACTION_CONFLICT"). Absent from SDK 2.0, so this row is RED at HEAD by name — "ruled kind
+    # the SDK no longer enumerates" — until the SDK-3.0 pin lands; intended. Fate: RETRIED (R26-1).
     "TransactionConflict": _RETRIED,
 }
 
@@ -232,7 +234,9 @@ class TestEveryEngineKindIsAdjudicated:
             f"(§15.3: docs/design/2026-09-29-packet63c-amendment-37.md) — EITHER (a) it is proven no-key: "
             f"add it to _txn._PROVEN_KINDS WITH evidence, a §15 proven row, and a 'proven' entry in "
             f"_RULED_KIND_FATE here; OR (b) leave it off _PROVEN_KINDS (it is then unknown by rule) and add "
-            f"it to _RULED_KIND_FATE here as 'unknown'. Do not delete this pin."
+            f"it to _RULED_KIND_FATE here as 'unknown'; OR (c) if the seam's conflict classifier RETRIES it "
+            f"(R26-1: the fourth fate, like TransactionConflict), add it here as 'retried'. Do not delete "
+            f"this pin."
         )
         assert not retired, (
             f"ruled kind(s) the SDK no longer enumerates: {sorted(retired)}. Retire each from the am-37 §15 "

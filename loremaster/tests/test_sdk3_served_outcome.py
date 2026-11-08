@@ -325,6 +325,11 @@ class TestTheBatchVerbNeverServesAnUnknownOutcomeAsAborted:
             f"an item whose write may have COMMITTED is served as {second!r}: R9 D1 / R5 rider 2: an unknown "
             f"outcome is never a definite failure, and the agent must not be told to re-apply it"
         )
+        # SDK3 contract round 7, Q6 (R19): this surface is a WRITE (resolve/acknowledge), so its advice is the
+        # write half — verify — and never the read half's "safe to re-run" (re-applying a landed write).
+        assert "safe to re-run" not in lowered, (
+            f"a WRITE whose outcome is unknown is served as {second!r}: 'safe to re-run' is READ advice (Q6)"
+        )
         assert "outcome unknown" in lowered and "verify" in lowered, (
             f"the item whose call raised SurrealOutcomeUnknownError is served as {second!r}; it must name "
             f"the "
@@ -332,4 +337,53 @@ class TestTheBatchVerbNeverServesAnUnknownOutcomeAsAborted:
         )
         assert any(line.startswith(f"- #{findings[0].number} ") and "FAILED" not in line for line in lines), (
             f"item 1 (applied before the fault) is not served as applied: {rendered!r}"
+        )
+
+
+class TestTheUnknownOutcomeAdviceSplitsByShape:
+    """SDK3 contract round 7 — R19 Q6: D1's served advice splits by shape — "a write may have landed: verify
+    before retrying / a read is safe to re-run". The seam cannot tell a read from a write (F14), and no
+    read-serving catch site renders its own line (``_ADJUDICATED_RENDERING_SITES``), so a read tool serves the
+    seam's own ``SurrealOutcomeUnknownError`` text: that text must carry BOTH halves, and the write renderer
+    (``TestTheBatchVerbNeverServesAnUnknownOutcomeAsAborted``) serves the write half only. Store-free: a
+    connection whose SELECT never got its reply (the SDK's ``TransportTimeoutError``). RED at ``0d9b8c2``:
+    SDK 2.0 has no transport class and HEAD no unknown fate."""
+
+    async def test_a_read_whose_reply_never_came_tells_the_agent_it_is_safe_to_re_run(self) -> None:
+        import logging  # noqa: PLC0415 - kept local: this class is the file's only logger user
+
+        from surrealdb import errors as sdk_errors  # noqa: PLC0415 - SDK-3-only class; a module import
+        # would fail the whole file's collection on SDK 2.0 instead of this one pin.
+
+        unknown_type = getattr(_txn, "SurrealOutcomeUnknownError", None)
+        assert unknown_type is not None, "store._txn.SurrealOutcomeUnknownError (F14's fate) does not exist"
+        timeout_type = sdk_errors.TransportTimeoutError
+
+        class _NoReply:
+            async def query(self, *_args: Any, **_kwargs: Any) -> Any:
+                raise timeout_type("no reply within the request timeout")
+
+        connection = _NoReply()
+
+        async def _acquire() -> Any:
+            return connection
+
+        async def _drop(_dead: Any) -> None:
+            return None
+
+        with pytest.raises(unknown_type) as caught:
+            await _txn.run_query(
+                acquire=_acquire,
+                drop=_drop,
+                url="ws://sdk3-r7-q6",
+                noun="search read",
+                label="sdk3.r7.q6.read",
+                statement="SELECT * FROM chunk LIMIT 1",
+                logger=logging.getLogger("sdk3.r7.q6"),
+            )
+        served = str(caught.value).lower()
+        assert "outcome unknown" in served and "re-run" in served and "verify" in served, (
+            f"a read whose reply never came is served as {caught.value!s}: the seam's unknown-outcome text "
+            f"must name the outcome AND carry both halves of Q6's advice — a write may have landed (verify "
+            f"before retrying), a read is safe to re-run — because the seam cannot tell which this was"
         )

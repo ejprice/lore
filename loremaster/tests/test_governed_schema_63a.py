@@ -33,7 +33,6 @@ import pytest
 from _governed_contract import (
     MEMORY_TABLE,
     apply_ddl,
-    digit_led_record_key,
     explain,
     field_statement,
     index_served,
@@ -44,7 +43,7 @@ from _governed_contract import (
 )
 from _surreal_harness import SurrealConnection, SurrealEnv, admin_db  # noqa: F401 - fixture
 from loremaster.store import surreal_schema
-from sdk3_shape_fakes import same_record
+from sdk3_shape_fakes import digit_led_record_key, same_record
 
 import lorerunes as pdp
 

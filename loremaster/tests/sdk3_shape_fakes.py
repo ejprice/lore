@@ -1,18 +1,15 @@
 """Test-side SDK-shape helpers for packet SDK3 (surrealdb 2.0.0 → 3.0.0), shared by the hand-written
 SDK doubles.
 
-R12 F-a (lead, 2026-11-07): during the interim the doubles answer PER SDK VERSION, so HEAD (SDK 2.0.0) stays
-green
-until the build lands and the SDK-3.0 reference grades the same tests in SDK 3.0's shape.
-
-⚠ DROP LIST (packet doc §ROUND 5, row F-a): in the commit that pins ``surrealdb==3.0.0`` the builder deletes
-the
-SDK-2.0 branch of :func:`one_statement_answer` (the ``SDK_MAJOR`` test with it); the helpers below stay.
+R21 (operator, 2026-11-08) simplifies R12 F-a: the doubles answer in SDK 3.0's shape ONLY — no version-aware
+interim branch (contract round 7 deleted it; R26-2: a version-branched fake asserts two worlds under one
+name). Nodes that go RED at HEAD (SDK 2.0.0) because of it are DECLARED and registered (R22 rider 3) until
+the build commit pins ``surrealdb==3.0.0``.
 
 Three helpers, each the ONE home for its rule (C1, C2, C8 in packet doc §R4.7):
 
 * :func:`one_statement_answer` — what ``connection.query(<one statement>)`` returns: SDK 3.0 answers the
-  per-statement list (R2: the seam selects its ONE statement's result); SDK 2.0 answered that result bare.
+  per-statement list (R2: the seam selects its ONE statement's result).
 * :func:`route_connections` — make every owner's next SDK connection the double a test supplies, by rebinding
   EVERY name in a loaded ``loremaster`` module that is bound to the SDK's ``AsyncSurreal`` or to the shared
   connection factory (``store._txn.open_surreal_connection``, R5). Derived from the live module objects, so it
@@ -23,25 +20,39 @@ Three helpers, each the ONE home for its rule (C1, C2, C8 in packet doc §R4.7):
   (``.id``) or from ANY of its text forms, never by comparing ``str(RecordID)`` with engine/bare text (SDK 3.0
   brackets a digit-led key; SDK 2.0 and 3.0 bracket a non-word one). Round 6 widened it from one helper to
   the one home every test-side id comparison uses (the ~30 cloned ``_bare`` helpers were folded into it).
+* :func:`digit_led_record_key` / :func:`letter_led_record_key` — FIXED record keys of each shape (R26-3: pure,
+  I/O-free key-shape helpers live here; ``_governed_contract.rekey_principal`` applies them to a store).
 """
 
 from __future__ import annotations
 
-import importlib.metadata
 import sys
+import uuid
 from collections.abc import Callable
 from typing import Any
 
 import pytest
 import surrealdb
 
-#: The installed SDK's major version — the ONE switch of the F-a interim.
-SDK_MAJOR = int(importlib.metadata.version("surrealdb").split(".")[0])
-
 
 def one_statement_answer(statement_result: Any) -> Any:
-    """What the installed SDK's ``query()`` returns for ONE statement whose result is ``statement_result``."""
-    return [statement_result] if SDK_MAJOR >= 3 else statement_result
+    """What SDK 3.0's ``query()`` returns for ONE statement whose result is ``statement_result``."""
+    return [statement_result]
+
+
+def digit_led_record_key(seed: str) -> str:
+    """A FIXED, DIGIT-LED, word-character record key derived from ``seed`` (R15 / MP-C 3c, R12: "pins it
+    deterministically with a digit-led principal key"). SDK 3.0's ``str(RecordID)`` brackets a digit-led key
+    (``principal:⟨0…⟩``) while SDK 2.0 does not, so a test comparing two text forms of such an id fails on
+    SDK 3 EVERY run instead of on the ~28% of runs an engine-minted id happens to start with a digit. Word
+    characters only, so SDK 2.0 renders it bare (a hyphenated uuid would be bracketed by BOTH SDKs)."""
+    return f"0{uuid.uuid5(uuid.NAMESPACE_URL, f'lore://test/digit-led/{seed}').hex[1:]}"
+
+
+def letter_led_record_key(seed: str) -> str:
+    """A FIXED, LETTER-LED, word-character record key derived from ``seed`` — the discrimination leg R26-3
+    requires beside a digit-led default (a digit-led-only fixture is a monoculture in the other direction)."""
+    return f"z{uuid.uuid5(uuid.NAMESPACE_URL, f'lore://test/letter-led/{seed}').hex[1:]}"
 
 
 def route_connections(

@@ -60,7 +60,7 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-from _governed_contract import digit_led_record_key, rekey_principal, seed_agent_legacy
+from _governed_contract import rekey_principal, seed_agent_legacy
 from _surreal_harness import (
     PRODUCTION_DIM,
     SurrealConnection,
@@ -80,7 +80,7 @@ from loremaster.store.surreal_schema import (
     AGENT_TABLE,
     PRINCIPAL_TABLE,
 )
-from sdk3_shape_fakes import bare_record_key, same_record
+from sdk3_shape_fakes import bare_record_key, digit_led_record_key, same_record
 from surrealdb import RecordID
 
 _OWNER_FIELD = "owner_principal"

@@ -158,7 +158,7 @@ class TestRegisterStampsTheGovernedTriple63cIA:
         and ``scope`` = ``keep:<session keep>`` (RED — column absent). The session keep is the one
         ``_comms_register`` mints (SF-63-1); its scope is read from the keep store, never assumed."""
         async with credentialed_app_context(
-            monkeypatch, tmp_path, principals={"alice": "member"}, dim=_DIM, digit_led_principals=True
+            monkeypatch, tmp_path, principals={"alice": "member"}, dim=_DIM
         ) as world:
             row = await self._register_and_read(world, agent="fixer-b", session="wave7")
             bare_id = bare_record_key(row["id"])
@@ -185,7 +185,7 @@ class TestRegisterStampsTheGovernedTriple63cIA:
         fixture-doesn't-discriminate trap), so a build that re-derives/clobbers the triple on
         re-register reds. RED at HEAD (owner_agent/scope absent → the concrete-value assert fails)."""
         async with credentialed_app_context(
-            monkeypatch, tmp_path, principals={"alice": "member"}, dim=_DIM, digit_led_principals=True
+            monkeypatch, tmp_path, principals={"alice": "member"}, dim=_DIM
         ) as world:
             first = await self._register_and_read(world, agent="fixer-b", session="wave7")
             second = await self._register_and_read(world, agent="fixer-b", session="wave7")
@@ -209,7 +209,7 @@ class TestRegisterStampsTheGovernedTriple63cIA:
         which a one-session fixture cannot tell apart). The two scopes must also DIFFER (else the two
         sessions shared a keep and the leg discriminates nothing)."""
         async with credentialed_app_context(
-            monkeypatch, tmp_path, principals={"alice": "member"}, dim=_DIM, digit_led_principals=True
+            monkeypatch, tmp_path, principals={"alice": "member"}, dim=_DIM
         ) as world:
             scopes: dict[str, Any] = {}
             for agent, session in (("fixer-b", "wave7"), ("fixer-c", "wave8")):
@@ -236,7 +236,6 @@ class TestRegisterStampsTheGovernedTriple63cIA:
             monkeypatch, tmp_path,
             principals={"alice": "member", "bob": "member"},
             dim=_DIM,
-            digit_led_principals=True,
         ) as world:
             ctx = world["ctx"]
             await self._register_and_read(world, agent="keeper-a", session="shared")
@@ -328,7 +327,6 @@ class TestRegisterStampsTheGovernedTriple63cIA:
             tmp_path,
             principals={"alice": "member", "bob": "member", "carol": "member"},
             dim=_DIM,
-            digit_led_principals=True,
         ) as world:
             ctx, admin = world["ctx"], world["admin_conn"]
             world["holder"]["email"] = world["emails"]["alice"]
@@ -397,7 +395,7 @@ class TestRegisterStampsTheGovernedTriple63cIA:
         import loremaster.server as server_mod
 
         async with credentialed_app_context(
-            monkeypatch, tmp_path, principals={"alice": "member"}, dim=_DIM, digit_led_principals=True
+            monkeypatch, tmp_path, principals={"alice": "member"}, dim=_DIM
         ) as world:
             ctx = world["ctx"]
             recorded: list[dict[str, Any]] = []

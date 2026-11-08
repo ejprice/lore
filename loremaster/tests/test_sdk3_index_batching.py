@@ -303,3 +303,51 @@ class TestNoBatchedEdgeDangles:
                 )
         finally:
             await admin.close()
+
+
+class TestNoBatchedEdgeGoesMissing:
+    """R19 (sidecar ruling 1, on R15's ``test_ingest_entity_seam`` trace): B4 proves no DANGLING edge;
+    nothing proved no MISSING one. A batched graph write that drops rows — a truncated ``INSERT RELATION``
+    slice, a deduplicating edge id, a per-table batch that only carries the first page — leaves every
+    surviving edge well-formed and every B-family pin green. The oracle here is the graph DERIVATION
+    itself (the pure astroid pass the write consumes, run again in the test), never the write: the file
+    must land exactly one ``refers`` row per derived reference and one ``answers_to`` row per derived
+    node per name it answers to (its FQN and its bare name — the collision fan-out)."""
+
+    async def test_the_large_file_lands_exactly_the_edges_its_derivation_produced(
+        self, context: AppContext, live_root: Path
+    ) -> None:
+        source = _big_module_source(_BIG_FUNCTIONS, marker=False)
+        (live_root / _BIG_PATH).write_text(source, encoding="utf-8")
+        outcome = await context.indexer.index_file(_TIER, _BIG_PATH, source)
+        assert outcome.state == "indexed", f"premise: the large file must index (got {outcome.state!r})"
+
+        indexer = context.indexer
+        chunks = indexer._chunk(_BIG_PATH, source)
+        module = indexer._importable_module_name(_TIER, _BIG_PATH)
+        derivation = indexer._code_graph._derivation
+        nodes = derivation._derive_nodes(module, chunks)
+        edges = derivation._derive_edges(module, chunks, tier=_TIER, file_path=_BIG_PATH)
+        expected = {REFERS_RELATION: len(edges), ANSWERS_TO_RELATION: 2 * len(nodes)}
+        assert expected[REFERS_RELATION] > _RETIRED_STATEMENT_CAP // 2, (
+            f"premise: the fixture derives {expected} — too few edges to exercise a batched write"
+        )
+
+        admin = await connect_admin(_env_of(context))
+        try:
+            landed = {}
+            for relation, file_column in (
+                (REFERS_RELATION, "src_file_path"),
+                (ANSWERS_TO_RELATION, "file_path"),
+            ):
+                landed[relation] = await run(
+                    admin,
+                    f"RETURN count((SELECT id FROM {relation} WHERE {file_column} = $f))",
+                    {"f": _BIG_PATH},
+                )
+        finally:
+            await admin.close()
+        assert landed == expected, (
+            f"the large file landed {landed} edge rows; its derivation produced {expected}: a batched edge "
+            f"write lost (or invented) edges — every surviving edge is well-formed, so B4 cannot see this"
+        )

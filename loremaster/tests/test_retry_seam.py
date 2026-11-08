@@ -37,7 +37,8 @@ THE CONTRACT THIS MODULE DECIDES (the builder builds FROM this)::
   * attempt counting;
   * the give-up predicate — ``attempts >= _TXN_CONFLICT_ATTEMPT_CEILING`` **or**
     (``elapsed >= deadline`` **and** ``attempts >= _MAX_TXN_CONFLICT_ATTEMPTS``);
-  * the per-attempt FRESH full jitter (``_txn_conflict_backoff_seconds``);
+  * the per-attempt FRESH full jitter (tenacity's wait from ``loresigil.backoff.full_jitter``,
+    SDK3 R18/R20 A4);
   * raising :class:`TxnContentionExhaustedError` on exhaustion.
 
 Everything the attempt raises that is NOT the signal propagates UNTOUCHED, with ZERO
@@ -77,14 +78,16 @@ TWO CONTRACT REQUIREMENTS THAT LOOK LIKE IMPLEMENTATION DETAIL AND ARE NOT:
    — and an unreachable retry branch is precisely what finding #102 WAS. The
    unrepaired seam already does exactly this; the pins below depend on it.
 
-2. **``asyncio.sleep`` is the backoff mechanism, and ``_txn_conflict_backoff_seconds``
-   remains its single, NAMED source** — the driver calls it once per retry. Both are
-   inherited from the existing seam (the sequential and concurrent jitter families in
-   test_surreal_store.py read the backoff back through a patched ``asyncio.sleep``;
-   the pins below additionally read it through the named draw, because identity is the
-   only way to tell "shares the jitter" from "has one of its own"). A repair that
-   inlines the draw, or waits by some other means, is not covered by these pins and
-   must not be shipped without replacing them.
+2. **``asyncio.sleep`` is the backoff mechanism, and the pins read what the DRIVER
+   sleeps** (SDK3 contract round 7, R18 as amended by R20 A2/A4 — the named draw
+   ``_txn_conflict_backoff_seconds`` and its draw-count recorder are retired with it):
+   ``_driver_sleeps.record_driver_sleeps`` records every ``asyncio.sleep`` the driver
+   issues, and SHARING is proven by mutating the ONE wait factory
+   ``loresigil.backoff.full_jitter`` to ``wait_fixed(SENTINEL)`` — a seam that does not
+   route through the driver sleeps something else, which is the only way to tell
+   "shares the policy" from "has one of its own". A repair that waits by some other
+   means than ``asyncio.sleep`` is not covered by these pins and must not be shipped
+   without replacing them.
 
 ------------------------------------------------------------------------------
 IDEMPOTENCY — THE QUESTION THAT HAD TO BE ANSWERED BEFORE ANY OF THIS WAS SAFE.
@@ -169,6 +172,7 @@ import pytest_asyncio
 # ``_caught_classes``; folded from ``REPORT-contract-58-r3.md`` §HELD part 2 D-AM10).
 from _catch_sites import _parents_of, catch_sites_in
 from _catch_sites import caught_classes as _caught_classes
+from _driver_sleeps import DriverSleepRecorder, record_driver_sleeps
 from _engine_shapes import CASCADE_KIND, RETRYABLE_CONFLICT_KIND
 from _sdk_guard import GuardCannotSubstantiate, GuardReport, _witness_file, artifact_root
 from _sdk_guard import install as _install_shared_guard
@@ -213,9 +217,11 @@ from surrealdb.errors import (
     QueryError,
     ValidationError,
 )
+from tenacity import wait_fixed
 
 from loremaster import briefs as briefs_module
 from loremaster import scout as scout_module
+from loresigil import backoff as backoff_module
 
 if TYPE_CHECKING:
     # packet 63c-i-a a28b (amendment 32 §1.3 f): the STATIC reference that owns this file's pending pins in
@@ -608,45 +614,30 @@ class _SleepRecorder:
         await _REAL_ASYNCIO_SLEEP(0)
 
 
-@dataclass
-class _JitterRecorder:
-    """Records every call to the SHARED backoff function ``_txn_conflict_backoff_seconds``
-    and DELEGATES to the real one.
+#: SDK3 R20 A4: what every driver backoff becomes once the ONE wait factory is mutated. No correct
+#: window produces it (the conflict cap is 0.1 s).
+_SENTINEL_BACKOFF_S = 1234.5
 
-    THE instrument for pin 3. A caller that keeps a PRIVATE copy of the jitter still
-    backs off, still retries, still passes every "does briefs still work?" pin — and
-    records ZERO draws here. That is the whole difference between DRY and looks-DRY.
 
-    Delegating (rather than returning a canned 0.0) matters in exactly one place and it
-    is the most important one: the LIVE 16-way pins run with the REAL backoff, so the
-    racers genuinely desynchronise and the run converges the way production does. In the
-    fake-connection pins ``asyncio.sleep`` is silenced anyway, so the real draw costs
-    nothing there. A recorder that flattened the backoff to zero would have turned the
-    live contention pins into a thrash test of their own making.
+def _sleeps_through_the_one_wait_factory(monkeypatch: pytest.MonkeyPatch) -> DriverSleepRecorder:
+    """THE sharing instrument (SDK3 contract round 7; R18 retires the draw recorder, R20 A4 replaces it).
+
+    Mutates ``loresigil.backoff.full_jitter`` — the ONE native wait factory — to ``wait_fixed(SENTINEL)``
+    and records what the conflict driver then SLEEPS. A seam that routes through the shared driver sleeps
+    the sentinel; a seam with a private retry loop or its own tenacity wait is UNCHANGED by the mutation,
+    which is the definition of not sharing it. Call AFTER ``_silence_sleep`` (the recorder wraps whatever
+    ``asyncio.sleep`` is installed).
     """
-
-    real: Callable[[int], float]
-    draws: list[int] = field(default_factory=list)
-    #: The VALUE each draw returned, in order (SDK3 round 6, MP-B): what the driver must then SLEEP.
-    values: list[float] = field(default_factory=list)
-
-    def draw(self, attempt_number: int) -> float:
-        self.draws.append(attempt_number)
-        value = self.real(attempt_number)
-        self.values.append(value)
-        return value
-
-
-def _record_shared_jitter(monkeypatch: pytest.MonkeyPatch) -> _JitterRecorder:
-    assert hasattr(txn_module, "_txn_conflict_backoff_seconds"), (
-        "the seam's named jitter source is gone. It must survive the extraction as the "
-        "ONE function the driver draws from: identity is the only way a pin can tell "
-        "'shares the jitter' from 'hand-rolled one that looks like it' (module "
-        "docstring, requirement 2)."
+    assert hasattr(backoff_module, "full_jitter"), (
+        "loresigil.backoff.full_jitter — the ONE native wait factory (SDK3 R20 A4) — is gone or not yet "
+        "built. The conflict driver builds its tenacity wait through it (`wait=backoff.full_jitter(...)`, "
+        "module attribute looked up at call time); identity is the only way a pin can tell 'shares the "
+        "policy' from 'hand-rolled one that looks like it'."
     )
-    recorder = _JitterRecorder(real=txn_module._txn_conflict_backoff_seconds)
-    monkeypatch.setattr(txn_module, "_txn_conflict_backoff_seconds", recorder.draw)
-    return recorder
+    monkeypatch.setattr(
+        backoff_module, "full_jitter", lambda _base_s, _cap_s: wait_fixed(_SENTINEL_BACKOFF_S)
+    )
+    return record_driver_sleeps(monkeypatch)
 
 
 def _silence_sleep(monkeypatch: pytest.MonkeyPatch) -> _SleepRecorder:
@@ -1088,39 +1079,11 @@ class TestRetryOnConflictDriver:
             "branch of the callers that pass no deadline"
         )
 
-    async def test_every_attempt_draws_a_fresh_backoff_from_the_shared_jitter(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The jitter lives IN the driver — one draw per retry, with a 1-based,
-        MONOTONICALLY GROWING attempt number (the exponential window's input).
-
-        A build that draws once and reuses it, or hands the same attempt number every
-        time (a flat window), is caught here; the DISTRIBUTION itself is pinned by the
-        existing sequential + concurrent backoff families in test_surreal_store.py, and
-        those must stay green.
-        """
-        sleeper = _silence_sleep(monkeypatch)
-        recorder = _record_shared_jitter(monkeypatch)
-
-        async def _attempt() -> None:
-            raise _signal()()
-
-        with pytest.raises(TxnContentionExhaustedError):
-            await _driver()(_attempt, deadline_seconds=1e9)
-
-        assert recorder.draws == list(range(1, _TXN_CONFLICT_ATTEMPT_CEILING)), (
-            f"expected one FRESH draw after every failed attempt but the last "
-            f"(1-based, growing): got {recorder.draws[:8]}..."
-        )
-        # SDK3 round 6, MP-B (R10/R11 rider "keep a full-jitter wait"; R15): consulting the shared source is
-        # not enough — what is SLEPT must BE the draw. A driver that draws and then sleeps something else
-        # (``window/2 + drawn/2`` — equal jitter, one token away in tenacity: ``wait=... + wait_fixed(x)``)
-        # satisfied the draw-count pin above with 0 new reds.
-        assert sleeper.durations == recorder.values, (
-            f"the driver slept {sleeper.durations[:6]}... but the shared full-jitter source drew "
-            f"{recorder.values[:6]}... — every backoff slept must be exactly the fresh draw (no equal "
-            f"jitter, no added floor, no extra or missing sleep)"
-        )
+    # SDK3 contract round 7 (R18/R20): ``test_every_attempt_draws_a_fresh_backoff_from_the_shared_jitter``
+    # (a draw-COUNT pin + round 6's slept == drawn) is RETIRED — am-37 inventory row R7-1. Its behaviour
+    # (one fresh full-jitter backoff per retry, 1-based growing window, no equal jitter) is carried by
+    # ``test_sdk3_native_retry::TestEverySleptBackoffLiesInItsWindow`` and
+    # ``::TestFullJitterReachesBothTailsOfTheWindow``.
 
 
 # ===========================================================================
@@ -1211,20 +1174,21 @@ class TestEverySingleStatementSeamRetriesAConflict:
         each raise the typed error — and each hand-roll the mechanics. It satisfies every
         behavioural pin above and is not DRY at all; it is finding #102 industrialised.
 
-        The recorder is a MUTATION of the shared jitter. A seam that does not route
-        through it is UNCHANGED by mutating it — which is the definition of not sharing
-        it. Its positive control is
+        The instrument MUTATES the ONE wait factory (SDK3 R20 A4,
+        :func:`_sleeps_through_the_one_wait_factory`). A seam that does not route through
+        the shared driver is UNCHANGED by mutating it — which is the definition of not
+        sharing it. Its positive control is
         ``TestBriefMintSharesTheDriver::test_the_shared_jitter_recorder_can_actually_see_a_draw``.
         """
         _silence_sleep(monkeypatch)
-        recorder = _record_shared_jitter(monkeypatch)
+        sleeps = _sleeps_through_the_one_wait_factory(monkeypatch)
         connection = _ConflictingConnection(conflicts=3, rows=[{"next": 4}])
 
         await _seam_on(seam, connection)._query(_MINT_STATEMENT, {"name": _WAVE_NAME})
 
-        assert recorder.draws, (
-            f"{seam.__name__}._query ({module_path}) backed off WITHOUT calling the "
-            f"shared jitter — it is hand-rolling its own. Seams that each own a "
+        assert sleeps.slept == [_SENTINEL_BACKOFF_S] * 3, (
+            f"{seam.__name__}._query ({module_path}) slept {sleeps.slept} for 3 conflicts with the "
+            f"ONE wait factory mutated — it is hand-rolling its own backoff. Seams that each own a "
             f"private copy of the retry mechanics are not DRY; they are finding #102 "
             f"once per seam, each free to get the jitter wrong in its own way (findings did: "
             f"16 slots; briefs did: 4)."
@@ -1468,12 +1432,12 @@ class TestBriefMintSharesTheDriver:
         4-slot table (``uuid4().hex[:4] % 4``) — the shared jitter is never called, so
         the recorder sees ZERO draws.
 
-        The recorder is a MUTATION of the shared function: if briefs' retry does not
-        route through it, briefs' behaviour is unchanged by mutating it. That is the
-        definition of "not sharing it".
+        The instrument MUTATES the ONE wait factory (SDK3 R20 A4): if briefs' retry does
+        not route through the shared driver, briefs' behaviour is unchanged by mutating it.
+        That is the definition of "not sharing it".
         """
         _silence_sleep(monkeypatch)
-        recorder = _record_shared_jitter(monkeypatch)
+        sleeps = _sleeps_through_the_one_wait_factory(monkeypatch)
         connection = _ConflictingConnection(conflicts=3, rows=[{"next": 4}])
         ledger = _ledger_on(connection)
 
@@ -1481,7 +1445,7 @@ class TestBriefMintSharesTheDriver:
 
         assert version == 4
         assert connection.calls == 4, "the mint did not retry the conflict"
-        assert recorder.draws, (
+        assert sleeps.slept == [_SENTINEL_BACKOFF_S] * 3, (
             "the brief mint backed off WITHOUT calling the shared jitter — it is "
             "hand-rolling its own. A private copy of a retry policy is exactly what "
             "findings #102 and #108 are, one clone each."
@@ -1500,12 +1464,12 @@ class TestBriefMintSharesTheDriver:
         red, the instrument is blind and the verdict above means nothing.
         """
         _silence_sleep(monkeypatch)
-        recorder = _record_shared_jitter(monkeypatch)
+        sleeps = _sleeps_through_the_one_wait_factory(monkeypatch)
         connection = _ConflictingConnection(conflicts=2)
 
         await _run_execute_transaction(connection)
 
-        assert recorder.draws == [1, 2], (
+        assert sleeps.slept == [_SENTINEL_BACKOFF_S] * 2, (
             "the shared-jitter recorder did not observe execute_transaction's own "
             "backoffs — the instrument is blind, so it can prove nothing about briefs"
         )
@@ -3043,12 +3007,15 @@ class TestScoutCommandClaimRidesTheSeam:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _silence_sleep(monkeypatch)
-        recorder = _record_shared_jitter(monkeypatch)
+        sleeps = _sleeps_through_the_one_wait_factory(monkeypatch)
         connection = _ConflictingConnection(conflicts=2, rows=[{"id": "command:1"}])
 
         await _subscriber()._mark(connection, "command:1", "done")
 
-        assert recorder.draws, "scout hand-rolled its own backoff instead of sharing one"
+        assert sleeps.slept == [_SENTINEL_BACKOFF_S] * 2, (
+            f"scout's claim slept {sleeps.slept} for 2 conflicts with the ONE wait factory mutated — it "
+            f"hand-rolled its own backoff instead of sharing one"
+        )
 
     async def test_detection_follows_the_shared_marker(
         self, monkeypatch: pytest.MonkeyPatch
@@ -3403,7 +3370,7 @@ class TestEverySdkCallSiteActuallyRetries:
         instance owns, and turns one duplicate-completion log line into a storm.
         """
         _silence_sleep(monkeypatch)
-        recorder = _record_shared_jitter(monkeypatch)
+        recorder = record_driver_sleeps(monkeypatch)
         connection = _ScriptedConnection(error=AssertionError("unused"), failures=0, rows=[])
 
         await _subscriber()._mark(connection, "command:1", "done")
@@ -3413,7 +3380,9 @@ class TestEverySdkCallSiteActuallyRetries:
             f"is not a conflict — it is another instance having already completed the "
             f"command, which scout logs as a duplicate completion and must never contest."
         )
-        assert not recorder.draws, "an empty claim backed off — it was treated as contention"
+        assert not recorder.slept, (
+            f"an empty claim backed off {recorder.slept} — it was treated as contention"
+        )
 
 
 # ===========================================================================
@@ -3429,11 +3398,12 @@ class TestEverySdkCallSiteActuallyRetries:
 # at N. A retry that double-applied would push the counter above N and tear a GAP in
 # the versions. Nothing here is statistical.
 #
-# THE CONTROL: the run must actually have RETRIED something (the shared-jitter recorder
-# is consulted). A contention pin that never contended proves nothing, and would pass
-# on a build with no retry at all. What the control may NOT do is fail a correct build —
-# see ``_run_contending_waves`` for how that guarantee is kept WITHOUT the control
-# becoming a coin-flip under the runner this repo mandates.
+# THE CONTROL: the run must actually have RETRIED something (the conflict driver SLEPT a
+# backoff — ``_driver_sleeps``; SDK3 R20 A2 moved it off the retired draw recorder). A
+# contention pin that never contended proves nothing, and would pass on a build with no
+# retry at all. What the control may NOT do is fail a correct build — see
+# ``_run_contending_waves`` for how that guarantee is kept WITHOUT the control becoming a
+# coin-flip under the runner this repo mandates.
 # ===========================================================================
 
 
@@ -3543,7 +3513,7 @@ _NO_WAVE_CONTENDED = (
 
 
 async def _run_contending_waves(
-    recorder: _JitterRecorder, wave: Callable[[int], Awaitable[bool]]
+    recorder: DriverSleepRecorder, wave: Callable[[int], Awaitable[bool]]
 ) -> None:
     """Run ``wave(index)`` until one of them genuinely CONTENDED, bounded by
     :data:`_CONTENTION_WAVE_BOUND`.
@@ -3557,7 +3527,7 @@ async def _run_contending_waves(
     wrong baseline and go red for a bookkeeping reason.
     """
     for wave_index in range(_CONTENTION_WAVE_BOUND):
-        recorder.draws.clear()
+        recorder.clear()
         if await wave(wave_index):
             return
     raise AssertionError(_NO_WAVE_CONTENDED.format(racers=_RACERS, bound=_CONTENTION_WAVE_BOUND))
@@ -3576,7 +3546,7 @@ class TestSingleStatementRetryLandsExactlyOnce:
         Python, not the wire). The oracle scales with it and gets STRONGER — 16 x N mints
         off one counter must be exactly {1..16N}, and the row must end at 16N.
         """
-        recorder = _record_shared_jitter(monkeypatch)
+        recorder = record_driver_sleeps(monkeypatch)
         stores = [_construct_live(SurrealStore, live_env) for _ in range(_RACERS)]
         expected_total = _RACERS * _MINTS_PER_RACER
 
@@ -3593,7 +3563,7 @@ class TestSingleStatementRetryLandsExactlyOnce:
             # Read the control BEFORE the verification SELECT below: that SELECT's own
             # (unlikely) conflict is not the racers' contention and must never be counted
             # as it — an instrument that credits itself is the whole disease.
-            contended = bool(recorder.draws)
+            contended = bool(recorder.slept)
             rows = await stores[0]._query(
                 "SELECT next FROM type::record('retry_counter', $name)", {"name": name}
             )
@@ -3710,7 +3680,7 @@ class TestBriefPublishLandsExactlyOnceUnderContention:
         Each wave publishes under a DISTINCT brief name, so each gets its own virgin
         ``brief_counter`` hot row and its own {1..N} version run.
         """
-        recorder = _record_shared_jitter(monkeypatch)
+        recorder = record_driver_sleeps(monkeypatch)
         ledgers = [
             BriefLedger(
                 url=live_env.url,
@@ -3741,7 +3711,7 @@ class TestBriefPublishLandsExactlyOnceUnderContention:
             results = await asyncio.gather(
                 *(_publish(index, ledger) for index, ledger in enumerate(ledgers))
             )
-            contended = bool(recorder.draws)  # read BEFORE the verification SELECT
+            contended = bool(recorder.slept)  # read BEFORE the verification SELECT
             counter = await ledgers[0]._query(
                 "SELECT next FROM type::record('brief_counter', $name)", {"name": name}
             )
@@ -6122,7 +6092,7 @@ class TestTheAntiVacuityControlStillFires:
         """**POSITIVE CONTROL.** A build with no retry at all conflicts nowhere. The bound is
         a bound on PATIENCE, never a licence to pass: it must run every wave and then FAIL.
         """
-        recorder = _JitterRecorder(real=lambda attempt_number: 0.0)
+        recorder = DriverSleepRecorder()
         ran: list[int] = []
 
         async def _never_contends(wave_index: int) -> bool:
@@ -6145,10 +6115,10 @@ class TestTheAntiVacuityControlStillFires:
         into a retry, and then into a pass.
 
         The wave's assertions propagate. Only the ANTI-VACUITY control is re-runnable, and
-        only because a zero-conflict wave is vacuous BY CONSTRUCTION (``draws == 0`` <=> the
+        only because a zero-conflict wave is vacuous BY CONSTRUCTION (no driver backoff slept <=> the
         retry path never ran <=> no retried write can have double-applied).
         """
-        recorder = _JitterRecorder(real=lambda attempt_number: 0.0)
+        recorder = DriverSleepRecorder()
         waves_run = 0
 
         async def _oracle_fails(wave_index: int) -> bool:
@@ -6170,7 +6140,7 @@ class TestTheAntiVacuityControlStillFires:
         red-on-correct-code rate was ~10% per wave under `-n auto`: a runner that demanded
         the FIRST wave contend would have changed nothing at all.
         """
-        recorder = _JitterRecorder(real=lambda attempt_number: 0.0)
+        recorder = DriverSleepRecorder()
         ran: list[int] = []
         contends_on = _CONTENTION_WAVE_BOUND - 1  # the LAST wave in the bound
 
@@ -6189,12 +6159,12 @@ class TestTheAntiVacuityControlStillFires:
         forward would make every wave after the first look contended, and the control would
         certify a run in which the racers never met again.
         """
-        recorder = _JitterRecorder(real=lambda attempt_number: 0.0)
+        recorder = DriverSleepRecorder()
         draws_seen_at_wave_start: list[int] = []
 
         async def _wave(wave_index: int) -> bool:
-            draws_seen_at_wave_start.append(len(recorder.draws))
-            recorder.draw(1)  # this wave "contended"
+            draws_seen_at_wave_start.append(len(recorder.slept))
+            recorder.record(0.0)  # this wave "contended" (the driver slept one backoff)
             return wave_index == 2
 
         await _run_contending_waves(recorder, _wave)

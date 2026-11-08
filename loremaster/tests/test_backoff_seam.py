@@ -21,11 +21,13 @@ Two instruments, because one is not enough and this repo has the receipts to pro
 
 **2. THE PERIMETER, allowlisting the SAFE.**
    ``TestNoNewHandRolledBackoff`` AST-scans production source for exponentiation by a variable
-   and denies it everywhere except one evidence-backed file. This is deliberately NOT a scan
-   for forbidden shapes: ``CLAUDE.md``'s six-defeat table records that every instrument keyed
-   on what is FORBIDDEN was defeated by the next name (a label's literal, a symbol's name,
-   ``async def _query``, 3 SDK method names, 2 receiver names, 4 arming tests). The forbidden
-   set is unbounded; the safe set here is **one file**, enumerable and small.
+   and denies it everywhere — the allowlist is EMPTY since SDK3 contract round 7 (it held one
+   evidence-backed file, ``_txn.py``, until R18 deleted that file's private window). This is
+   deliberately NOT a scan for forbidden shapes: ``CLAUDE.md``'s six-defeat table records that
+   every instrument keyed on what is FORBIDDEN was defeated by the next name (a label's
+   literal, a symbol's name, ``async def _query``, 3 SDK method names, 2 receiver names, 4
+   arming tests). The forbidden set is unbounded; the safe set here is enumerable and small
+   (one file until SDK3 round 7, now none).
 
    Measured 2026-07-25 at the #207 fix: pre-fix the scan returned **6** hits — the five
    defects plus the fenced ``_txn`` seam — with **zero false positives** across every
@@ -53,14 +55,12 @@ import ast
 import asyncio
 import sys
 from pathlib import Path
-from typing import Any
 
 import httpx
 import pytest
 from _logging_fixtures import parse_production_trees
 from loremaster.calibration import counting
 from loremaster.calibration import engine as ce
-from loremaster.scout import CommandSubscriber
 from loresigil.resilient import ResilientEmbedder
 from loresigil.tokens import VoyageTokenCounter
 from pydantic import SecretStr
@@ -124,7 +124,6 @@ _DECLARED_SITES = frozenset(
         "loresigil.resilient.compute_backoff_delay",
         "loremaster.calibration.counting.AsyncClaudeTokenCounter._sleep_backoff",
         "loremaster.calibration.engine.CalibrationEngine._probe_loop",
-        "loremaster.scout.CommandSubscriber._backoff",
         "token_survey.ClaudeTokenCounter._sleep_backoff",
         # --- additive-jitter sites (#207 D2/D3), declared at birth, not retrofitted ---
         "loremaster.calibration.counting.AsyncClaudeTokenCounter._sleep_backoff.retry_after",
@@ -134,25 +133,13 @@ _DECLARED_SITES = frozenset(
 )
 
 # --- the perimeter's evidence-backed allowlist -------------------------------------------
-#: The ONE production file permitted to raise a value to a VARIABLE power.
-#:
-#: ``_txn.py::_txn_conflict_backoff_seconds`` is the transaction-conflict seam's own
-#: full-jitter policy. It is exempt on EVIDENCE, not opinion: it already draws
-#: ``random.uniform(0, window)`` (the same Full Jitter this module's policy uses), it is
-#: mutation-proven across eleven consumers by ``test_retry_seam.py``, its distribution is
-#: pinned by ``test_surreal_store.py::TestTxnConflictBackoffIsJittered``, and finding #202
-#: deliberately fenced it from being churned.
-#:
-#: RE-OPEN TRIGGER: the day either jitter formula changes, these two implementations of one
-#: policy get consolidated (raised as R4 in ``REPORT-fix-207-jitter.md``, archived under
-#: ``docs/plans/v2/receipts/``). Until then this is a KNOWN, DELIBERATE second copy.
-_POW_ALLOWLIST = frozenset({"loremaster/loremaster/store/_txn.py"})
+#: The production files permitted to raise a value to a VARIABLE power: NONE (SDK3 contract round 7,
+#: F-r5-1 / R20 A4). ``_txn.py``'s ``_txn_conflict_backoff_seconds`` was the one exemption (a fenced second
+#: copy of Full Jitter, #202); R18 deletes it — the conflict driver's wait is tenacity's
+#: ``wait_random_exponential`` from ``loresigil.backoff.full_jitter`` — so nothing is left to exempt.
+#: A future exemption needs EVIDENCE (a live probe or a measurement), never an opinion.
+_POW_ALLOWLIST: frozenset[str] = frozenset()
 
-#: The subscriber window the drivers construct with. Deliberately NOT scout's production
-#: defaults: a fixture reusing the module constant cannot tell "the site forwards MY
-#: parameters" from "the site ignores them and happens to agree with the default".
-_SCOUT_BASE_S = 0.25
-_SCOUT_CAP_S = 12.0
 
 #: Likewise for the eager-lease driver — NOT ``_DEFAULT_EAGER_BACKOFF_BASE_S``.
 _EAGER_BASE_S = 3.5
@@ -273,35 +260,6 @@ def _drive_calibration_engine(attempt: int) -> float:
     engine._backoff_start_s = ce.BACKOFF_START_S
     engine._backoff_cap_s = ce.BACKOFF_CAP_S
     return engine._backoff_delay(attempt)
-
-
-async def _drive_command_subscriber(attempt: int) -> list[float]:
-    """Site 4: the subscriber's reconnect backoff, driven through its named seam.
-
-    Direct rather than through a reconnect storm: the run loop interleaves poll-interval
-    sleeps with reconnect backoffs on the SAME seam (``test_scout.py`` documents that
-    mixing), so an end-to-end drive cannot attribute a recorded delay to the backoff.
-    """
-    slept: list[float] = []
-
-    async def sleep_fn(delay: float) -> None:
-        slept.append(delay)
-
-    async def never_connect() -> Any:  # pragma: no cover - _backoff never connects
-        raise ConnectionResetError("unused")
-
-    async def handler(_row: dict[str, Any]) -> None:  # pragma: no cover - unused
-        return None
-
-    await CommandSubscriber(
-        connect=never_connect,
-        handler=handler,
-        poll_interval_s=0.01,
-        sleep=sleep_fn,
-        backoff_base_s=_SCOUT_BASE_S,
-        max_backoff_s=_SCOUT_CAP_S,
-    )._backoff(attempt)
-    return slept
 
 
 def _drive_token_survey(monkeypatch: pytest.MonkeyPatch, attempt: int) -> list[float]:
@@ -433,16 +391,10 @@ class TestEveryBackoffSharesTheOnePolicy:
         )
         assert mutated_policy.draws[-1] == (4, ce.BACKOFF_START_S, ce.BACKOFF_CAP_S)
 
-    async def test_command_subscriber_shares_the_policy(
-        self, mutated_policy: _PolicyMutation
-    ) -> None:
-        """Site 4: ``scout.CommandSubscriber._backoff``."""
-        assert await _drive_command_subscriber(2) == [_SENTINEL_DELAY], (
-            "CommandSubscriber._backoff backed off WITHOUT the shared policy"
-        )
-        assert mutated_policy.draws[-1] == (2, _SCOUT_BASE_S, _SCOUT_CAP_S), (
-            "the subscriber passed the wrong window parameters to the shared policy"
-        )
+    # SDK3 contract round 7 (R11/R18): ``test_command_subscriber_shares_the_policy`` (site 4,
+    # ``CommandSubscriber._backoff``) is RETIRED with the detached draw it drove — am-37 row R7-3. Scout's
+    # ladder is in packet 66 and builds its wait from ``loresigil.backoff.full_jitter``; sharing is carried
+    # by ``test_sdk3_native_retry::TestTheOneWaitFactoryReachesEveryIn66Site``.
 
     def test_token_survey_shares_the_policy(
         self, mutated_policy: _PolicyMutation, monkeypatch: pytest.MonkeyPatch
@@ -549,8 +501,6 @@ async def test_EVERY_declared_site_draws_from_the_mutated_policy(
         observed.add("loremaster.calibration.counting.AsyncClaudeTokenCounter._sleep_backoff")
     if _drive_calibration_engine(1) == _SENTINEL_DELAY:
         observed.add("loremaster.calibration.engine.CalibrationEngine._probe_loop")
-    if await _drive_command_subscriber(1) == [_SENTINEL_DELAY]:
-        observed.add("loremaster.scout.CommandSubscriber._backoff")
     if _drive_token_survey(monkeypatch, 1) == [_SENTINEL_DELAY]:
         observed.add("token_survey.ClaudeTokenCounter._sleep_backoff")
 
@@ -637,30 +587,6 @@ async def _real_policy_draws_per_site(monkeypatch: pytest.MonkeyPatch) -> dict[s
     draws["loremaster.calibration.engine.CalibrationEngine._probe_loop"] = [
         _drive_calibration_engine(0) for _ in range(_JITTER_DRAWS)
     ]
-
-    # 4. scout — its own named seam, so no poll-interval sleeps are mixed in.
-    scout_draws: list[float] = []
-
-    async def rec_scout(delay: float) -> None:
-        scout_draws.append(delay)
-
-    async def never_connect() -> Any:  # pragma: no cover - _backoff never connects
-        raise ConnectionResetError("unused")
-
-    async def scout_handler(_row: dict[str, Any]) -> None:  # pragma: no cover - unused
-        return None
-
-    subscriber = CommandSubscriber(
-        connect=never_connect,
-        handler=scout_handler,
-        poll_interval_s=0.01,
-        sleep=rec_scout,
-        backoff_base_s=_SCOUT_BASE_S,
-        max_backoff_s=_SCOUT_CAP_S,
-    )
-    for _ in range(_JITTER_DRAWS):
-        await subscriber._backoff(0)
-    draws["loremaster.scout.CommandSubscriber._backoff"] = scout_draws
 
     # 5 + 7. token_survey — exponential and additive branches.
     survey_exp: list[float] = []
@@ -775,7 +701,8 @@ class TestNoNewHandRolledBackoff:
             "shared policy instead:\n"
             "    from loresigil import backoff\n"
             "    delay = backoff.jittered_backoff_delay(attempt, base_s=..., cap_s=...)\n"
-            "and add the new site to _DECLARED_SITES in this file with a driver.\n"
+            "(in a native tenacity loop: wait=backoff.full_jitter(base_s, cap_s)) and add the new "
+            "site to _DECLARED_SITES in this file with a driver.\n"
             "If this really is unrelated arithmetic, add the file to _POW_ALLOWLIST WITH "
             "evidence (this scan had ZERO false positives across the whole tree on "
             "2026-07-25)."
@@ -941,78 +868,11 @@ def test_the_shared_policy_is_backed_by_tenacity_not_a_hand_roll() -> None:
     )
 
 
-# --- SDK3 round 6, MP-B sibling: the subscriber's CONNECT ladder sleeps the shared draw ---------------
-#
-# R11 moves ``CommandSubscriber.run``'s connect retry onto tenacity (``wait=`` → the shared policy). The
-# pins above drive ``_backoff`` directly, so a build whose tenacity ``wait=`` consults the shared policy and
-# then returns something ELSE (equal jitter, an added floor — one token in tenacity) passes every one of them.
-# This drives the REAL run loop through failed connects and compares what is SLEPT with what is DRAWN.
-
-#: Failed connects before the subscriber is stopped (from inside the last one).
-_FAILED_CONNECTS = 5
-
-
-class TestTheSubscribersConnectLadderSleepsTheSharedDraw:
-    """MP-B sibling (adversary round 2; R15): every backoff the connect ladder SLEEPS is exactly a fresh draw
-    from ``loresigil.backoff.jittered_backoff_delay`` — in order, one per failed connect, on a growing
-    attempt.
-
-    Stated bound (tenacity computes ``wait`` BEFORE ``stop``): the connect ended by ``stop()`` may draw
-    one backoff it never sleeps; every draw that IS slept is slept unchanged, and only that one trailing draw
-    may go unslept. The hand-rolled HEAD loop draws and sleeps on every failure."""
-
-    async def test_every_slept_connect_backoff_is_the_shared_draw(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        real = backoff_module.jittered_backoff_delay
-        drawn: list[float] = []
-        drawn_attempts: list[int] = []
-
-        def _recording(attempt: int, *, base_s: float, cap_s: float) -> float:
-            value = real(attempt, base_s=base_s, cap_s=cap_s)
-            drawn.append(value)
-            drawn_attempts.append(attempt)
-            return value
-
-        monkeypatch.setattr(backoff_module, "jittered_backoff_delay", _recording)
-        slept: list[float] = []
-
-        async def _sleep(delay: float) -> None:
-            slept.append(delay)
-            await asyncio.sleep(0)
-
-        failures = 0
-        subscriber: CommandSubscriber
-
-        async def _connect() -> Any:
-            nonlocal failures
-            failures += 1
-            if failures >= _FAILED_CONNECTS:
-                await subscriber.stop()
-            raise ConnectionResetError(f"store unreachable (failed connect #{failures})")
-
-        async def _handler(_row: dict[str, Any]) -> None:  # pragma: no cover - never connected
-            return None
-
-        subscriber = CommandSubscriber(
-            connect=_connect,
-            handler=_handler,
-            poll_interval_s=0.01,
-            sleep=_sleep,
-            backoff_base_s=_SCOUT_BASE_S,
-            max_backoff_s=_SCOUT_CAP_S,
-        )
-        await asyncio.wait_for(subscriber.run(), timeout=10)
-
-        assert failures == _FAILED_CONNECTS, f"premise: the ladder made {failures} connects"
-        assert len(slept) >= _FAILED_CONNECTS - 1, (
-            f"the connect ladder slept {len(slept)} backoffs for {_FAILED_CONNECTS} failed connects"
-        )
-        assert slept == drawn[: len(slept)] and len(drawn) - len(slept) in (0, 1), (
-            f"the connect ladder slept {slept} but the shared policy drew {drawn} — every slept backoff must "
-            f"be the fresh draw, unchanged (no equal jitter, no floor), with at most the stopping attempt's "
-            f"one draw unslept"
-        )
-        assert drawn_attempts[: len(slept)] == list(range(len(slept))), (
-            f"the ladder's attempt numbers {drawn_attempts} do not grow 0, 1, 2, … (a flat window)"
-        )
+# --- SDK3 contract round 7 (R18/R20; R26-5): round 6's MP-B sibling is RETIRED ---------------------------
+# ``TestTheSubscribersConnectLadderSleepsTheSharedDraw`` compared what scout's connect ladder SLEPT with what
+# ``jittered_backoff_delay`` DREW. Under R18 scout's ladder is ONE native tenacity loop on the factory
+# ``loresigil.backoff.full_jitter``: there is no draw left to compare against, only the sleep. am-37 row R7-4;
+# carried by ``test_sdk3_native_retry::TestTheOneWaitFactoryReachesEveryIn66Site::
+# test_the_reconnect_ladder_sleeps_the_factorys_wait`` (the ladder sleeps the factory's wait, unchanged) and
+# ``::TestTheSubscriberBacksOffBeforeEveryReconnect`` (growth per failed connect, backoff after a drop,
+# reset).

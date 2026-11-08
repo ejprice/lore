@@ -86,7 +86,6 @@ from _sdk_guard import SDK_CONNECTION_CLASSES
 from loremaster.index.records import Record, point_id, sha512_hex
 from pydantic import SecretStr
 from surrealdb import (
-    AsyncEmbeddedSurrealConnection,
     AsyncHttpSurrealConnection,
     AsyncSurreal,
     AsyncWsSurrealConnection,
@@ -95,9 +94,7 @@ from surrealdb import (
 # ``AsyncSurreal`` is a factory that returns one of these concrete connection
 # classes by URL scheme; this alias is exactly its return union so raw-SDK helpers
 # type-check under mypy-strict.
-SurrealConnection = (
-    AsyncEmbeddedSurrealConnection | AsyncHttpSurrealConnection | AsyncWsSurrealConnection
-)
+SurrealConnection = AsyncHttpSurrealConnection | AsyncWsSurrealConnection
 
 # --- env-driven topology (defaults are the P0-spike container) --------------
 _ENV_URL = "LORE_TEST_SURREAL_URL"

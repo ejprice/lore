@@ -92,7 +92,6 @@ from pathlib import Path
 from typing import Any
 
 from surrealdb import (
-    AsyncEmbeddedSurrealConnection,
     AsyncHttpSurrealConnection,
     AsyncWsSurrealConnection,
 )
@@ -104,7 +103,6 @@ from surrealdb import (
 SDK_CONNECTION_CLASSES = (
     AsyncWsSurrealConnection,
     AsyncHttpSurrealConnection,
-    AsyncEmbeddedSurrealConnection,
 )
 
 # THE SAFE SET — two methods, and the burden of proof sits on the ALLOWANCE, not the gate.
@@ -208,6 +206,29 @@ class GuardReport:
             "cleanliness, and a gate must never return a verdict it cannot substantiate "
             "(finding #136)."
         )
+
+
+def _is_door(function: Any) -> bool:
+    """F5 (reference build): a coroutine, or a method returning an awaitable / async-iterable / object
+    with a coroutine method (SDK 3.0's ``query``/CRUD builders and ``batch``)."""
+    import typing  # noqa: PLC0415
+
+    if inspect.iscoroutinefunction(function):
+        return True
+    try:
+        returned = typing.get_type_hints(function).get("return")
+    except Exception:  # noqa: BLE001
+        return True
+    origin = typing.get_origin(returned) or returned
+    if not isinstance(origin, type):
+        return False
+    if hasattr(origin, "__await__") or hasattr(origin, "__aiter__"):
+        return True
+    return any(
+        inspect.iscoroutinefunction(member)
+        for name, member in inspect.getmembers(origin, inspect.isfunction)
+        if not name.startswith("_")
+    )
 
 
 def _driver() -> Any:
@@ -444,7 +465,7 @@ def install(
             # rather than passing quietly. A control that cannot see its own instrument fail
             # is not a control.
             if not (
-                inspect.iscoroutinefunction(function)
+                _is_door(function)
                 or getattr(function, "_sdk_guarded", False)
             ):
                 continue

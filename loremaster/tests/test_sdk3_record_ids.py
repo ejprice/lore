@@ -274,12 +274,20 @@ class TestARegisteredAgentIsOwnedAndScopedByEngineIds:
     doc §F8). A build that re-parses a bracketed rendering links the agent to a principal that does not
     exist, and scopes it to a keep no governed read will ever match."""
 
+    # R26-3 discrimination rider (contract round 7): the shared factory is digit-led by DEFAULT, so this pin —
+    # the one served-path id pin that rode the default — gains a LETTER-LED leg beside it.
+    @pytest.mark.parametrize("key_shape", ["digit-led", "letter-led"])
     @pytest.mark.parametrize("rendering", ["angle", "backtick"])
     async def test_the_agent_links_its_principal_and_its_session_keeps_engine_text(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, rendering: str
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, rendering: str, key_shape: str
     ) -> None:
         session = f"sdk3-{rendering}"
-        async with credentialed_app_context(monkeypatch, tmp_path, principals={"alice": "member"}) as world:
+        async with credentialed_app_context(
+            monkeypatch,
+            tmp_path,
+            principals={"alice": "member"},
+            letter_led_principals=key_shape == "letter-led",
+        ) as world:
             ctx, admin = world["ctx"], world["admin_conn"]
             world["holder"]["email"] = world["emails"]["alice"]
             with _rendered(monkeypatch, rendering):
@@ -697,3 +705,50 @@ class TestTheAuditAppendServesTheEnginesText:
             f"[rendering {rendering}] append returned {created!r}; the engine names the row {engine_ids!r} "
             f"(C4: str(RecordID) served instead of the engine's text)"
         )
+
+
+class TestTheMigrationRefusalRenderersServeBareKeys:
+    """SDK3 contract round 7 — R26-4 (builder finding B-2): ONE store-free pin on the CHOKEPOINT renderers of
+    every governed-migration refusal — ``principals._id_sample`` ("the ONE bounded id render every
+    governed-migration refusal serves") and ``_owned_unscoped_part`` (its owner names). Fed RecordIDs with
+    a DIGIT-LED key and a NON-WORD key, the served text carries each id's BARE key and no ``⟨``, ``⟩`` or
+    backtick (SDK 3.0's ``str(RecordID)`` brackets both shapes; 3.0.1 re-brackets with backticks — R7 (d):
+    served text never comes from ``str(RecordID)``). a19's live refusal leg stays the end-to-end witness.
+
+    Stated bound (R26-4): a BARE key is honest only because each sentence NAMES its table ("N agent row(s)…",
+    "N other principal(s)…", "N message row(s)…"); a sentence that ever mixes tables must serve
+    ``record_text`` (``table:key``). RED at ``0d9b8c2`` on the non-word legs (HEAD serves
+    ``str(RecordID)``)."""
+
+    _DIGIT_LED = "01JC9R7Z5Q3V8M2N4P6R8T0W2Y"
+    _NON_WORD = "sdk3-non-word.key"
+
+    def _assert_bare(self, served: str, keys: tuple[str, ...]) -> None:
+        for key in keys:
+            assert key in served, f"the served refusal {served!r} does not carry the bare key {key!r}"
+        leaked = [mark for mark in ("⟨", "⟩", "`") if mark in served]
+        assert not leaked, (
+            f"the served refusal {served!r} carries {leaked}: an SDK str(RecordID) rendering (it changes "
+            f"between SDK patch releases, R7) where the bare key belongs"
+        )
+
+    def test_the_id_sample_serves_each_ids_bare_key(self) -> None:
+        from loremaster import principals  # noqa: PLC0415 - the renderer under test
+
+        ids = [RecordID("agent", self._DIGIT_LED), RecordID("agent", self._NON_WORD)]
+        self._assert_bare(principals._id_sample(ids), (self._DIGIT_LED, self._NON_WORD))
+
+    def test_the_owner_names_serve_each_principals_bare_key(self) -> None:
+        from loremaster.governed import MigratePreconditionCounts  # noqa: PLC0415
+
+        from loremaster import principals  # noqa: PLC0415 - the renderer under test
+
+        owners = (RecordID("principal", self._DIGIT_LED), RecordID("principal", self._NON_WORD))
+        owned_unscoped = tuple((RecordID("agent", f"a{index}"), owner) for index, owner in enumerate(owners))
+        counts = MigratePreconditionCounts(
+            owned_but_unscoped_agents=len(owned_unscoped),
+            distinct_owner_principals=len(owners),
+            owner_classification="foreign",
+        )
+        served = principals._owned_unscoped_part(owned_unscoped, None, counts)
+        self._assert_bare(served, (self._DIGIT_LED, self._NON_WORD))
