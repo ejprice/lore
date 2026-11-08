@@ -795,9 +795,10 @@ def required_datetime(value: object, *, table: str, row_id: object, column: str)
     ``datetime`` field would otherwise coerce an ISO string silently).
 
     The refusal is a SERVED surface (R17): it names the unreadable ROW (``record_text``, R7 (d)), the column
-    and what it held, and says it is a store-integrity fault — never a caller error. Scope, stated (R43): the
-    STORE's other rows are intact, but the RESPONSE that read this row (a listing, or a single-record read)
-    cannot be completed, so the text says both.
+    and what it held, and says it is a store-integrity fault — never a caller error. Scope, stated (R43,
+    lead-approved wording): the STORE's other rows are intact, but THIS CALL read the row and could not be
+    completed — one fact true of a listing and of a single-record read alike, since every row mapper that
+    calls this is shared by both shapes (32 sites, 12 modules) and the shape is unknown here.
     STATED BOUND (R36 note, corrected by R43 / audit-66 9a): the row id is the parts form ``table:key``. It
     equals the engine's ``<string> id`` for a word key that holds a letter (ULID, ``[a-z0-9]``, hex) and for
     composite arrays, but NOT for a non-word or all-digit key — ``memory``'s uuid5 ids and
@@ -821,7 +822,8 @@ def required_datetime(value: object, *, table: str, row_id: object, column: str)
     raise SurrealStoreError(
         f"{table} {record_text(row_id) if row_id is not None else '(id unknown)'} is unreadable: column "
         f"{column!r} holds {held}, a tz-aware datetime was required — a store-integrity fault; the store's "
-        f"other rows are intact; this listing could not be completed — report it with lore_findings"
+        f"other rows are intact, but this call reads that row and could not be completed — report it with "
+        f"lore_findings"
     )
 
 
