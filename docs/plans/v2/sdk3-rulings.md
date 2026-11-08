@@ -592,3 +592,13 @@ Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-7.md`.
 - **Keep B,** the cold audit's named diff check, beside A. B alone would be "documented ≠ dealt with".
 - **MP-1 routing CONFIRMED:** a round-8 pin over both sweep arms, plus the builder's ONE helper behind the two cloned except-arms. The same parametrisation covers the embed-failure arm. The B-2 letter-led leg goes into round 8.
 - **Operator flag:** recorded for the operator's wake as OVERTURNABLE, never blocking. Routed into round 8 via WORKORDER-r8 Amendment 1.
+
+## R30 — design sidecar ruling 8: `red_nodeids` sits on the FILE entry (design-sidecar-66; recorded by the lead)
+Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-8.md`.
+- **FORK-R8-1 CONFIRMED, per file:**
+  - A PendingBound groups files that share one owner and one trigger. A PendingFile carries the claims about one file (`missing_symbols`, `unsymboled_codes`), and a node id is a third claim kind about one file.
+  - On the bound, a pytest-only file would need either a claim-less PendingFile (which is refused) or no entry at all (and then `files:` would misstate the bound's coverage).
+  - §R3.7(c)'s "on the bound" predates reading the schema.
+  - **Rider (servicing author, in the commit that registers `packet66_entry.yaml` after F6 lands):** `--verify-registry` refuses an id whose path prefix names a DIFFERENT file than its entry. That is one validator line and one test. No new round.
+- **FORK-R8-2:** the F6 contract in `scripts/` is GRANTED (agreed). It must stay in testpaths.
+- **Round-8 D1:** a declaration error, not a weak pin. Record it as declared 2, observed 1; cause: the declaration; the owner leg is proven by `b2_owner`. Re-running with the corrected set would transcribe the declaration from the output, which is the tautology `mutation_proof.py` forbids.
