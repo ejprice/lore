@@ -776,6 +776,15 @@ class PendingContractRegistry(BaseModel):
                         "allowance nor a red node id — that degenerates to file-only matching, "
                         "which waves through a genuinely NEW defect in the file"
                     )
+                for node_id in entry.red_nodeids:
+                    # R30 rider: a listed id is a claim about ITS entry's file — the text before its first
+                    # ``::`` (a bare path is its own prefix) must be EXACTLY that path, or the id would be
+                    # adjudicated under, and self-destruct against, a file it does not belong to.
+                    if node_id.split("::", 1)[0] != entry.path:
+                        raise ValueError(
+                            f"red node id {node_id!r} is filed under the entry for {entry.path!r}, but its "
+                            "path prefix names another file — move it to that file's entry"
+                        )
         return value
 
     @classmethod
