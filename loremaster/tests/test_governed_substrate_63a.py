@@ -45,6 +45,7 @@ from _surreal_harness import (
 )
 from loremaster.store import surreal_schema
 from loremaster.store._txn import StoreHandle
+from sdk3_shape_fakes import bare_record_key
 
 import lorerunes as pdp
 from loremaster import governed
@@ -173,9 +174,9 @@ class TestResolveSubjectIsFailClosed:
                 "alice_worker",
                 session="s1",
                 role="worker",
-                owner_principal_id=_bare(alice.id),
+                owner_principal_id=bare_record_key(alice.id),
                 session_keep_id=await session_keep_id_for(
-                    keep_store, principal_store, owner_principal_id=_bare(alice.id), session="s1"
+                    keep_store, principal_store, owner_principal_id=bare_record_key(alice.id), session="s1"
                 ),  # r2 (A3): the owner travels WITH THE session keep
             )
             capability = getattr(result, "capability", None)
@@ -191,8 +192,8 @@ class TestResolveSubjectIsFailClosed:
             await registry.close()
         assert subject.role == pdp.PRINCIPAL_ROLE_MEMBER
         assert subject.agent_id == result.agent.id
-        assert subject.principal_id == _bare(alice.id)
-        assert pdp.keep_scope(_bare(keep.id)) in subject.visible_keep_ids, (
+        assert subject.principal_id == bare_record_key(alice.id)
+        assert pdp.keep_scope(bare_record_key(keep.id)) in subject.visible_keep_ids, (
             f"the subject must see alice's keep {keep.id} in visible_keep_ids, got {subject.visible_keep_ids}"
         )
 
@@ -560,13 +561,47 @@ def _sdk_attribute_call_sites(tree: ast.Module) -> list[str]:
         for name, function in inspect.getmembers(connection_class, inspect.isfunction)
         if not name.startswith("_") and name not in SAFE_CONNECTION_METHODS
     }
+    context_variables = _context_variable_names(tree)
     return [
         f"{node.func.attr}() at governed.py:{node.lineno}"
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr in sdk_methods
+        and not (isinstance(node.func.value, ast.Name) and node.func.value.id in context_variables)
     ]
+
+
+def _context_variable_names(tree: ast.Module) -> set[str]:
+    """Module-level names ``tree`` binds to a ``ContextVar(...)`` construction — receivers that are provably
+    NOT a connection.
+
+    Round 6 (R15, MP-C 3f): SDK 3.0's connection classes gained public ``set`` / ``reset`` coroutines, which
+    collide with ``contextvars.ContextVar.set()`` / ``.reset()`` in governed.py, so the name-keyed scan fired
+    on correct code. The scan is narrowed to SDK RECEIVERS by exempting exactly the receivers the module
+    itself binds to a ``ContextVar`` — the small, derivable safe set — never by dropping method names.
+    """
+    names: set[str] = set()
+    for node in tree.body:
+        value: ast.expr | None
+        targets: list[ast.expr]
+        if isinstance(node, ast.Assign):
+            value, targets = node.value, list(node.targets)
+        elif isinstance(node, ast.AnnAssign):
+            value, targets = node.value, [node.target]
+        else:
+            continue
+        if not isinstance(value, ast.Call):
+            continue
+        constructor = value.func
+        constructor_name = (
+            constructor.attr if isinstance(constructor, ast.Attribute)
+            else constructor.id if isinstance(constructor, ast.Name) else None
+        )
+        if constructor_name != "ContextVar":
+            continue
+        names.update(target.id for target in targets if isinstance(target, ast.Name))
+    return names
 
 
 class TestGovernedRoutesAllSdkThroughTheDriver:
@@ -622,6 +657,24 @@ class TestGovernedRoutesAllSdkThroughTheDriver:
             f"blind, so its clean verdict on governed.py is worth nothing. flagged={flagged!r}"
         )
 
+    def test_the_context_variable_exemption_reaches_ONLY_context_variables(self) -> None:
+        """Round 6 (R15, MP-C 3f) CONTROL for the receiver narrowing: an SDK method name called on a module
+        ``ContextVar`` is exempt; the SAME method name on any other receiver is still flagged — so the
+        narrowing cannot become a blanket exemption for a method name."""
+        source = ast.parse(
+            "import contextvars\n"
+            "_GUARD: contextvars.ContextVar[str | None] = contextvars.ContextVar('g', default=None)\n"
+            "async def leak(store):\n"
+            "    _GUARD.query_raw('not a connection')\n"
+            "    connection = await store.acquire()\n"
+            "    return await connection.query_raw('SELECT 1')\n"
+        )
+        flagged = _sdk_attribute_call_sites(source)
+        assert flagged == ["query_raw() at governed.py:6"], (
+            f"the ContextVar exemption must exempt exactly the ContextVar receiver (line 4) and still flag "
+            f"the connection receiver (line 6); flagged={flagged!r}"
+        )
+
 
 class TestAGovernedStoreExposesAHandleAccessor:
     """§10.6 rider (v) / DRY — every governed store exposes its driver triple through ONE accessor
@@ -662,10 +715,6 @@ def _one(rows: Any) -> Any:
 
 def _count(rows: Any) -> int:
     return rows[0]["count"] if rows else 0
-
-
-def _bare(record_id: str) -> str:
-    return record_id.partition(":")[2] or record_id
 
 
 def _subject_for(label: str) -> Any:

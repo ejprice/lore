@@ -88,6 +88,7 @@ from render_injection_scaffold import (
     RenderCase,
     assert_render_injection_safe,
 )
+from sdk3_shape_fakes import bare_record_key
 from test_comms_render_architecture import _SKEW_ACKER_TEACH, _SKEW_SURFACING_TEACH
 from test_render_seam_pins import assert_actions_covered
 
@@ -357,7 +358,7 @@ async def _credential_agent(
     principal = await principal_store.get_by_email(email)
     if principal is None:
         principal = await principal_store.create(email=email, role="member")
-    bare = principal.id.split(":", 1)[-1]
+    bare = bare_record_key(principal.id)
     result = await harness.agent_registry.register(
         name,
         session=session,

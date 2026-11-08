@@ -50,8 +50,9 @@ from _surreal_harness import run
 from loremaster.agents import AgentRegistry, AgentRegistryError
 from loremaster.sanitise import CONTROL_CHAR_PATTERN
 from lorerunes.pdp import keep_scope
+from sdk3_shape_fakes import bare_record_key
 from surrealdb import RecordID
-from test_fixwave_a19_63c_i_a import _bare, _redirect_the_shared_preconditions, _snapshot
+from test_fixwave_a19_63c_i_a import _redirect_the_shared_preconditions, _snapshot
 
 from loremaster import principals
 
@@ -114,7 +115,7 @@ async def test_KP1_a_keep_won_by_a_concurrent_mint_is_never_compensated(
         scopes = await run(
             admin_conn, f"SELECT VALUE scope FROM agent WHERE session = '{session}' AND name = 'raced-agent'"
         )
-        assert scopes == [keep_scope(_bare(keeps[0]))], (
+        assert scopes == [keep_scope(bare_record_key(keeps[0]))], (
             f"the winner's scope must resolve to the LIVE session keep: scopes={scopes!r} keeps={keeps!r}"
         )
 

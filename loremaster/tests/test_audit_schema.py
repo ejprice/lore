@@ -71,6 +71,7 @@ from loremaster.store.surreal_schema import (
     generate_audit_ddl,
     generate_ddl,
 )
+from sdk3_shape_fakes import same_record
 
 _DEFINE_TABLE = re.compile(r"^\s*DEFINE\s+TABLE\b", re.IGNORECASE)
 _DEFINE_FIELD = re.compile(r"^\s*DEFINE\s+FIELD\b", re.IGNORECASE)
@@ -694,8 +695,8 @@ class TestTheAuditRowRoundTrip:
         )
         row = await _read_audit_row(connection, "aw1")
         assert row["action"] == "WRITE"
-        assert str(row["actor_principal"]).endswith(_ACTOR_PRINCIPAL)
-        assert str(row["actor_agent"]).endswith(_ACTOR_AGENT)
+        assert same_record(row["actor_principal"], _ACTOR_PRINCIPAL)
+        assert same_record(row["actor_agent"], _ACTOR_AGENT)
         assert row["actor_email"] == _ACTOR_EMAIL, "the denormalized actor_email did not round-trip"
         assert row["actor_agent_name"] == _ACTOR_AGENT_NAME, (
             "the denormalized actor_agent_name did not round-trip"

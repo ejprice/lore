@@ -29,17 +29,13 @@ from _surreal_harness import connect_admin, drop_database, make_env, run, unique
 from loremaster.agents import AgentRegistry
 from loremaster.messages import MessageLedger
 from loremaster.store import surreal_schema
+from sdk3_shape_fakes import bare_record_key
 from surrealdb import RecordID
 
 _AGENT_TABLE = "agent"
 _MESSAGE_TABLE = surreal_schema.MESSAGE_TABLE
 _TO_RELATION = surreal_schema.TO_RELATION
 _DIM = 8
-
-
-def _bare(value: Any) -> str:
-    text = str(getattr(value, "id", value))
-    return text.split(":", 1)[-1] if ":" in text else text
 
 
 async def _relate_edge(connection: Any, *, message_id: str, agent_bare: str) -> None:
@@ -77,7 +73,7 @@ async def read_gov_world() -> Any:
         await run(connection, surreal_schema.generate_message_ddl())
         mine = await principal_store.create(email="mine@example.com", role="member")
         foreign = await principal_store.create(email="foreign@example.com", role="member")
-        my_pid, foreign_pid = _bare(mine.id), _bare(foreign.id)
+        my_pid, foreign_pid = bare_record_key(mine.id), bare_record_key(foreign.id)
         recipient = (
             await registry.register(
                 "recip",
@@ -89,7 +85,7 @@ async def read_gov_world() -> Any:
                 ),  # r2 (A3): the owner travels WITH THE session keep
             )
         ).agent
-        recipient_bare = _bare(recipient.id)
+        recipient_bare = bare_record_key(recipient.id)
         # a VISIBLE message (server scope — any member sees it) addressed to me.
         visible_seq = 0
         visible_id = await seed_message_legacy(
@@ -334,7 +330,7 @@ class TestADrainServesOnlyTheVisibleMessage:
                 {"seq": invisible_seq},
             )
         )
-        foreign_pid = _bare(owner_row["owner_principal"])
+        foreign_pid = bare_record_key(owner_row["owner_principal"])
         foreign_subject = member(foreign_pid, recipient_bare, frozenset())
         result = await self._drain(ledger, recipient_bare, foreign_subject)
         served = {entry.seq for entry in result.entries}

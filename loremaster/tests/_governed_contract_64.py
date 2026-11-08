@@ -51,6 +51,7 @@ from _governed_contract import (
     register_owned,
 )
 from _surreal_harness import SurrealConnection, run
+from sdk3_shape_fakes import bare_record_key
 
 # --------------------------------------------------------------------------- #
 # Constants — the finding table and the 64b write/read verb partition.
@@ -290,11 +291,9 @@ async def finding_row(connection: SurrealConnection, row_id: str) -> dict[str, A
     return dict(rows[0])
 
 
-def bare(value: Any) -> str:
-    """The bare id of a ``table:id`` string / RecordID (store-ref §7: decode via ``str(record.id)``)."""
-    record_part = getattr(value, "id", value)
-    text = str(record_part)
-    return text.split(":", 1)[-1] if ":" in text else text
+#: SDK3 round 6 (R15, MP-C 3c): the bare id — the ONE shared helper, kept under this module's public name
+#: because packet-64b suites import it (``from _governed_contract_64 import bare``).
+bare = bare_record_key
 
 
 # --------------------------------------------------------------------------- #

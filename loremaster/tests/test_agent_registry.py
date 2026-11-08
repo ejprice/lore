@@ -125,6 +125,7 @@ from loremaster.store._txn import SurrealConnectionError, SurrealStoreError, _Su
 from loremaster.store.surreal_schema import AGENT_TABLE
 from pydantic import SecretStr
 from render_injection_scaffold import _ROW_FORGE_PAYLOAD
+from sdk3_shape_fakes import bare_record_key, same_record
 from surrealdb.errors import ErrorKind, ServerError
 from test_comms_schema import _HOSTILE_IDENTIFIERS, _LEGAL_IDENTIFIER_WITNESSES
 
@@ -2221,7 +2222,7 @@ class TestTheFakeRegistryMirrorsTheWriter63cIA:
                 written = await harness._agent_row_count(admin_connection)  # noqa: SLF001
                 assert written == 0, f"REAL: a refused register wrote {written} row(s)"
                 return ("refused",)
-            bare_id = str(result.agent.id).split(":", 1)[-1]
+            bare_id = bare_record_key(result.agent.id)
             stamped = await run(
                 admin_connection,
                 f"SELECT owner_principal, owner_agent, scope FROM type::record('{AGENT_TABLE}', $id)",
@@ -2232,8 +2233,8 @@ class TestTheFakeRegistryMirrorsTheWriter63cIA:
             owner_agent = row.get("owner_agent")
             return (
                 "registered",
-                str(owner).split(":", 1)[-1] if owner is not None else None,
-                owner_agent is not None and str(owner_agent) == f"{AGENT_TABLE}:{bare_id}",
+                bare_record_key(owner) if owner is not None else None,
+                owner_agent is not None and same_record(owner_agent, f"{AGENT_TABLE}:{bare_id}"),
                 row.get("scope"),
             )
         finally:
@@ -2253,7 +2254,7 @@ class TestTheFakeRegistryMirrorsTheWriter63cIA:
         except AgentRegistryError:
             assert fake.db.agents == {}, f"FAKE: a refused register stored a row: {fake.db.agents!r}"
             return ("refused",)
-        agent_id = str(result.agent.id).split(":", 1)[-1]
+        agent_id = bare_record_key(result.agent.id)
         return (
             "registered",
             fake.db.owners.get(agent_id),
@@ -2354,7 +2355,7 @@ class TestTheFakeRegistryMirrorsTheWriter63cIA:
             except AgentRegistryError:
                 second_outcome = "refused"
             assert await harness._agent_row_count(admin_connection) == 1, "REAL: a re-register minted a row"  # noqa: SLF001
-            bare_id = str(created.agent.id).split(":", 1)[-1]
+            bare_id = bare_record_key(created.agent.id)
             row = (
                 await run(
                     admin_connection,
@@ -2365,8 +2366,8 @@ class TestTheFakeRegistryMirrorsTheWriter63cIA:
             owner, owner_agent = row.get("owner_principal"), row.get("owner_agent")
             return (
                 second_outcome,
-                str(owner).split(":", 1)[-1] if owner is not None else None,
-                owner_agent is not None and str(owner_agent) == f"{AGENT_TABLE}:{bare_id}",
+                bare_record_key(owner) if owner is not None else None,
+                owner_agent is not None and same_record(owner_agent, f"{AGENT_TABLE}:{bare_id}"),
                 row.get("scope"),
             )
         finally:
@@ -2392,7 +2393,7 @@ class TestTheFakeRegistryMirrorsTheWriter63cIA:
         except AgentRegistryError:
             second_outcome = "refused"
         assert len(fake.db.agents) == 1, "FAKE: a re-register minted a row"
-        agent_id = str(created.agent.id).split(":", 1)[-1]
+        agent_id = bare_record_key(created.agent.id)
         return (
             second_outcome,
             fake.db.owners.get(agent_id),

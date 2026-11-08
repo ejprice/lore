@@ -53,6 +53,7 @@ from _surreal_harness import drop_database as drop_surreal_database
 from _surreal_harness import make_env, surreal_password, surreal_user, unique_database
 from loremaster.memory import local as local_mod
 from loremaster.server import _COMMS_ACTIONS, AppContext
+from sdk3_shape_fakes import bare_record_key, same_record
 
 import lorerunes as pdp
 from loremaster import governed
@@ -242,11 +243,6 @@ async def _surreal_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password().get_secret_value())
 
 
-def _bare(value: Any) -> str:
-    text = str(getattr(value, "id", value))
-    return text.split(":", 1)[-1] if ":" in text else text
-
-
 async def _message_count(ctx: AppContext, session: str) -> int:
     """The number of ``message`` rows in ``session`` — the zero-rows / anti-vacuity instrument (R2)."""
     rows = await ctx.agent_registry._query(  # noqa: SLF001 - test-only count of the message rows
@@ -269,6 +265,7 @@ async def cred(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncIterator
         tmp_path,
         principals={"alice": "member", "bob": "member", "carol": "admin"},
         dim=_DIM,
+        digit_led_principals=True,  # R15 / MP-C 3c: a principal-id compare is deterministic on SDK 3
     ) as world:
         yield {
             "ctx": world["ctx"],
@@ -458,7 +455,7 @@ class TestSendResolvesTheSessionKeepScope:
         rows = await ctx.agent_registry._query(  # noqa: SLF001 - test-only read of the message row
             "SELECT scope FROM message WHERE session = $s", {"s": "s2"}
         )
-        assert rows and rows[0]["scope"] == pdp.keep_scope(str(keep.id).split(":", 1)[-1]), (
+        assert rows and rows[0]["scope"] == pdp.keep_scope(bare_record_key(keep.id)), (
             f"the sent message's scope must be the session keep's scope (§4.A via resolve_write_scope), "
             f"got {rows[0]['scope'] if rows else '<no message row>'!r}"
         )
@@ -491,16 +488,16 @@ class TestSendResolvesTheSessionKeepScope:
         )
         assert rows, "the credentialed send created no message row"
         row = rows[0]
-        assert str(row["owner_principal"]) == f"principal:{cred['pids']['bob']}", (
+        assert same_record(row["owner_principal"], f"principal:{cred['pids']['bob']}"), (
             f"the send owner_principal must be the SENDER B's principal (§2.3 subject.principal_id), NOT "
             f"the keeper A (Reading A / WB-2), NOT None. got {row['owner_principal']!r}; "
             f"bob=principal:{cred['pids']['bob']} alice(keeper)=principal:{cred['pids']['alice']}"
         )
-        assert str(row["owner_principal"]) != f"principal:{cred['pids']['alice']}", (
+        assert not same_record(row["owner_principal"], f"principal:{cred['pids']['alice']}"), (
             "the send owner_principal is the KEEPER A (Reading A) — the ownership forgery R1 exists to "
             "catch: B's send owned by A the moment A householded B (§2.2 / WB-2)"
         )
-        assert str(row["owner_agent"]) == f"agent:{bob_agent}", (
+        assert same_record(row["owner_agent"], f"agent:{bob_agent}"), (
             f"the send owner_agent must be the SENDER B's agent, got {row['owner_agent']!r}"
         )
         assert str(row["owner_agent"]) == str(row["sender"]), (
@@ -650,7 +647,7 @@ class TestThePrincipalResolutionIsSharedByMutation:
         ks = _ks(ctx)
         # A DISTINCT admitted principal P* the SHARED seam will return for EVERY token.
         p_star = await _ps(ctx).create(email="pstar@example.com", role="member")
-        p_star_pid = _bare(p_star.id)
+        p_star_pid = bare_record_key(p_star.id)
         cred["holder"]["email"] = cred["emails"]["alice"]
         alice_cap, _alice_agent = await register_owned(
             ctx, "alice_w1", owner_principal_id=cred["pids"]["alice"], session="s1"

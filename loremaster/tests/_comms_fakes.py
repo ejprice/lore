@@ -108,6 +108,7 @@ from loremaster.briefs import (
     UnknownBriefVersionError,
 )
 from lorerunes.pdp import keep_scope
+from sdk3_shape_fakes import bare_record_key
 
 from lorerunes import is_blank, is_legal_identifier
 
@@ -1067,7 +1068,7 @@ class FakePrincipalStore:
         await asyncio.sleep(0)
         principal = _FakePrincipal(id=self._principal_id(email), email=email, role=role)
         self._by_email[email] = principal
-        self._by_id[principal.id.split(":", 1)[-1]] = principal
+        self._by_id[bare_record_key(principal.id)] = principal
         return principal
 
     async def get_by_email(self, email: str) -> _FakePrincipal | None:
@@ -1128,12 +1129,12 @@ class FakeKeepStore:
             from loremaster.keeps import KeepStoreError
 
             raise KeepStoreError(f"no principal carries keeper_email {keeper_email!r}")
-        keeper_bare = keeper.id.split(":", 1)[-1]
+        keeper_bare = bare_record_key(keeper.id)
         keep = _FakeKeep(id=self._keep_id(key), key=key, type=type, keeper_id=keeper_bare)
         self._by_key[key] = keep
-        self._by_id[keep.id.split(":", 1)[-1]] = keep
+        self._by_id[bare_record_key(keep.id)] = keep
         # SF-63-4 — the keeper is auto-householded on mint (60 Fork D).
-        self._household[keep.id.split(":", 1)[-1]] = {keeper_email}
+        self._household[bare_record_key(keep.id)] = {keeper_email}
         return keep
 
     async def list_keeps_for_member(self, *, member_email: str) -> list[str]:
@@ -1146,11 +1147,11 @@ class FakeKeepStore:
 
     async def add_household_member(self, *, keep_id: Any, member_email: str) -> None:
         await asyncio.sleep(0)
-        keep_bare = str(keep_id).split(":", 1)[-1]
+        keep_bare = bare_record_key(keep_id)
         self._household.setdefault(keep_bare, set()).add(member_email)
 
     async def remove_household_member(self, *, keep_id: Any, member_email: str) -> None:
         await asyncio.sleep(0)
-        keep_bare = str(keep_id).split(":", 1)[-1]
+        keep_bare = bare_record_key(keep_id)
         self._household.get(keep_bare, set()).discard(member_email)
 

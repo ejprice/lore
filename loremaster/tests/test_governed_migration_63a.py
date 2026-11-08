@@ -44,6 +44,7 @@ from _governed_contract import (
 )
 from _surreal_harness import connect_admin, drop_database, make_env, run, unique_database
 from loremaster.store import surreal_schema
+from sdk3_shape_fakes import bare_record_key
 
 import lorerunes as pdp
 from loremaster import governed, principals
@@ -182,7 +183,7 @@ class TestMigrateGovernedBackfillsAndIsIdempotent:
             connection, f"SELECT id FROM {surreal_schema.KEEP_TABLE} WHERE key = $k", {"k": "project:lore"}
         )
         assert keyed, "migrate must MINT the canonical project keep with key='project:lore' (§2.2, SF-63-4)"
-        assert scope == f"keep:{_bare(str(keyed[0]['id']))}", (
+        assert scope == f"keep:{bare_record_key(keyed[0]['id'])}", (
             f"the backfilled scope must name the canonical project keep, got {scope!r} vs {keyed[0]['id']!r}"
         )
 
@@ -209,7 +210,7 @@ class TestMigrateGovernedBackfillsAndIsIdempotent:
             connection, f"SELECT id FROM {surreal_schema.KEEP_TABLE} WHERE key = $k", {"k": "project:lore"}
         )
         assert keyed, "the project keep was not minted"
-        project_scope = pdp.keep_scope(_bare(str(keyed[0]["id"])))
+        project_scope = pdp.keep_scope(bare_record_key(keyed[0]["id"]))
         household_member = member("alice", "ag_a1", frozenset({project_scope}))
         visible = await read_filter_ids(connection, household_member, _memory_case())
         assert "legacy" in visible, (
@@ -338,10 +339,6 @@ class TestTheMigrateGovernedCliVerbExists:
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
-
-
-def _bare(record_id: str) -> str:
-    return record_id.partition(":")[2] or record_id
 
 
 def _memory_case() -> Any:

@@ -94,9 +94,9 @@ def _offline_store(monkeypatch: pytest.MonkeyPatch) -> tuple[SurrealStore, dict[
     return store, captured
 
 
-def _batched_chunk_fragment(store: SurrealStore, rows: int) -> TxnFragment:
-    """The PRODUCTION chunk-replace fragment for ``rows`` records: few statements, ``rows`` rows."""
-    records = [
+def _chunk_records(rows: int) -> list[tuple[Record, list[float]]]:
+    """``rows`` distinct ``(Record, vector)`` pairs for one path (never sent unless a pin sends them)."""
+    return [
         (
             Record(
                 point_id=str(uuid.uuid4()),
@@ -112,7 +112,11 @@ def _batched_chunk_fragment(store: SurrealStore, rows: int) -> TxnFragment:
         )
         for index in range(rows)
     ]
-    fragment: TxnFragment = store.replace_file_fragment(_TIER, _PATH, records)
+
+
+def _batched_chunk_fragment(store: SurrealStore, rows: int) -> TxnFragment:
+    """The PRODUCTION chunk-replace fragment for ``rows`` records: few statements, ``rows`` rows."""
+    fragment: TxnFragment = store.replace_file_fragment(_TIER, _PATH, _chunk_records(rows))
     return fragment
 
 
@@ -191,6 +195,51 @@ class TestTheRowCapIsTheOneBound:
         with pytest.raises(SurrealStoreError):
             await store.apply([over])
         assert captured == {}, "an over-cap transaction reached the transport"
+
+
+class TestAnUpsertBatchRidesTheRowCap:
+    """R13 RS7 rider (SDK3 round 6; R15): ``SurrealStore.upsert`` is KEPT and routed through ``compose``, so
+    an upsert batch sits under the ONE strain bound like every other write. Pinned at a SHRUNK cap (F19/F21):
+    an over-cap batch is refused before ANY statement reaches the transport — through either door
+    (``execute_transaction`` or the single-statement ``_query``). Control: an under-cap batch is sent, so the
+    pin can see a send and does not pass on a build that silently drops every upsert."""
+
+    @staticmethod
+    def _offline_upsert_store(
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> tuple[SurrealStore, dict[str, Any], list[str]]:
+        store, captured = _offline_store(monkeypatch)
+        sent: list[str] = []
+
+        async def _no_query(
+            statement: str, params: dict[str, Any] | None = None, **_kwargs: Any
+        ) -> Any:
+            sent.append(statement)
+            return []
+
+        monkeypatch.setattr(store, "_query", _no_query)
+        return store, captured, sent
+
+    async def test_an_upsert_batch_over_the_row_cap_is_refused_before_anything_is_sent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _required("TXN_ROW_HARD_CAP")
+        store, captured, sent = self._offline_upsert_store(monkeypatch)
+        monkeypatch.setattr(_txn, "TXN_ROW_HARD_CAP", _SHRUNK_ROW_CAP)
+        with pytest.raises(SurrealStoreError):
+            await store.upsert(_chunk_records(_ROWS_OVER_SHRUNK_CAP))
+        assert captured == {} and sent == [], (
+            f"an upsert batch of {_ROWS_OVER_SHRUNK_CAP} rows over a {_SHRUNK_ROW_CAP}-row cap reached the "
+            f"transport ({len(sent)} single statements, transaction sent: {bool(captured)}) — R13 RS7: "
+            f"upsert rides compose, so the row cap bounds it"
+        )
+
+    async def test_control_an_upsert_batch_under_the_row_cap_is_sent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store, captured, sent = self._offline_upsert_store(monkeypatch)
+        await store.upsert(_chunk_records(_ROWS_UNDER_SHRUNK_CAP))  # under any cap (production or shrunk)
+        assert captured or sent, "control: an under-cap upsert batch must reach the transport"
 
 
 def _store_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:

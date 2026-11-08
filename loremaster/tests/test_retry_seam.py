@@ -542,7 +542,7 @@ class _ConflictingConnection:
             raise QueryError(
                 ErrorKind.QUERY, self.conflict_text, details={"kind": self.conflict_kind}
             )
-        return self.rows
+        return one_statement_answer(self.rows)  # R12 F-a / round 6 MP-C (3a): per SDK version
 
     async def query_raw(self, statement: str, params: dict[str, Any]) -> dict[str, Any]:
         if self._still_conflicting():
@@ -627,10 +627,14 @@ class _JitterRecorder:
 
     real: Callable[[int], float]
     draws: list[int] = field(default_factory=list)
+    #: The VALUE each draw returned, in order (SDK3 round 6, MP-B): what the driver must then SLEEP.
+    values: list[float] = field(default_factory=list)
 
     def draw(self, attempt_number: int) -> float:
         self.draws.append(attempt_number)
-        return self.real(attempt_number)
+        value = self.real(attempt_number)
+        self.values.append(value)
+        return value
 
 
 def _record_shared_jitter(monkeypatch: pytest.MonkeyPatch) -> _JitterRecorder:
@@ -1095,7 +1099,7 @@ class TestRetryOnConflictDriver:
         existing sequential + concurrent backoff families in test_surreal_store.py, and
         those must stay green.
         """
-        _silence_sleep(monkeypatch)
+        sleeper = _silence_sleep(monkeypatch)
         recorder = _record_shared_jitter(monkeypatch)
 
         async def _attempt() -> None:
@@ -1107,6 +1111,15 @@ class TestRetryOnConflictDriver:
         assert recorder.draws == list(range(1, _TXN_CONFLICT_ATTEMPT_CEILING)), (
             f"expected one FRESH draw after every failed attempt but the last "
             f"(1-based, growing): got {recorder.draws[:8]}..."
+        )
+        # SDK3 round 6, MP-B (R10/R11 rider "keep a full-jitter wait"; R15): consulting the shared source is
+        # not enough — what is SLEPT must BE the draw. A driver that draws and then sleeps something else
+        # (``window/2 + drawn/2`` — equal jitter, one token away in tenacity: ``wait=... + wait_fixed(x)``)
+        # satisfied the draw-count pin above with 0 new reds.
+        assert sleeper.durations == recorder.values, (
+            f"the driver slept {sleeper.durations[:6]}... but the shared full-jitter source drew "
+            f"{recorder.values[:6]}... — every backoff slept must be exactly the fresh draw (no equal "
+            f"jitter, no added floor, no extra or missing sleep)"
         )
 
 
@@ -2931,9 +2944,9 @@ class _ScoutFakeConnection:
             # the SUBSCRIPTION that is unavailable, so the poll backstop carries the load.
             # Mirrors test_scout.py's own `die_on_subscribe` fake — get this wrong and the
             # subscriber reconnects forever without ever polling, and the pin is vacuous.
-            return "live-uuid-1"
+            return one_statement_answer("live-uuid-1")
         if upper.startswith("SELECT"):
-            return list(self.pending.values())
+            return one_statement_answer(list(self.pending.values()))
         if upper.startswith("UPDATE"):
             if self.cas_error is not None:
                 raise self.cas_error()
@@ -2941,8 +2954,8 @@ class _ScoutFakeConnection:
             for key in list(self.pending):
                 if key in blob:
                     self.pending.pop(key, None)
-            return []
-        return []
+            return one_statement_answer([])
+        return one_statement_answer([])
 
     async def subscribe_live(self, live_uuid: Any) -> Any:
         raise ConnectionResetError("live subscription unavailable — poll must carry it")
@@ -3223,7 +3236,7 @@ class _AllMethodsConflictConnection:
     async def query(self, statement: str, params: dict[str, Any] | None = None) -> Any:
         if self._tick("query"):
             raise _conflict_error()
-        return []
+        return one_statement_answer([])
 
     async def kill(self, live_uuid: Any) -> None:
         if self._tick("kill"):
@@ -3281,7 +3294,9 @@ class TestEverySdkCallSiteActuallyRetries:
         """
         _silence_sleep(monkeypatch)
         connection = _AllMethodsConflictConnection(conflicts=3)
-        monkeypatch.setattr(surreal_module, "AsyncSurreal", lambda url: connection)
+        assert route_connections(  # C2 reach (round 6 MP-C 3b)
+            monkeypatch, lambda url, **_options: connection, modules=(surreal_module.__name__,)
+        )
         store = _construct(SurrealStore)
 
         await store._ensure_connection()
@@ -4181,17 +4196,19 @@ class _AckConnection:
                 raise AssertionError("unbounded retry on the ack RELATE")
             raise self.relate_error
         if statement.startswith(f"SELECT * FROM {BRIEF_TABLE} "):
-            return [
+            return one_statement_answer([
                 {
                     "id": RecordID(BRIEF_TABLE, _ACK_BRIEF_ID),
                     "name": _WAVE_NAME,
                     "version": _ACK_VERSION,
                 }
-            ]
+            ])
         if statement.startswith(f"SELECT * FROM {BRIEFED_RELATION} "):
             if self.existing_edge_via is None:
-                return []
-            return [{"via": self.existing_edge_via, "in": RecordID(AGENT_TABLE, _ACK_AGENT_ID)}]
+                return one_statement_answer([])
+            return one_statement_answer(
+                [{"via": self.existing_edge_via, "in": RecordID(AGENT_TABLE, _ACK_AGENT_ID)}]
+            )
         # ⚠ ORDER MATTERS and is not decoration: ``_select_briefed_edge``'s SELECT also
         # binds an ``agent`` RecordID, so its own branch above must be tried FIRST. A
         # reordering is caught — ``test_a_UNIQUE_violation_still_reports_the_honest_
@@ -4202,11 +4219,11 @@ class _AckConnection:
             # RecordID is silently DROPPED by the engine, so the caller derives the
             # missing set as requested − returned; this returns only what EXISTS.
             self.agent_existence_reads += 1
-            return [
+            return one_statement_answer([
                 {"id": RecordID(AGENT_TABLE, agent_id)}
                 for agent_id in requested_agent_ids
                 if agent_id in self.registered_agent_ids
-            ]
+            ])
         raise AssertionError(
             f"the ack path issued a statement this fake does not serve: {statement!r}"
         )
@@ -4655,7 +4672,7 @@ class _BootstrapCleanThenConflictingConnection:
     async def query(self, statement: str, params: dict[str, Any] | None = None) -> Any:
         if statement.upper().lstrip().startswith("DEFINE "):
             self.bootstrap_calls += 1
-            return []
+            return one_statement_answer([])
         self.operation_calls += 1
         if self.operation_calls > _ABSURD_ATTEMPT_CEILING:
             raise AssertionError("unbounded retry")
@@ -4694,7 +4711,7 @@ class _BootstrapScriptedConnection:
 
     async def query(self, statement: str, params: dict[str, Any] | None = None) -> Any:
         self._tick()
-        return []
+        return one_statement_answer([])
 
     async def close(self) -> None:
         return None
@@ -5220,6 +5237,14 @@ _TEST_TREE_BOOTSTRAP_ALLOWANCES: dict[str, tuple[int, str]] = {
         "bootstrap to `_txn.bootstrap_session`, which is exactly why it is invisible to "
         "this scan. Both halves are the #150 fix; this row is the standing receipt that "
         "they stayed fixed.",
+    ),
+    "test_sdk3_outcome_reach.py": (
+        1,
+        "SDK3 round 6: R12 F-b's `anonymous_connection` fixture must stay UN-AUTHENTICATED so the "
+        "server ANSWERS every write with NotAllowedError; `bootstrap_session` signs in, so the "
+        "fixture selects its namespace+database itself. A deliberately unsigned test session, "
+        "not a hand-rolled copy of the production bootstrap (round 5 shipped it without this row, "
+        "and this gate went red at HEAD and on the reference alike).",
     ),
 }
 
@@ -5926,7 +5951,9 @@ class TestOneBootstrapImplementationAndOneQueryImplementation:
         merely delegates to it. The AST pin above sees it; this drives it.
         """
         connection = _BootstrapCleanThenConflictingConnection()
-        monkeypatch.setattr(scout_module, "AsyncSurreal", lambda url: connection)
+        assert route_connections(  # C2 reach (round 6 MP-C 3b)
+            monkeypatch, lambda url, **_options: connection, modules=(scout_module.__name__,)
+        )
         helper = getattr(scout_module, "bootstrap_session", None)
         assert helper is not None, (
             "scout.py does not hold the shared session bootstrap — it carries the eleventh "
@@ -6634,16 +6661,16 @@ class _BootstrapFailsThenHealthy:
             self._fail()
         upper = statement.strip().upper()
         if upper.startswith("LIVE SELECT"):
-            return "live-uuid-1"
+            return one_statement_answer("live-uuid-1")
         if upper.startswith("SELECT"):
-            return list(self.pending.values())
+            return one_statement_answer(list(self.pending.values()))
         if upper.startswith("UPDATE"):
             blob = statement + repr(params or {})
             for key in list(self.pending):
                 if key in blob:
                     self.pending.pop(key, None)
-            return []
-        return []
+            return one_statement_answer([])
+        return one_statement_answer([])
 
     async def subscribe_live(self, live_uuid: Any) -> Any:
         raise ConnectionResetError("live unavailable — the poll backstop carries it")
@@ -6683,7 +6710,11 @@ class TestScoutsConnectFailureReachesTheReconnectLadder:
         )
         healthy.healthy = True
         handed: list[Any] = [dead, healthy]
-        monkeypatch.setattr(scout_module, "AsyncSurreal", lambda url: handed.pop(0) if handed else healthy)
+        assert route_connections(  # C2 reach (round 6 MP-C 3b)
+            monkeypatch,
+            lambda url, **_options: handed.pop(0) if handed else healthy,
+            modules=(scout_module.__name__,),
+        )
 
         dispatched: list[str] = []
 
@@ -6784,14 +6815,32 @@ _RACE_CALLERS = 8
 _RACE_SIGNIN_DELAY_SECONDS = 0.02
 
 
-def _discover_socket_owners() -> list[tuple[str, str]]:
-    """Every class whose ``_ensure_connection`` CONSTRUCTS its own SDK socket.
+@dataclass
+class _SlowSigninConnection:
+    """A healthy connection whose ``signin`` is slow — the race window, widened on purpose."""
 
-    The property, read from the AST — not a list anyone maintains. A class that receives its
-    connection (scout's subscriber) is not in this population and needs no connect lock;
-    a class that opens one lazily is, and does.
+    signin_delay: float = _RACE_SIGNIN_DELAY_SECONDS
+
+    async def signin(self, credentials: dict[str, Any]) -> None:
+        await _REAL_ASYNCIO_SLEEP(self.signin_delay)
+
+    async def use(self, namespace: str, database: str) -> None:
+        return None
+
+    async def query(self, statement: str, params: dict[str, Any] | None = None) -> Any:
+        return one_statement_answer([])
+
+    async def close(self) -> None:
+        return None
+
+
+def _connection_owner_candidates() -> list[tuple[str, str]]:
+    """Every class in the package owning an ``async def _ensure_connection`` — ``(module, class)``.
+
+    The CANDIDATE set, read structurally the same way :func:`_discover_query_seams` reads ``_query``.
+    Which candidates actually OPEN a socket is decided by driving them (:func:`_discover_socket_owners`).
     """
-    owners: list[tuple[str, str]] = []
+    names: list[tuple[str, str]] = []
     for path in sorted(_PACKAGE_ROOT.rglob("*.py")):
         if "__pycache__" in path.parts:
             continue
@@ -6800,23 +6849,63 @@ def _discover_socket_owners() -> list[tuple[str, str]]:
                 "/", "."
             )
         )
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.ClassDef):
-                continue
-            for item in node.body:
-                if not (
-                    isinstance(item, ast.AsyncFunctionDef) and item.name == "_ensure_connection"
-                ):
-                    continue
-                if any(
-                    isinstance(call, ast.Call)
-                    and isinstance(call.func, ast.Name)
-                    and call.func.id == "AsyncSurreal"
-                    for call in ast.walk(item)
-                ):
-                    owners.append((module_path, node.name))
-    return owners
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ClassDef) and any(
+                isinstance(item, ast.AsyncFunctionDef) and item.name == "_ensure_connection"
+                for item in node.body
+            ):
+                names.append((module_path, node.name))
+    return names
+
+
+def _opens_its_own_socket(module_path: str, class_name: str) -> bool:
+    """DRIVE ``class_name._ensure_connection`` once with every connection constructor routed to a counting
+    factory (``route_connections``, C2) and report whether it constructed a connection.
+
+    Round 6 (R15, MP-C 3f): this REPLACES the retired spelling scan that looked for an ``AsyncSurreal(...)``
+    call inside the method's AST — R5 F2b moved every owner onto the shared factory, so that scan found 0
+    owners on a correct SDK-3 build and left the race pin below parametrised over NOTHING. Driving the method
+    holds whichever constructor an owner uses. A class that RECEIVES its connection (scout's subscriber, via
+    an injected ``connect``) constructs nothing here and is correctly out of the population; a class that
+    cannot even be constructed from :data:`_CTOR_VALUES` is out too, and the floor pin below counts what is
+    left, so a population collapse stays loud.
+    """
+    opened = 0
+
+    def _factory(url: str, **_options: Any) -> Any:
+        nonlocal opened
+        opened += 1
+        return _SlowSigninConnection(signin_delay=0.0)
+
+    patch = pytest.MonkeyPatch()
+    try:
+        route_connections(patch, _factory, modules=(module_path,))
+        try:
+            instance = _construct(getattr(importlib.import_module(module_path), class_name))
+        except Exception:  # noqa: BLE001 — not constructible from the shared ctor values: not a measured owner
+            return False
+
+        async def _drive() -> None:
+            with contextlib.suppress(Exception):
+                await instance._ensure_connection()
+
+        asyncio.run(_drive())
+    finally:
+        patch.undo()
+    return opened >= 1
+
+
+def _discover_socket_owners() -> list[tuple[str, str]]:
+    """Every class whose ``_ensure_connection`` CONSTRUCTS its own SDK socket — measured by driving it.
+
+    The property, decided by behaviour over a structurally-derived candidate set — not a list anyone
+    maintains, and not the spelling of the constructor call.
+    """
+    return [
+        (module_path, class_name)
+        for module_path, class_name in _connection_owner_candidates()
+        if _opens_its_own_socket(module_path, class_name)
+    ]
 
 
 _SOCKET_OWNERS = [
@@ -6828,23 +6917,6 @@ _SOCKET_OWNERS = [
 # RECEIVES its connection rather than constructing one). It had sat at 10 across two
 # population growths: see ``_MIN_KNOWN_SEAMS`` for why a slack floor is the bug.
 _MIN_KNOWN_SOCKET_OWNERS = 13
-
-
-@dataclass
-class _SlowSigninConnection:
-    """A healthy connection whose ``signin`` is slow — the race window, widened on purpose."""
-
-    async def signin(self, credentials: dict[str, Any]) -> None:
-        await _REAL_ASYNCIO_SLEEP(_RACE_SIGNIN_DELAY_SECONDS)
-
-    async def use(self, namespace: str, database: str) -> None:
-        return None
-
-    async def query(self, statement: str, params: dict[str, Any] | None = None) -> Any:
-        return []
-
-    async def close(self) -> None:
-        return None
 
 
 class TestEveryConnectionOwnerOpensExactlyOneSocket:
@@ -6875,13 +6947,13 @@ class TestEveryConnectionOwnerOpensExactlyOneSocket:
         """
         opened = 0
 
-        def _factory(url: str) -> Any:
+        def _factory(url: str, **_options: Any) -> Any:
             nonlocal opened
             opened += 1
             return _SlowSigninConnection()
 
         module = importlib.import_module(module_path)
-        monkeypatch.setattr(module, "AsyncSurreal", _factory)
+        assert route_connections(monkeypatch, _factory, modules=(module_path,))  # C2 reach (round 6 MP-C 3b)
         instance = _construct(getattr(module, class_name))
 
         connections = await asyncio.gather(
@@ -7920,7 +7992,9 @@ class TestScoutsFailedConnectClosesItsSocketWithoutChangingTheType:
         _silence_sleep(monkeypatch)
         _set_default_deadline(monkeypatch, 0.0)  # a sustained conflict exhausts at the floor
         connection = _ClosingBootstrapFailure(error=build_error())
-        monkeypatch.setattr(scout_module, "AsyncSurreal", lambda url: connection)
+        assert route_connections(  # C2 reach (round 6 MP-C 3b)
+            monkeypatch, lambda url, **_options: connection, modules=(scout_module.__name__,)
+        )
 
         with pytest.raises(expected_type) as exc_info:
             await scout_module._open_command_connection(
@@ -8991,7 +9065,11 @@ class TestEveryProductionOwnerThreadsITSOWNUrl:
         """
         _silence_sleep(monkeypatch)
         _set_default_deadline(monkeypatch, 0.0)
-        monkeypatch.setattr(scout_module, "AsyncSurreal", lambda url: _forever_conflicting_bootstrap())
+        assert route_connections(  # C2 reach (round 6 MP-C 3b)
+            monkeypatch,
+            lambda url, **_options: _forever_conflicting_bootstrap(),
+            modules=(scout_module.__name__,),
+        )
         url = _owner_url(_SCOUT_BOOTSTRAP_FUNCTION)
 
         with caplog.at_level(logging.WARNING, logger=_TXN_LOGGER):

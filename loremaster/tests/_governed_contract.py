@@ -50,6 +50,7 @@ import _sdk_guard
 import yaml
 from _logging_fixtures import module_level_bindings_of
 from _surreal_harness import SurrealConnection, run
+from sdk3_shape_fakes import bare_record_key
 
 # lorerunes (61) is BUILT — import the PDP surface directly (unlike the 61b oracle's importlib
 # gate, which loaded a not-yet-built package). The 63a substrate under test lives in
@@ -563,14 +564,15 @@ async def seed_agent_governed(
     return agent_id
 
 
+#: Kept ONLY as a name: ``test_mcp_server`` and ``test_principal_delete_governed_63a`` import ``_bare`` from
+#: here. The behaviour is the ONE shared record-id helper (R15 / MP-C 3c — a bare key from a RecordID's parts
+#: or from ANY text form, so an SDK 3.0 ``keep:⟨01M6…⟩`` never leaks its brackets into a production call).
+_bare = bare_record_key
+
+
 # --------------------------------------------------------------------------- #
 # Store-side visibility helper — the SUBSTRATE read splice under test.
 # --------------------------------------------------------------------------- #
-
-
-def _bare(value: Any) -> str:
-    text = str(getattr(value, "id", value))
-    return text.split(":", 1)[-1] if ":" in text else text
 
 
 async def read_filter_ids(
@@ -584,7 +586,7 @@ async def read_filter_ids(
 
     fragment, params = governed.read_filter(subject, case.table)
     rows = await run(connection, f"SELECT id FROM {case.table} WHERE {fragment}", params)
-    return {_bare(row["id"]) for row in (rows if isinstance(rows, list) else [])}
+    return {bare_record_key(row["id"]) for row in (rows if isinstance(rows, list) else [])}
 
 
 async def authorize_filter_ids(
@@ -596,7 +598,7 @@ async def authorize_filter_ids(
     predicate = pdp.authorize_filter(subject, action, table)
     fragment, params = predicate.to_surql()
     rows = await run(connection, f"SELECT id FROM {table} WHERE {fragment}", params)
-    return {_bare(row["id"]) for row in (rows if isinstance(rows, list) else [])}
+    return {bare_record_key(row["id"]) for row in (rows if isinstance(rows, list) else [])}
 
 
 # --------------------------------------------------------------------------- #
@@ -939,9 +941,46 @@ def _surreal_test_url() -> str:
     return str(surreal_url())
 
 
+def digit_led_record_key(seed: str) -> str:
+    """A FIXED, DIGIT-LED, word-character record key derived from ``seed`` (R15 / MP-C 3c, R12: "pins it
+    deterministically with a digit-led principal key"). SDK 3.0's ``str(RecordID)`` brackets a digit-led key
+    (``principal:⟨0…⟩``) while SDK 2.0 does not, so a test comparing two text forms of such an id fails on
+    SDK 3 EVERY run instead of on the ~28% of runs an engine-minted id happens to start with a digit. Word
+    characters only, so SDK 2.0 renders it bare (a hyphenated uuid would be bracketed by BOTH SDKs)."""
+    return f"0{uuid.uuid5(uuid.NAMESPACE_URL, f'lore://test/digit-led/{seed}').hex[1:]}"
+
+
+async def rekey_principal(admin_conn: SurrealConnection, principal_id: Any, key: str) -> str:
+    """Move a principal minted by the PRODUCTION ``PrincipalStore.create`` (engine-assigned id) onto the fixed
+    record ``key``, byte-for-byte otherwise (every stored field kept). Returns ``key``. Raw admin DML on a
+    principal nothing references yet (call it straight after ``create``, before any agent/keep names it)."""
+    old_key = bare_record_key(principal_id)
+    rows = await run(admin_conn, f"SELECT * FROM type::record('{_PRINCIPAL_TABLE}', $old)", {"old": old_key})
+    assert isinstance(rows, list) and len(rows) == 1, f"rekey: principal {old_key!r} not found: {rows!r}"
+    content = {name: value for name, value in rows[0].items() if name != "id"}
+    await run(admin_conn, f"DELETE type::record('{_PRINCIPAL_TABLE}', $old)", {"old": old_key})
+    await run(
+        admin_conn,
+        f"CREATE type::record('{_PRINCIPAL_TABLE}', $new) CONTENT $content",
+        {"new": key, "content": content},
+    )
+    moved = await run(
+        admin_conn, f"SELECT VALUE id FROM type::record('{_PRINCIPAL_TABLE}', $new)", {"new": key}
+    )
+    assert isinstance(moved, list) and [bare_record_key(value) for value in moved] == [key], (
+        f"rekey: principal {old_key!r} did not land on {key!r}: {moved!r}"
+    )
+    return key
+
+
 @contextlib.asynccontextmanager
 async def credentialed_app_context(
-    monkeypatch: Any, tmp_path: Path, *, principals: dict[str, str], dim: int = 8
+    monkeypatch: Any,
+    tmp_path: Path,
+    *,
+    principals: dict[str, str],
+    dim: int = 8,
+    digit_led_principals: bool = False,
 ) -> AsyncIterator[dict[str, Any]]:
     """ONE shared credentialed-AppContext harness (ii-a §11.3 F-DUP): a REAL booted
     :class:`~loremaster.server.AppContext` with a SWITCHABLE ambient transport token + ``principals``
@@ -950,7 +989,9 @@ async def credentialed_app_context(
     empty-subject token (identity-less → ``GovernedDenied``). Yields
     ``{ctx, holder, pids, emails, admin_conn, env}`` — ``pids``/``emails`` map name→bare principal id /
     email, ``admin_conn`` is a signed-in ADMIN connection on the SAME db (for raw seeding), ``env`` the
-    ``SurrealEnv``. Reaped on exit (NEVER :18500).
+    ``SurrealEnv``. Reaped on exit (NEVER :18500). ``digit_led_principals=True`` re-keys every provisioned
+    principal onto :func:`digit_led_record_key` ``(name)`` straight after the production create, so a pin
+    that compares a principal id through two text forms is deterministic on SDK 3 (R15 / MP-C 3c).
 
     SHARING is provable BY MUTATION (§11.3): change how ``holder`` feeds ``access_token`` (the token
     shape) and EVERY caller's resolved identity flips — pinned by the F-DUP mutation test. This lift
@@ -1001,7 +1042,11 @@ async def credentialed_app_context(
     for name, role in principals.items():
         email = f"{name}@example.com"
         principal = await principal_store.create(email=email, role=role)
-        pids[name] = _bare(principal.id)
+        pids[name] = (
+            await rekey_principal(admin_conn, principal.id, digit_led_record_key(name))
+            if digit_led_principals
+            else bare_record_key(principal.id)
+        )
         emails[name] = email
     try:
         yield {
@@ -1135,14 +1180,14 @@ async def session_keep_id_for(
     change to how production mints the session keep is one edit here."""
     principals_list = await principal_store.list()
     owner = next(
-        (principal for principal in principals_list if _bare(principal.id) == owner_principal_id),
+        (principal for principal in principals_list if bare_record_key(principal.id) == owner_principal_id),
         None,
     )
     assert owner is not None, f"no principal {owner_principal_id!r} to keep session {session!r}"
     keep = await keep_store.get_or_create_keyed(
         key=f"session:{session}", type="session", keeper_email=owner.email, name=session
     )
-    return _bare(keep.id)
+    return bare_record_key(keep.id)
 
 
 async def register_owned(
@@ -1171,7 +1216,7 @@ async def register_owned(
         session_keep_id=session_keep_id,
     )
     assert result.capability is not None, f"the first register of {name!r} must mint a capability"
-    return str(result.capability), _bare(result.agent.id)
+    return str(result.capability), bare_record_key(result.agent.id)
 
 
 def store_handle(
@@ -1799,7 +1844,7 @@ async def _f5_read_state(
     query_raw = _f5_unwrapped_query_raw(connection)
     rows_envelope = await query_raw(connection, f"SELECT * FROM {table}")
     rows = {
-        _bare(row["id"]): row for row in _f5_unwrap_query_raw_rows(rows_envelope) if "id" in row
+        bare_record_key(row["id"]): row for row in _f5_unwrap_query_raw_rows(rows_envelope) if "id" in row
     }
     info_envelope = await query_raw(connection, f"INFO FOR TABLE {table}")
     return rows, schema_snapshot_from_info(info_envelope)

@@ -60,6 +60,7 @@ from loremaster.store.surreal_schema import (
     PRINCIPAL_KEY_TABLE,
     PRINCIPAL_TABLE,
 )
+from sdk3_shape_fakes import bare_record_key
 from surrealdb import RecordID
 
 _KEEPER_EMAIL = "keeper@example.com"
@@ -72,12 +73,6 @@ _NEW_KEEPER_EMAIL = "successor@example.com"
 # and every pin fails BEHAVIOURALLY, never as an ImportError that hides the whole module
 # (finding #133).
 _HAS_KEEPS_ERROR_NAME = "PrincipalHasKeepsError"
-
-
-def _bare(record_id: str) -> str:
-    """The id part of a ``table:id`` string (``keep:abc`` -> ``abc``); a bare id passes
-    through. Mirrors ``PrincipalStore.delete``'s own ``partition(':')[2] or id``."""
-    return record_id.partition(":")[2] or record_id
 
 
 @pytest_asyncio.fixture()
@@ -202,9 +197,9 @@ class TestDeleteRefusesAKeeperWhileKeeping:
             f"{type(error).__name__} (§FR-4 rider — a typed refusal)"
         )
         message = str(error)
-        assert _bare(keep.id) in message, (
+        assert bare_record_key(keep.id) in message, (
             f"the refusal must NAME the kept keep id so the admin can remediate it; "
-            f"expected {_bare(keep.id)!r} in {message!r}"
+            f"expected {bare_record_key(keep.id)!r} in {message!r}"
         )
         assert any(word in message.lower() for word in ("reassign", "delete")), (
             f"the refusal must name the remediation (reassign the keeper or delete the keep); "
@@ -224,7 +219,7 @@ class TestDeleteRefusesAKeeperWhileKeeping:
         await _mint_key(key_store, email=_KEEPER_EMAIL, name="laptop")
         keeper_before = await principal_store.get_by_email(_KEEPER_EMAIL)
         assert keeper_before is not None
-        keeper_bare = _bare(keeper_before.id)
+        keeper_bare = bare_record_key(keeper_before.id)
 
         with pytest.raises(PrincipalStoreError):
             await principal_store.delete(email=_KEEPER_EMAIL)
@@ -253,7 +248,8 @@ class TestDeleteRefusesAKeeperWhileKeeping:
         with pytest.raises(PrincipalStoreError) as exc_info:
             await principal_store.delete(email=_KEEPER_EMAIL)
         message = str(exc_info.value)
-        missing = [_bare(k.id) for k in (keep_a, keep_b, keep_c) if _bare(k.id) not in message]
+        kept_bares = [bare_record_key(kept.id) for kept in (keep_a, keep_b, keep_c)]
+        missing = [kept_bare for kept_bare in kept_bares if kept_bare not in message]
         assert not missing, f"the refusal must name ALL 3 kept keeps; missing {missing} from {message!r}"
 
     async def test_a_member_only_principal_STILL_deletes_cleanly(
@@ -318,7 +314,7 @@ class TestDeleteMemberDimension:
         await _mint_key(key_store, email=_LONER_EMAIL, name="desktop")
         loner_before = await principal_store.get_by_email(_LONER_EMAIL)
         assert loner_before is not None
-        loner_bare = _bare(loner_before.id)
+        loner_bare = bare_record_key(loner_before.id)
         assert await _principal_key_count(env, loner_bare) == 2, "control: two keys exist pre-delete"
 
         cascaded = await principal_store.delete(email=_LONER_EMAIL)
@@ -354,7 +350,7 @@ class TestNoDanglingLinkIsReachableViaDelete:
         assert keeper_principal is not None, (
             "the keeper principal was deleted — keep.keeper now dangles (#402)"
         )
-        assert keep_after.keeper_id == _bare(keeper_principal.id), (
+        assert keep_after.keeper_id == bare_record_key(keeper_principal.id), (
             "keep.keeper no longer resolves to the live keeper principal (a dangling link)"
         )
 

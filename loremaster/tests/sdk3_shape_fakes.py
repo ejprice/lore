@@ -19,8 +19,10 @@ Three helpers, each the ONE home for its rule (C1, C2, C8 in packet doc §R4.7):
   holds whichever name an owner imports — the per-module ``AsyncSurreal`` at HEAD, the shared factory after R5
   —
   instead of patching one per-module name the build deletes.
-* :func:`bare_record_key` — a record's bare KEY from its parts (``.id``), never by splitting ``str(RecordID)``
-  (SDK 3.0 brackets a digit-led key; SDK 2.0 and 3.0 bracket a non-word one).
+* :func:`bare_record_key` / :func:`record_parts` / :func:`same_record` — a record's identity from its parts
+  (``.id``) or from ANY of its text forms, never by comparing ``str(RecordID)`` with engine/bare text (SDK 3.0
+  brackets a digit-led key; SDK 2.0 and 3.0 bracket a non-word one). Round 6 widened it from one helper to
+  the one home every test-side id comparison uses (the ~30 cloned ``_bare`` helpers were folded into it).
 """
 
 from __future__ import annotations
@@ -71,10 +73,48 @@ def route_connections(
     return replaced
 
 
-def bare_record_key(value: Any) -> str:
-    """The bare key of a ``RecordID`` (from its parts) or of ``table:key`` text."""
+def record_parts(value: Any) -> tuple[str | None, str]:
+    """``(table, bare key)`` of a record id, from a ``RecordID``'s parts or from any of its TEXT forms.
+
+    Round 6 (R15, MP-C 3c — C9's class in the TEST tree: one record compared through two text forms). The ONE
+    test-side home for "which record is this": every test that compares a record id compares PARTS through
+    this function, never ``str(RecordID)`` against engine or bare text. It accepts every rendering a record id
+    reaches a test in — a ``RecordID`` (SDK 2.0 or 3.0), the SDK's ``str()`` (``keep:01M6…`` on 2.0,
+    ``keep:⟨01M6…⟩`` on 3.0 for a digit-led key, ``principal:⟨mallory-x⟩`` on both for a non-word key), the
+    engine's ``<string>`` cast (which may escape with backticks), and a bare key — so a comparison is
+    independent of WHICH side rendered the id. Text with no ``:`` is a bare key (``table`` is ``None``).
+    """
     key = getattr(value, "id", None)
-    if getattr(value, "table_name", None) is not None and key is not None:
-        return str(key)
+    table = getattr(value, "table_name", None)
+    if table is not None and key is not None:
+        return str(table), str(key)
+    if key is not None and not isinstance(value, str):
+        # A DOMAIN object carrying its record id (``Principal.id``, ``Keep.id``, …): the id is the record.
+        return record_parts(key)
     text = str(value)
-    return text.partition(":")[2] or text
+    table_text, separator, key_text = text.partition(":")
+    if not separator:
+        return None, _unescape_key(text)
+    return table_text, _unescape_key(key_text)
+
+
+def _unescape_key(text: str) -> str:
+    """Strip ONE layer of record-key escaping — ``⟨…⟩`` (the SDK and engine angle form) or ``` `…` ```."""
+    for opening, closing in (("⟨", "⟩"), ("`", "`")):
+        if len(text) >= 2 and text.startswith(opening) and text.endswith(closing):  # noqa: PLR2004 - two delimiters
+            return text[1:-1]
+    return text
+
+
+def bare_record_key(value: Any) -> str:
+    """The bare key of a ``RecordID`` (from its parts) or of ANY text form of one (:func:`record_parts`)."""
+    return record_parts(value)[1]
+
+
+def same_record(left: Any, right: Any) -> bool:
+    """Whether two renderings (``RecordID`` or any text form) name the SAME record — table AND key; a bare key
+    (no table) matches on the key alone."""
+    left_table, left_key = record_parts(left)
+    right_table, right_key = record_parts(right)
+    tables_agree = left_table is None or right_table is None or left_table == right_table
+    return tables_agree and left_key == right_key

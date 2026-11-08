@@ -76,6 +76,7 @@ from loremaster.index.records import sha512_hex
 from loremaster.principals import PrincipalStore
 from loremaster.store import surreal_schema
 from loremaster.store.surreal_schema import AGENT_TABLE
+from sdk3_shape_fakes import bare_record_key, same_record
 
 _CAP_HASH_FIELD = "capability_hash"
 _CAP_EXPIRES_FIELD = "capability_expires_at"
@@ -158,19 +159,14 @@ async def cap_env() -> Any:
             registry=registry,
             principals=principal_store,
             admin=admin,
-            alice_bare=_bare(alice.id),
-            bob_bare=_bare(bob.id),
+            alice_bare=bare_record_key(alice.id),
+            bob_bare=bare_record_key(bob.id),
         )
     finally:
         await admin.close()
         await registry.close()
         await principal_store.close()
         await drop_database(env)
-
-
-def _bare(record_id: str) -> str:
-    """``principal:abc`` -> ``abc``; a bare id passes through."""
-    return record_id.partition(":")[2] or record_id
 
 
 def _token(email: str, *, role: str = "member") -> AccessToken:
@@ -864,7 +860,7 @@ class TestRegisterStampsOwnerPrincipalFromTheCredential:
             f"SELECT owner_principal FROM type::record('{AGENT_TABLE}', $id)",
             {"id": result.agent.id},
         )
-        assert rows and str(rows[0]["owner_principal"]).endswith(f":{cap_env.alice_bare}"), (
+        assert rows and same_record(rows[0]["owner_principal"], cap_env.alice_bare), (
             f"register must stamp owner_principal from the server-derived id (R3.3); got {rows!r}"
         )
 

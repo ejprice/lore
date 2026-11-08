@@ -939,3 +939,80 @@ def test_the_shared_policy_is_backed_by_tenacity_not_a_hand_roll() -> None:
         "so it never draws below its exponential floor. This repo ruled that insufficient in "
         "#102; test_surreal_store.py fails such builds as 'wb13-equal-jitter'."
     )
+
+
+# --- SDK3 round 6, MP-B sibling: the subscriber's CONNECT ladder sleeps the shared draw ---------------
+#
+# R11 moves ``CommandSubscriber.run``'s connect retry onto tenacity (``wait=`` → the shared policy). The
+# pins above drive ``_backoff`` directly, so a build whose tenacity ``wait=`` consults the shared policy and
+# then returns something ELSE (equal jitter, an added floor — one token in tenacity) passes every one of them.
+# This drives the REAL run loop through failed connects and compares what is SLEPT with what is DRAWN.
+
+#: Failed connects before the subscriber is stopped (from inside the last one).
+_FAILED_CONNECTS = 5
+
+
+class TestTheSubscribersConnectLadderSleepsTheSharedDraw:
+    """MP-B sibling (adversary round 2; R15): every backoff the connect ladder SLEEPS is exactly a fresh draw
+    from ``loresigil.backoff.jittered_backoff_delay`` — in order, one per failed connect, on a growing
+    attempt.
+
+    Stated bound (tenacity computes ``wait`` BEFORE ``stop``): the connect ended by ``stop()`` may draw
+    one backoff it never sleeps; every draw that IS slept is slept unchanged, and only that one trailing draw
+    may go unslept. The hand-rolled HEAD loop draws and sleeps on every failure."""
+
+    async def test_every_slept_connect_backoff_is_the_shared_draw(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        real = backoff_module.jittered_backoff_delay
+        drawn: list[float] = []
+        drawn_attempts: list[int] = []
+
+        def _recording(attempt: int, *, base_s: float, cap_s: float) -> float:
+            value = real(attempt, base_s=base_s, cap_s=cap_s)
+            drawn.append(value)
+            drawn_attempts.append(attempt)
+            return value
+
+        monkeypatch.setattr(backoff_module, "jittered_backoff_delay", _recording)
+        slept: list[float] = []
+
+        async def _sleep(delay: float) -> None:
+            slept.append(delay)
+            await asyncio.sleep(0)
+
+        failures = 0
+        subscriber: CommandSubscriber
+
+        async def _connect() -> Any:
+            nonlocal failures
+            failures += 1
+            if failures >= _FAILED_CONNECTS:
+                await subscriber.stop()
+            raise ConnectionResetError(f"store unreachable (failed connect #{failures})")
+
+        async def _handler(_row: dict[str, Any]) -> None:  # pragma: no cover - never connected
+            return None
+
+        subscriber = CommandSubscriber(
+            connect=_connect,
+            handler=_handler,
+            poll_interval_s=0.01,
+            sleep=_sleep,
+            backoff_base_s=_SCOUT_BASE_S,
+            max_backoff_s=_SCOUT_CAP_S,
+        )
+        await asyncio.wait_for(subscriber.run(), timeout=10)
+
+        assert failures == _FAILED_CONNECTS, f"premise: the ladder made {failures} connects"
+        assert len(slept) >= _FAILED_CONNECTS - 1, (
+            f"the connect ladder slept {len(slept)} backoffs for {_FAILED_CONNECTS} failed connects"
+        )
+        assert slept == drawn[: len(slept)] and len(drawn) - len(slept) in (0, 1), (
+            f"the connect ladder slept {slept} but the shared policy drew {drawn} — every slept backoff must "
+            f"be the fresh draw, unchanged (no equal jitter, no floor), with at most the stopping attempt's "
+            f"one draw unslept"
+        )
+        assert drawn_attempts[: len(slept)] == list(range(len(slept))), (
+            f"the ladder's attempt numbers {drawn_attempts} do not grow 0, 1, 2, … (a flat window)"
+        )

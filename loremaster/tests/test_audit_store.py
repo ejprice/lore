@@ -77,6 +77,7 @@ from loremaster.store.surreal_schema import (
     PRINCIPAL_TABLE,
     generate_ddl,
 )
+from sdk3_shape_fakes import bare_record_key, same_record
 
 _ACTOR_PRINCIPAL = "admin_alice"
 _ACTOR_AGENT = "agent_a1"
@@ -122,13 +123,6 @@ _FORBIDDEN_MUTATOR_NAMES = frozenset(
 )
 
 
-def _bare(record_id: str) -> str:
-    """The id portion of a ``str(RecordID)`` (``audit:xyz`` → ``xyz``); a bare id passes
-    through (the ``KeepStore._record_id_part`` idiom)."""
-    _, separator, id_part = record_id.partition(":")
-    return id_part if separator else record_id
-
-
 _AUDIT_READ_PROJECTION = (
     "actor_principal, actor_agent, actor_email, actor_agent_name, action, "
     "target_table, target_row, old_value, new_value, created_at"
@@ -141,7 +135,7 @@ async def _read_row(connection: SurrealConnection, record_id: str) -> Any:
     rows = await run(
         connection,
         f"SELECT {_AUDIT_READ_PROJECTION} FROM type::record('{AUDIT_TABLE}', $id)",
-        {"id": _bare(record_id)},
+        {"id": bare_record_key(record_id)},
     )
     assert rows, f"expected one audit row for {record_id!r}, got {rows!r}"
     return rows[0]
@@ -387,8 +381,8 @@ class TestAppendWritesTheRecord:
         finally:
             await connection.close()
         assert row["action"] == "WRITE"
-        assert str(row["actor_principal"]).endswith(_ACTOR_PRINCIPAL)
-        assert str(row["actor_agent"]).endswith(_ACTOR_AGENT)
+        assert same_record(row["actor_principal"], _ACTOR_PRINCIPAL)
+        assert same_record(row["actor_agent"], _ACTOR_AGENT)
         assert row["actor_email"] == _ACTOR_EMAIL, "the denormalized actor_email did not round-trip"
         assert row["actor_agent_name"] == _ACTOR_AGENT_NAME, (
             "the denormalized actor_agent_name did not round-trip"
@@ -527,7 +521,7 @@ class TestTheDenormalizedIdentitySurvivesActorDelete:
             offboarded_email = "compromised-admin@example.com"
             offboarded_name = "agent-compromised-laptop"
             principal = await principal_store.create(email=offboarded_email)
-            actor_id = _bare(principal.id)  # the bare principal id for the actor_principal link
+            actor_id = bare_record_key(principal.id)  # the bare principal id for the actor_principal link
             record_id = await store.append(
                 actor_principal=actor_id,
                 actor_agent="agent_offboarded",
@@ -556,7 +550,7 @@ class TestTheDenormalizedIdentitySurvivesActorDelete:
                 deref = await run(
                     connection,
                     f"SELECT actor_principal.email AS e FROM type::record('{AUDIT_TABLE}', $id)",
-                    {"id": _bare(record_id)},
+                    {"id": bare_record_key(record_id)},
                 )
                 row = await _read_row(connection, record_id)
             finally:
@@ -573,7 +567,7 @@ class TestTheDenormalizedIdentitySurvivesActorDelete:
             # The LINK still holds the now-dangling RecordID (record<> links do not auto-clean —
             # store §2), and its DEREF yields None: the identity is recoverable ONLY via the
             # denormalized value, never the dead link.
-            assert str(row["actor_principal"]).endswith(actor_id), (
+            assert same_record(row["actor_principal"], actor_id), (
                 "the actor_principal link value changed — the dangling-link premise is wrong"
             )
             assert deref and deref[0].get("e") is None, (
@@ -625,7 +619,7 @@ class TestTheAppendIdIsCreationOrdered:
             record_id = await store.append(
                 **_append_call_kwargs(target_row=f"{_TARGET_TABLE}:row_{index}", new_value={"n": index})
             )
-            ids.append(_bare(record_id))
+            ids.append(bare_record_key(record_id))
             await asyncio.sleep(0.002)  # force a distinct ms so ULID timestamps strictly increase
         assert ids == sorted(ids), (
             "the append ids are NOT creation-ordered — a ulid() sorts by creation time (Fork G), "

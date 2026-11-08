@@ -117,6 +117,7 @@ from _engine_shapes import typed_conflict_error
 from _surreal_harness import SurrealEnv
 from loremaster.store import _txn as txn_module
 from pydantic import SecretStr
+from sdk3_shape_fakes import one_statement_answer
 from surrealdb.errors import QueryError
 from test_retry_seam import move_the_sdk_conflict_predicate
 
@@ -1607,7 +1608,9 @@ class TestRunRidesTheStoreRetrySeam:
         """RED at HEAD: the conflict escapes as a raw ``QueryError`` (the #486 failure itself)."""
         _silence_backoff(monkeypatch)
         success = _run_result()
-        fake = _FakeConnection(query_outcomes=[_conflict_error(), success])
+        # R12 F-a reach (round 6, MP-C): the fake answers in the installed SDK's shape — SDK 3.0's
+        # ``query()`` returns one entry per statement, and ``run`` is a one-statement helper.
+        fake = _FakeConnection(query_outcomes=[_conflict_error(), one_statement_answer(success)])
 
         result = await _surreal_harness.run(
             _as_connection(fake), _RUN_PROBE_STATEMENT, dict(_RUN_PROBE_PARAMS)
@@ -1645,7 +1648,7 @@ class TestRunRidesTheStoreRetrySeam:
         """PRESERVATION pin (GREEN at HEAD by design): one statement, one wire call, the raw
         result handed back unlaundered — the ``Any``-typed funnel every call site indexes into."""
         success = _run_result()
-        fake = _FakeConnection(query_outcomes=[success])
+        fake = _FakeConnection(query_outcomes=[one_statement_answer(success)])  # R12 F-a reach (round 6)
 
         result = await _surreal_harness.run(_as_connection(fake), _RUN_PROBE_STATEMENT)
 

@@ -67,6 +67,7 @@ from loremaster.config import LoreConfig
 from loremaster.server import LoreServer, build_app_context
 from loremaster.store import surreal_schema
 from loresigil.testing import FakeEmbedder
+from sdk3_shape_fakes import bare_record_key, same_record
 
 # The store-free tool-surface builder (the reach-pin idiom) — for the §10.5 capability= schema pin.
 from test_mutating_set_derivation import _build_tools
@@ -677,10 +678,10 @@ class TestRememberStampsTheOwnerAndDefaultsToProjectScope:
             await run(
                 admin_conn,
                 "SELECT owner_principal, scope FROM type::record('memory', $id)",
-                {"id": _bare(memory_id)},
+                {"id": bare_record_key(memory_id)},
             )
         )
-        assert row["owner_principal"] is not None and _bare(str(alice.id)) in str(row["owner_principal"]), (
+        assert row["owner_principal"] is not None and same_record(row["owner_principal"], alice.id), (
             f"the remembered note must be owner-stamped as alice ({alice.id}) from the credential, "
             f"got owner_principal={row['owner_principal']!r}"
         )
@@ -695,10 +696,15 @@ class TestRememberStampsTheOwnerAndDefaultsToProjectScope:
         backend, _p, _k, admin_conn, _env, project_keep = retrofit_world
         memory_id = await _exercise_remember(backend, text="shared note", capability=alice_capability)
         row = _one(
-            await run(admin_conn, "SELECT scope FROM type::record('memory', $id)", {"id": _bare(memory_id)})
+            await run(
+                admin_conn,
+                "SELECT scope FROM type::record('memory', $id)",
+                {"id": bare_record_key(memory_id)},
+            )
         )
-        assert row["scope"] == f"keep:{_bare(project_keep.id)}", (
-            f"a default-scope note must be scoped to the PROJECT keep keep:{_bare(project_keep.id)} "
+        project_keep_bare = bare_record_key(project_keep.id)
+        assert row["scope"] == f"keep:{project_keep_bare}", (
+            f"a default-scope note must be scoped to the PROJECT keep keep:{project_keep_bare} "
             f"(§2.4/§10-N — never principal-private), got scope={row['scope']!r}"
         )
 
@@ -713,7 +719,7 @@ class TestRememberStampsTheOwnerAndDefaultsToProjectScope:
         backend, principal_store, _k, admin_conn, _env, _keep = retrofit_world
         alice = await principal_store.get_by_email(_EMAIL_ALICE)
         bob = await principal_store.get_by_email(_EMAIL_BOB)
-        bob_id = _bare(str(bob.id))
+        bob_id = bare_record_key(bob.id)
         try:
             memory_id = await _exercise_remember(
                 backend, text="forge attempt", capability=alice_capability, owner_principal=bob_id,
@@ -724,10 +730,10 @@ class TestRememberStampsTheOwnerAndDefaultsToProjectScope:
             await run(
                 admin_conn,
                 "SELECT owner_principal FROM type::record('memory', $id)",
-                {"id": _bare(memory_id)},
+                {"id": bare_record_key(memory_id)},
             )
         )
-        assert _bare(str(alice.id)) in str(row["owner_principal"]), (
+        assert same_record(row["owner_principal"], alice.id), (
             f"a hostile owner_principal= arg forged the owner — it must stay alice ({alice.id}), the "
             f"credential-derived owner, got {row['owner_principal']!r}"
         )
@@ -786,7 +792,9 @@ class TestInvalidateRoutesThroughGuardedWrite:
             await _exercise_invalidate(backend, memory_id=memory_id, capability=bob_capability)
         row = _one(
             await run(
-                admin_conn, "SELECT valid_until FROM type::record('memory', $id)", {"id": _bare(memory_id)}
+                admin_conn,
+                "SELECT valid_until FROM type::record('memory', $id)",
+                {"id": bare_record_key(memory_id)},
             )
         )
         assert row["valid_until"] is None, (
@@ -808,7 +816,9 @@ class TestInvalidateRoutesThroughGuardedWrite:
         await _exercise_invalidate(backend, memory_id=memory_id, capability=alice_capability)
         row = _one(
             await run(
-                admin_conn, "SELECT valid_until FROM type::record('memory', $id)", {"id": _bare(memory_id)}
+                admin_conn,
+                "SELECT valid_until FROM type::record('memory', $id)",
+                {"id": bare_record_key(memory_id)},
             )
         )
         assert row["valid_until"] is not None, (
@@ -850,7 +860,7 @@ class TestInvalidateRoutesThroughGuardedWrite:
             await run(
                 admin_conn,
                 "SELECT valid_until, superseded_by FROM type::record('memory', $id)",
-                {"id": _bare(alice_memory_id)},
+                {"id": bare_record_key(alice_memory_id)},
             )
         )
         assert before["valid_until"] is None, "fixture: alice's note must start live (valid_until None)"
@@ -863,7 +873,7 @@ class TestInvalidateRoutesThroughGuardedWrite:
             await run(
                 admin_conn,
                 "SELECT valid_until, superseded_by FROM type::record('memory', $id)",
-                {"id": _bare(alice_memory_id)},
+                {"id": bare_record_key(alice_memory_id)},
             )
         )
         assert after["valid_until"] is None, (
@@ -898,14 +908,14 @@ class TestInvalidateRoutesThroughGuardedWrite:
             await run(
                 admin_conn,
                 "SELECT valid_until, superseded_by FROM type::record('memory', $id)",
-                {"id": _bare(old_id)},
+                {"id": bare_record_key(old_id)},
             )
         )
         assert row["valid_until"] is not None, (
             "alice could not supersede-close her OWN note — the owner's legitimate supersede was "
             "denied (a build special-casing the supersede-close to deny-everything)"
         )
-        assert row["superseded_by"] is not None and str(row["superseded_by"]).endswith(_bare(new_id)), (
+        assert row["superseded_by"] is not None and same_record(row["superseded_by"], new_id), (
             f"the superseded chain is wrong: old.superseded_by must point at the new note {new_id}, "
             f"got {row['superseded_by']!r}"
         )
@@ -938,7 +948,7 @@ class TestExplicitScopeArgumentIsGrantableValidated:
         with pytest.raises(governed.GovernedDenied) as denial:
             await _exercise_remember(
                 backend, text="cross-keep injection attempt", capability=alice_capability,
-                scope=pdp.keep_scope(_bare(str(bob_keep.id))),
+                scope=pdp.keep_scope(bare_record_key(bob_keep.id)),
             )
         assert "lore-adm add-household" in str(denial.value), (
             f"the deny must TEACH the fix (name `lore-adm add-household`, design §2.4), got: "
@@ -960,7 +970,11 @@ class TestExplicitScopeArgumentIsGrantableValidated:
             scope="principal-private",
         )
         row = _one(
-            await run(admin_conn, "SELECT scope FROM type::record('memory', $id)", {"id": _bare(memory_id)})
+            await run(
+                admin_conn,
+                "SELECT scope FROM type::record('memory', $id)",
+                {"id": bare_record_key(memory_id)},
+            )
         )
         assert row["scope"] == "principal-private", (
             f"a grantable explicit scope= (principal-private) was not applied — got scope={row['scope']!r} "
@@ -1125,9 +1139,9 @@ async def _minted_credential(
             agent_name,
             session="s1",
             role="worker",
-            owner_principal_id=_bare(str(principal.id)),
+            owner_principal_id=bare_record_key(principal.id),
             session_keep_id=await session_keep_id_for(
-                keep_store, principal_store, owner_principal_id=_bare(str(principal.id)), session="s1"
+                keep_store, principal_store, owner_principal_id=bare_record_key(principal.id), session="s1"
             ),  # r2 (A3): the owner travels WITH THE session keep
         )
         token = getattr(result, "capability", None)
@@ -1156,10 +1170,6 @@ def _one(rows: Any) -> Any:
 def _count(rows: Any) -> int:
     """The ``count`` of a ``SELECT count() … GROUP ALL`` result (0 on an empty table)."""
     return rows[0]["count"] if rows else 0
-
-
-def _bare(record_id: str) -> str:
-    return record_id.partition(":")[2] or record_id
 
 
 def _build_audit_store(env: Any) -> Any:

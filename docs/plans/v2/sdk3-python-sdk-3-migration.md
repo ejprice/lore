@@ -9,6 +9,124 @@ review** (§5 forks); then `contract-adversary` grades it, then a builder implem
 Inputs: `docs/research/2026-11-07-surrealdb-3.3-4.0-for-lore.md` (SUMMARY, §B4–B6/B18, §C, §D-4/D-10,
 §E 7/11/12), finding #576, `docs/reference/surrealdb-31-capabilities.md` §0a/§2/§3/§6.5.
 
+## ROUND 6 — adversary round 2 answered: MP-A, MP-B, MP-C (contract-sdk3-r6; 2026-11-07, graded tree HEAD `ef1b20b`)
+
+Answers ruling R15 (and R13's RS7 rider, R14) in `docs/plans/v2/sdk3-rulings.md`, against adversary round 2's report
+(lead-persisted at `scratchpad/sdk3r5/ADVERSARY2.md`). This is the LAST contract round in the operator's budget.
+Everything below is dated 2026-11-07, measured at HEAD `ef1b20b` (SDK 2.0.0, main venv; a pristine `git archive ef1b20b`
+copy is `scratchpad/sdk3r6/headtree`) and on the ROUND-6 REFERENCE (SDK 3.0.0, `scratchpad/sdk3r6/ref` =
+adversary round 2's `adv2/myref` + its `chk_c10` harness + the reference deltas of §R6.4; `scripts/scratch_copy.sh
+--verify-only` VERIFIED, `loremaster.__file__` inside it in every log header). Rounds 1–5 below are history and are
+not rewritten, except the two drop-list rows R15 named (§R3.5 rows #21/#22, edited in place with a dated note).
+
+### R6.0 Summary
+
+- **MP-A** (F-r5-3): `test_sdk3_outcome_reach::TestOneFilesStoreFaultNeverStopsTheSweep` — 6 nodes (3 outcome classes ×
+  batch/realtime). The two unknown-NOT-landed nodes are RED on declared mutation M-A (`_landed_after_unknown` re-raises
+  an unknown that did not land, the adversary's `wb_f18_abort`); the F18 pins stay green under it (the hole they had).
+- **MP-B**: `slept == drawn` added to `test_retry_seam::TestRetryOnConflictDriver::test_every_attempt_draws_a_fresh_backoff_from_the_shared_jitter`
+  (RED on M-B, equal-jitter drift, 1 of 709); scout sibling
+  `test_backoff_seam::TestTheSubscribersConnectLadderSleepsTheSharedDraw` (RED on M-B2 in `_connect_wait`, 1 of 57).
+- **MP-C**: the 117 worked by cause (§R6.2); the property is measured over the targeted set (§R6.5).
+- **RS7 rider**: `test_sdk3_row_bound::TestAnUpsertBatchRidesTheRowCap` (over-cap RED at HEAD for the intended reason —
+  HEAD's `upsert` loops `_query`; control green at HEAD).
+- **R14**: `test_sdk3_served_outcome::…::test_every_pin_row_names_a_real_behaviour_pin` deleted; the walker-derived
+  reach checks stay.
+
+### R6.1 New and changed pins
+
+| item | node(s) | kills | RED receipt |
+|---|---|---|---|
+| MP-A | `test_sdk3_outcome_reach::TestOneFilesStoreFaultNeverStopsTheSweep::test_the_sweep_returns_and_commits_every_file_the_fault_did_not_swallow[{unknown-NOT-landed,unknown-landed,definite-refusal}-{batch,realtime}]` | a per-file arm that raises out of `index_all` for any outcome class | M-A (2 declared = 2 observed); HEAD: the 4 unknown legs RED (class missing), the 2 definite legs GREEN |
+| MP-B | `test_retry_seam::TestRetryOnConflictDriver::test_every_attempt_draws_a_fresh_backoff_from_the_shared_jitter` (+`_JitterRecorder.values`) | a driver that draws and sleeps something else | M-B (1 = 1) |
+| MP-B sibling | `test_backoff_seam::TestTheSubscribersConnectLadderSleepsTheSharedDraw::test_every_slept_connect_backoff_is_the_shared_draw` | scout's tenacity `wait=` consulting the policy and returning another value | M-B2 (1 = 1). Stated bound: tenacity computes `wait` before `stop`, so the connect ended by `stop()` may draw ONE unslept value |
+| RS7 | `test_sdk3_row_bound::TestAnUpsertBatchRidesTheRowCap::{test_an_upsert_batch_over_the_row_cap_is_refused_before_anything_is_sent, test_control_an_upsert_batch_under_the_row_cap_is_sent}` | `upsert` outside `compose` | RED at HEAD (intended); control GREEN at HEAD |
+| am-37 3e | `test_am37_13_3_63c_i_a::TestTheMintWindowNotesTheRevokeRepair` rows: `TxnRowCapExceededError` → proven-no-key (refused at BUILD time, nothing sent); `SurrealOutcomeUnknownError` → unknown-outcome | an unadjudicated store class | `test_every_generated_store_class_is_adjudicated_by_the_ruling` RED at HEAD (the classes do not exist yet — "ruled class the taxonomy no longer defines"), intended |
+| a19 3h | `test_fixwave_a19_63c_i_a::TestTheRefusalRendersStoredIdsThroughTheSanitiser63cIAa19` — `_renderings` = {engine `<string> type::record(...)`, rendered live; bare key}; `_forbidden_rendering` refuses the SDK `str(RecordID)` form where it differs | a refusal serving SDK `str()` text (R7 (d)) | RED at HEAD on the hostile-id legs (HEAD serves `str(RecordID)`), intended |
+
+### R6.2 MP-C — the 117, by cause (verdict + owner each)
+
+| cause | nodes | verdict | edit |
+|---|---|---|---|
+| 3a F-a reach | test_retry_seam ~47 (`{'next':N} == [{'next':N}]`, brief/ack doubles, scout fakes), test_surreal_harness ×2 | CONTRACT (fakes SDK-2-shaped) | every `query()` return of every double in test_retry_seam → `one_statement_answer` (16 sites, instrument `scratchpad/sdk3r6/tools/wrap_query_returns.py`, pasted in Appendix G); the two harness `run` identity fakes |
+| 3b C2 reach | 6 `AsyncSurreal` monkeypatches in test_retry_seam | CONTRACT | → `route_connections` |
+| 3c C9 test tree | a28/a28b/a28c, comms_schema, governed_migration, agent_governance, comms_send, governed_schema, … | CONTRACT | `sdk3_shape_fakes` widened: `record_parts` / `bare_record_key` (strips one `⟨…⟩`/backtick layer) / `same_record`; **every cloned `_bare` deleted** (19 by helper c9-sweep-r6 + a19, `_bare_id` in test_pdp_oracle_61b, `_governed_contract_64.bare` → alias of the shared helper, and the split/endswith sites in test_agent_registry, _comms_fakes, test_preboot…, test_memory_replay…, test_principals_store, test_comms_tool, test_audit_schema, test_keeps_schema, test_enforced_relations). Determinism: `_governed_contract.digit_led_record_key` + `rekey_principal` (fixed digit-led keys; SDK 2 renders them bare, SDK 3 brackets them, so the old compare fails every run on SDK 3) |
+| 3d StoreTraffic | test_blocks_edge ×7 | CONTRACT (instrument) | `StoreTraffic.COUNTABLE_DOORS` follows delegation through the connection class's private helpers (SDK 3.0's `query()` is a builder whose `_make_executor` calls `self.query_raw`); `_delegating` returns the SDK's object unawaited. Same 11 doors on SDK 2.0 (measured on headtree); reach stays deny-by-default (`require_full_reach`) |
+| 3e am-37 rows | test_am37 ×5 | CONTRACT | rows added (R6.1). **Reference bug found:** `_txn._PROVEN_NO_KEY_CLASSES` lacked `TxnRowCapExceededError` → builder note B-1 |
+| 3f spelling scans | socket-owner scans ×2, derivation RELATE regex ×3, governed SDK-name scan | CONTRACT (R15: rewrite or retire) | socket owners DISCOVERED BY BEHAVIOUR (`_ensure_connection` driven once with every constructor routed to a counting factory; candidates = classes owning `_ensure_connection`) — same 17 at HEAD and on the ref; derivation instrument EXECUTES the fragment in one transaction under ENFORCED code-graph edges (live store; order matters is the engine's verdict); governed scan narrowed to receivers that are not module `ContextVar`s (+ a control that the same method name on another receiver still flags) |
+| 3g `test_ingest_entity_seam` ×8 | 8 | **TEST read shape, NOT a production regression** | `_ingest_entity_fixtures.FakeDomainStore.fetch_nodes` read via raw `connection.query`; SDK 3 answers `[[rows]]`, every row was filtered, phase 2 resolved no edge. Routed through `_txn.run_query`. Unchanged reference production: 45/45 |
+| 3h a19 | 1 | CONTRACT + reference bug | R6.1; reference: `principals._id_sample` and the owner sample serve the bare key → builder note B-2 |
+| 3i `ensure_ready:timeout` | 1 | REFERENCE BUG | ref `store/surreal.py` `ensure_ready` dropped its inner `connection.timeout(...)` (the decorator already applies it) |
+| 3i bootstrap allowance | 2 (red at HEAD too) | CONTRACT (round-5 self-contradiction) | `_TEST_TREE_BOOTSTRAP_ALLOWANCES` row for `test_sdk3_outcome_reach.py`'s deliberately unsigned F-b fixture |
+| harness identity ×2 | 2 | CONTRACT (F-a) | see 3a |
+| beyond the 117 (found by widening the targeted set to the covering tests of the reference's changes) | q1b ×6, q1c ×1, pdp_oracle ×13 | CONTRACT | **q1b/q1c**: SDK 3.0 adds engine kind `TransactionConflict` (top-level and Query detail); the seam RETRIES it (the SDK's conflict typing is THE authority, drop row #2/R11), so it is ruled `retried` (a fourth fate: never a rejection, never proven; sustained → `TxnContentionExhaustedError`, proven by class) — derived, see FORK-R6-1; q1b's class table gains `TxnRowCapExceededError` (proven) and `SurrealOutcomeUnknownError` (unknown). **pdp_oracle**: its three raw `connection.query` reads → the harness `run` funnel (F-a/C10 reach). **a19a**: `_names` keys on the sanitised bare key every allowed form contains (a19 owns WHICH form) |
+
+### R6.3 Packet-doc corrections
+- §R3.5 row #22 now reads **R** (R11), row #21 notes its overlap with R11 (see the rows).
+
+### R6.4 The round-6 reference delta (beyond `adv2/myref` + `chk_c10`)
+1. `store/surreal.py` `ensure_ready`: no inner `connection.timeout` (rides `ensure_ready_operation`).
+2. `store/_txn.py`: `TxnRowCapExceededError` defined before, and listed in, `_PROVEN_NO_KEY_CLASSES`.
+3. `principals.py`: `_id_sample` and `_owned_unscoped_part` serve bare keys from the RecordID parts.
+4. `store/surreal.py` `upsert`: one fragment through `apply` → `compose` (RS7).
+5. Test-side (reference only, C10 builder work): `_surreal_harness.run` is `chk_c10`'s (first statement's result).
+Pristine copies of each touched reference file: `scratchpad/sdk3r6/ref_pristine/`.
+
+### R6.5 Satisfiability receipt
+Property (R15 MP-C): every node of the targeted set GREEN at HEAD (with the round-6 tests) is GREEN on the round-6
+reference. Targeted set = `scratchpad/sdk3r6/target_set_r6.txt` (142 files): round 5's 129 + every test file
+round 6 touched + the covering tests of every production symbol the reference changed (`lore_impact` on
+`SurrealStore.upsert` / `.ensure_ready`, `_txn.proven_no_key`, `principals._id_sample` /
+`_owned_unscoped_part` — bare-name unions and 0-test answers per #563, so the q1b/q1c/note-q1, surreal_store/
+apply, diff, indexer, mcp_server and every importer of the shared test helpers were added by hand). Receipts,
+numbers and the both-ways red-set diff: the contract-sdk3-r6 hand-back report, §Satisfiability, over
+`scratchpad/sdk3r6/logs/final2_{ref,head,headpristine}.log` (each with `tree_id.sh` + `loremaster.__file__`).
+
+### R6.6 Per-C-row receipt table — THE COLD AUDIT FILLS THIS (named in its brief)
+Every **C** (measure-then-decide) row of the drop list gets one line. A row with no measurement is not done.
+
+| drop-list row | measurement (command / instrument) | result (numbers, log path, TREE) | fate (R / K + keep-reason) | auditor verified (sha) |
+|---|---|---|---|---|
+| #8 `_to_aware_utc` ×6 | | | | |
+| #9 `_CONNECTION_ERRORS` / `_SDK_AWAIT_BOUNDARY_ERRORS` tuples | | | | |
+| #14 hand verification + text BEGIN/COMMIT + `execute_read_transaction` | | | | |
+| #15 `_SDK_PARSE_FAILURES` guard | | | | |
+| #16 `_safe_close` ×18 | | | | |
+| #17 `signin_credentials` + `.signin()` + manual re-sign-in | | | | |
+| #19 `"recursion depth"` text marker | | | | |
+| #21 scout reconnect ladder (now on tenacity per R11) | | | | |
+| #24 inlined literals in `LIVE SELECT … WHERE` | | | | |
+| #25 `name.value` mirror column | | | | |
+| #26 `rebuild_embeddings` REMOVE/DEFINE dance | | | | |
+| any C row added after round 6 | | | | |
+
+### R6.7 Forks (written down, not silently resolved)
+- **FORK-R6-1 (low)**: q1b/q1c rule SDK 3.0's `TransactionConflict` kind as a fourth fate, `retried`, rather than
+  §15's proven/unknown. Reading A (taken): the kind never reaches the mint as a rejection because the seam's
+  conflict classifier retries it, so the table records the seam's classification. Reading B: add it to §15 as
+  `unknown` (the pin's own failure text offers only proven/unknown). B would assert a `TxnDomainRejectionError` that
+  no correct build raises — unsatisfiable — so A; the operator may re-rule am-37 §15 to name the fourth fate.
+- **FORK-R6-2 (low)**: a19's refusal pins and three ruling tables (am-37, q1b kinds/classes) now go RED AT HEAD by
+  design (they name SDK-3-only classes/kinds or refuse HEAD's `str(RecordID)` serving). Reading A (taken): they are
+  declared RED@HEAD pins like round 5's. Reading B: version-branch them like the F-a fakes so HEAD stays green.
+
+### R6.8 Builder notes (outside the contract's writable set)
+- **tenacity never awaits a non-coroutine callable's result** (`AsyncRetrying.__call__`, `is_coroutine_callable`
+  branch): `retry_on_conflict(lambda: …)` returns an UN-awaited coroutine. Wrap the attempt in an `async def`
+  (adversary round 2's `_run`), or iterate `async for attempt in AsyncRetrying(...)` with the call lexically inside.
+- **tenacity computes `wait` BEFORE `stop`** (`_post_retry_check_actions`): a wait that draws jitter must not draw on
+  the exhausting attempt (`if stop(retry_state): return 0.0`) — the draw-count pin catches it on `retry_on_conflict`;
+  scout's connect wait carries a stated one-draw bound (R6.1).
+- **C10**: `_surreal_harness.run` returns the ONE statement's result on SDK 3.0 (the reference's is `chk_c10`'s:
+  `results[0]`); `test_surreal_harness`'s identity pins now feed it SDK-shaped answers.
+- **`store/surreal.py` `ensure_ready`**: its timeout rides `long_operation` (`ensure_ready_operation`) like the other
+  16 owners — no direct `connection.timeout(...)`.
+- **B-1**: `TxnRowCapExceededError` ∈ `_PROVEN_NO_KEY_CLASSES` (am-37 §14: refused at build time, nothing sent).
+- **B-2**: `principals._id_sample` and the migrate refusal's owner names serve `str(RecordID)` at HEAD — a C9 sibling
+  R12 named ("the served refusal text in principals.py"); serve the engine form or the bare key.
+- **F-a drop list**: the SDK-2.0 branch of `sdk3_shape_fakes.one_statement_answer` goes in the pin commit (unchanged);
+  `_ingest_entity_fixtures.fetch_nodes` now rides `run_query`, so it needs no branch.
+
 ## ROUND 5 — R11/R12 pinned (contract-sdk3-r5 item 1; contract-sdk3-r5b items 2–12; 2026-11-07, graded tree HEAD `80d2323`)
 
 Answers rulings R11 (tenacity) and R12 (round-4 forks F18–F22, F-a…F-d, C9 class, RS7, X18/X19) in
@@ -896,8 +1014,8 @@ sweep (scratch `sdk3r3/droplist_draft.md`, every row SDK-source-quoted), sampled
 | 18 | `_CONNECTION_ERROR_KINDS = {NotAllowed, Connection}` | `_txn.is_connection_error` | `NotAllowedError.is_invalid_auth` / `is_token_expired` | source read | **K** with trigger: W3 (NotAllowed after reconnect give-up) can no longer occur with `attempts=-1`; keep the arm until the factory is the only constructor, then re-evaluate |
 | 19 | `"recursion depth"` text marker | `_txn._classify_engine_error` | `ValidationError.is_parse_error` (a superset) | source read | **C**: probe the recursion-limit rejection's `details.kind` on 3.3.5 |
 | 20 | ASSERT / coercion / UNIQUE / governed THROW text markers | `_txn._classify_engine_error` | none (Internal is untyped) | P7 | **K**: still untyped on 3.3.5 (W10) |
-| 21 | scout's reconnect ladder backoff | `scout.CommandSubscriber._backoff` (+ `loresigil.backoff.jittered_backoff_delay`) | SDK reconnect for the socket | `reconnect.py` | **C**: measure whether scout's ladder still fires (connect failures at boot) once the factory reconnects forever; delete the socket half only |
-| 22 | `retry_on_conflict` / `_txn_conflict_backoff_seconds` | `_txn` | none in SDK 3.0; 4.0 retries single statements server-side only | research §C | **K** (no SDK twin; transactions still need client retry) |
+| 21 | scout's reconnect ladder backoff | `scout.CommandSubscriber._backoff` (+ `loresigil.backoff.jittered_backoff_delay`) | SDK reconnect for the socket | `reconnect.py` | **C**: measure whether scout's ladder still fires (connect failures at boot) once the factory reconnects forever; delete the socket half only. *(Round 6, 2026-11-07: overlaps R11 — R11 already moves the ladder's hand loop onto tenacity, so the measurement decides only WHETHER a ladder survives (and how much of it); whatever survives is on tenacity with the shared full-jitter policy, never the hand loop. Pinned: `test_backoff_seam::TestTheSubscribersConnectLadderSleepsTheSharedDraw`.)* |
+| 22 | `retry_on_conflict` / `_txn_conflict_backoff_seconds` | `_txn` | `tenacity.AsyncRetrying` (installed 9.1.4) + `wait_random_exponential` via `loresigil.backoff` | research §C; R10, R11, R12 F22 | **R** (R11, 2026-11-07, supersedes R10's C and round 3's K): the driver becomes a tenacity `AsyncRetrying` (stop = attempt budget / deadline; `retry=` = the seam's own classifier); `_txn_conflict_backoff_seconds` stays the ONE jitter source but delegates to tenacity's full jitter (F22). *(Row text corrected in round 6; it read K.)* |
 | 23 | lease thread-bridge timeout | `store/lease._call` | `with db.timeout()` bounds an SDK await, not a thread wait | source read | **K** |
 | 24 | inlined literals in `LIVE SELECT … WHERE` | `inbox_awaiter.live_select_statement`, scout | `live()` has no filter; `live_of` | source read | **K** (no native filter); hand-escaping ``agent:`{id}` `` → `escape_identifier`: **C** (an id holding a backtick) |
 | 25 | `name.value` mirror column (prefix-match a RecordID id) | `graph_surreal._COL_VALUE`, schema | `string::starts_with(record::id(id), $p)` or an id range | unprobed | **C**: probe index service on 3.3.5 |
@@ -2703,3 +2821,138 @@ echo "== red on r4 baseline, fixed on r5b ref: $(comm -13 $S/red_ref.ids $S/red_
 comm -13 $S/red_ref.ids $S/red_base.ids | awk -F'::' '{print $1}' | sort | uniq -c
 ```
 
+## Appendix G — round-6 instruments (verbatim)
+
+Every load-bearing round-6 measurement was made with these. Paths are the session scratchpad named in the brief.
+
+### `scratchpad/sdk3r6/tools/wrap_query_returns.py`
+```
+"""Round-6 instrument (F-a reach): wrap every `return <expr>` of every `async def query(...)` in a test file in
+`one_statement_answer(<expr>)` (skipping returns already wrapped). Prints each site; --dry to only list."""
+import ast, sys
+path = sys.argv[1]; dry = "--dry" in sys.argv
+src = open(path).read(); lines = src.splitlines(keepends=True)
+tree = ast.parse(src)
+sites = []
+class V(ast.NodeVisitor):
+    def visit_AsyncFunctionDef(self, node):
+        if node.name == "query":
+            for sub in self._returns(node):
+                v = sub.value
+                if v is None:
+                    sites.append((sub.lineno, sub.col_offset, None, None, None, None)); continue
+                if isinstance(v, ast.Call) and getattr(v.func, "id", None) == "one_statement_answer":
+                    continue
+                sites.append((sub.lineno, sub.col_offset, v.lineno, v.col_offset, v.end_lineno, v.end_col_offset))
+        self.generic_visit(node)
+    def _returns(self, fn):
+        out = []
+        def walk(n):
+            for c in ast.iter_child_nodes(n):
+                if isinstance(c, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+                    continue
+                if isinstance(c, ast.Return):
+                    out.append(c)
+                walk(c)
+        walk(fn); return out
+V().visit(tree)
+# apply bottom-up
+offs = [0]
+for l in lines: offs.append(offs[-1] + len(l))
+def pos(lineno, col): return offs[lineno - 1] + len(lines[lineno - 1].encode()[:col].decode())
+for (rl, rc, vl, vc, el, ec) in sorted(sites, reverse=True):
+    print(f"{path}:{rl}: {lines[rl-1].strip()[:100]}")
+    if dry: continue
+    if vl is None:
+        a = pos(rl, rc); seg = src[a:a+6]; assert seg == "return", seg
+        src = src[:a] + "return one_statement_answer(None)" + src[a+6:]
+    else:
+        a = pos(vl, vc); b = pos(el, ec)
+        src = src[:a] + "one_statement_answer(" + src[a:b] + ")" + src[b:]
+if not dry: open(path, "w").write(src)
+print(f"sites={len(sites)}")
+```
+
+### `scratchpad/sdk3r6/sync_tests.sh`
+```
+#!/usr/bin/env bash
+# Sync the main tree's test tree into the r6 reference (the C10 harness + _sdk_guard stay the reference's own).
+set -euo pipefail
+R=/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/d68febab-e1d4-4ed2-95a0-0ded042fa32c/scratchpad/sdk3r6
+rsync -a --delete --exclude='__pycache__/' --exclude='_surreal_harness.py' --exclude='_sdk_guard.py' /home/ejprice/PycharmProjects/lore/loremaster/tests/ $R/ref/loremaster/tests/
+```
+
+### `scratchpad/sdk3r6/run_ref.sh`
+```
+#!/usr/bin/env bash
+# usage: run.sh <build-dir> <log-path> <timeout-seconds> <nworkers> <pytest args...>
+# pytest INSIDE the build's own venv under the lore cgroup cap; header = tree_id + provenance; EXIT= last.
+set -u
+B="$1"; LOG="$2"; TO="$3"; NW="$4"; shift 4
+{
+  ~/.claude/orchestration/tree_id.sh "$B"
+  "$B/.venv/bin/python" -c "import importlib.metadata as m, loremaster; print('loremaster.__file__=' + loremaster.__file__, 'surrealdb=' + m.version('surrealdb'))"
+  cd "$B" && systemd-run --user --scope -q -p MemoryMax=16G -p MemorySwapMax=0 \
+    "$B/.venv/bin/python" -m pytest -q -rfE -p no:cacheprovider --timeout="$TO" -n "$NW" "$@"
+  echo "EXIT=$?"
+} > "$LOG" 2>&1
+tail -1 "$LOG"; grep -E '[0-9]+ (passed|failed|error)' "$LOG" | tail -1
+```
+
+### `scratchpad/sdk3r6/run_head.sh`
+```
+#!/usr/bin/env bash
+# usage: run_head.sh <log-path> <timeout-seconds> <nworkers> <pytest args...>  (main checkout, SDK 2.0.0)
+set -u
+B=/home/ejprice/PycharmProjects/lore; LOG="$1"; TO="$2"; NW="$3"; shift 3
+{
+  ~/.claude/orchestration/tree_id.sh "$B"
+  cd "$B" && uv run python -c "import importlib.metadata as m, loremaster; print('loremaster.__file__=' + loremaster.__file__, 'surrealdb=' + m.version('surrealdb'))"
+  systemd-run --user --scope -q -p MemoryMax=16G -p MemorySwapMax=0 uv run python -m pytest -q -rfE -p no:cacheprovider --timeout="$TO" -n "$NW" "$@"
+  echo "EXIT=$?"
+} > "$LOG" 2>&1
+tail -1 "$LOG"; grep -E '[0-9]+ (passed|failed|error)' "$LOG" | tail -1
+```
+
+### `scratchpad/sdk3r6/loop5.sh`
+```
+#!/usr/bin/env bash
+# 5 consecutive runs of the timing/concurrency set (T2 both paths, test_sdk3_lifecycle, MP3 x2, CF2, X19, scout CAS winner)
+# on the r6 reference; stops at the first red. One log per run (tree_id + loremaster.__file__ header, EXIT= last).
+R=/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/d68febab-e1d4-4ed2-95a0-0ded042fa32c/scratchpad/sdk3r6; T=loremaster/tests
+SET="$T/test_sdk3_txn_classification.py::TestARetryableConflictIsRetriedAndLosesNothing $T/test_sdk3_lifecycle.py $T/test_sdk3_connection_factory.py::TestEveryNamedLongOperationOutlivesTheDefaultTimeout $T/test_sdk3_connection_factory.py::TestALongOperationOutlivesTheDefaultTimeout $T/test_sdk3_nested_lifecycle.py::TestARecallDuringARebuildWaitsForIt $T/test_sdk3_single_statement_seam.py::TestScoutsCommandClaimHasExactlyOneWinner"
+for i in 1 2 3 4 5; do
+  bash $R/run_ref.sh $R/ref $R/logs/loop_$i.log 300 8 $SET > /dev/null 2>&1
+  e=$(grep -E '^EXIT=' $R/logs/loop_$i.log | tail -1); c=$(grep -E '[0-9]+ (passed|failed|error)' $R/logs/loop_$i.log | tail -1)
+  echo "run $i: $e | $c"
+  [ "$e" = "EXIT=0" ] || { echo "STOPPED at run $i"; break; }
+done
+```
+
+### Declared mutations (applied with `scripts/mutation_proof.py` in the reference; expected-RED ids taken from `--collect-only` before each run)
+
+- **M-A** `loremaster/loremaster/index/indexer.py` — anchor:
+```
+        row = await self._manifest.get(tier, path)
+        return (
+            row is not None
+            and row.state == STATE_INDEXED
+            and row.sha512 == content_hash
+            and list(row.chunk_ids) == list(new_ids)
+        )
+```
+replacement:
+```
+        row = await self._manifest.get(tier, path)
+        landed = (
+            row is not None
+            and row.state == STATE_INDEXED
+            and row.sha512 == content_hash
+            and list(row.chunk_ids) == list(new_ids)
+        )
+        if not landed:
+            raise error  # DECLARED MUTATION M-A: an unknown that did not land propagates out of the sweep
+        return landed
+```
+- **M-B** `loremaster/loremaster/store/_txn.py`: `        return _txn_conflict_backoff_seconds(retry_state.attempt_number)` → `… / 2 + 0.05`
+- **M-B2** `loremaster/loremaster/scout.py`: `            return self._backoff_delay(first_attempt + retry_state.attempt_number - 1)` → `… / 2 + 0.01`

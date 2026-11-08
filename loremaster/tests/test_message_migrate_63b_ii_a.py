@@ -51,6 +51,7 @@ from _surreal_harness import connect_admin, drop_database, make_env, run, unique
 from loremaster.agents import AgentRegistry
 from loremaster.messages import MessageLedger
 from loremaster.store import surreal_schema
+from sdk3_shape_fakes import bare_record_key, same_record
 
 from loremaster import principals
 
@@ -62,11 +63,6 @@ _PRINCIPAL_TABLE = "principal"
 def _principals_source() -> str:
     """The whole ``principals.py`` source — for the ONE-IMPLEMENTATION structural (AST) route pins."""
     return Path(principals.__file__).read_text(encoding="utf-8")
-
-
-def _bare(value: Any) -> str:
-    text = str(getattr(value, "id", value))
-    return text.split(":", 1)[-1] if ":" in text else text
 
 
 class _Ref:
@@ -137,9 +133,9 @@ async def message_world() -> Any:
                 "sender_agent",
                 session="s1",
                 role="builder",
-                owner_principal_id=_bare(operator.id),
+                owner_principal_id=bare_record_key(operator.id),
                 session_keep_id=await session_keep_id_for(
-                    keep_store, principal_store, owner_principal_id=_bare(operator.id), session="s1"
+                    keep_store, principal_store, owner_principal_id=bare_record_key(operator.id), session="s1"
                 ),  # r2 (A3): the owner travels WITH THE session keep
             )
         ).agent
@@ -148,9 +144,9 @@ async def message_world() -> Any:
                 "recipient_agent",
                 session="s1",
                 role="builder",
-                owner_principal_id=_bare(operator.id),
+                owner_principal_id=bare_record_key(operator.id),
                 session_keep_id=await session_keep_id_for(
-                    keep_store, principal_store, owner_principal_id=_bare(operator.id), session="s1"
+                    keep_store, principal_store, owner_principal_id=bare_record_key(operator.id), session="s1"
                 ),  # r2 (A3): the owner travels WITH THE session keep
             )
         ).agent
@@ -202,9 +198,9 @@ async def ambiguous_message_world() -> Any:
                 "sender_agent",
                 session="s1",
                 role="builder",
-                owner_principal_id=_bare(operator.id),
+                owner_principal_id=bare_record_key(operator.id),
                 session_keep_id=await session_keep_id_for(
-                    keep_store, principal_store, owner_principal_id=_bare(operator.id), session="s1"
+                    keep_store, principal_store, owner_principal_id=bare_record_key(operator.id), session="s1"
                 ),  # r2 (A3): the owner travels WITH THE session keep
             )
         ).agent
@@ -213,9 +209,9 @@ async def ambiguous_message_world() -> Any:
                 "recipient_agent",
                 session="s1",
                 role="builder",
-                owner_principal_id=_bare(operator.id),
+                owner_principal_id=bare_record_key(operator.id),
                 session_keep_id=await session_keep_id_for(
-                    keep_store, principal_store, owner_principal_id=_bare(operator.id), session="s1"
+                    keep_store, principal_store, owner_principal_id=bare_record_key(operator.id), session="s1"
                 ),  # r2 (A3): the owner travels WITH THE session keep
             )
         ).agent
@@ -335,20 +331,20 @@ class TestResolveOperatorPrincipalIsLifted:
             f"the patched agent migrate must still backfill the fresh NONE-owner agent, got {mutated!r}"
         )
         rows = {
-            _bare(row["id"]): str(row["owner_principal"])
+            bare_record_key(row["id"]): row["owner_principal"]
             for row in await run(
                 connection,
                 f"SELECT id, owner_principal FROM {_AGENT_TABLE} "
                 f"WHERE id IN [type::record('{_AGENT_TABLE}', $c), type::record('{_AGENT_TABLE}', $m)]",
-                {"c": _bare(ag_control.id), "m": _bare(ag_mutated.id)},
+                {"c": bare_record_key(ag_control.id), "m": bare_record_key(ag_mutated.id)},
             )
         }
-        assert rows[_bare(ag_mutated.id)] == f"{_PRINCIPAL_TABLE}:pstar_mutation", (
+        assert same_record(rows[bare_record_key(ag_mutated.id)], f"{_PRINCIPAL_TABLE}:pstar_mutation"), (
             f"the agent migrated UNDER THE PATCH was NOT stamped to the perturbed operator P* — the "
             f"agent leg hand-rolls its own operator resolution instead of routing through the SHARED "
             f"resolve_operator_principal (ROUTING-IS-NOT-SHARING, #102/#120; adversary MP-3): {rows}"
         )
-        assert rows[_bare(ag_control.id)] == f"{_PRINCIPAL_TABLE}:{_bare(operator.id)}", (
+        assert same_record(rows[bare_record_key(ag_control.id)], operator.id), (
             f"the control agent (migrated unpatched) must stay stamped to the real operator, unchanged "
             f"by the later patched run (idempotent — the migrate touches only NONE-owner agents): {rows}"
         )
@@ -387,14 +383,14 @@ class TestMigrateAgentOwner:
         # a legacy agent (register with no provenance pair) + a GOVERNED agent (owner + session keep).
         none_owner = (await registry.register("ag_none", session="s1", role="builder")).agent
         session_keep_id = await session_keep_id_for(
-            keep_store, principal_store, owner_principal_id=_bare(operator.id), session="s1"
+            keep_store, principal_store, owner_principal_id=bare_record_key(operator.id), session="s1"
         )
         pre_owned = (
             await registry.register(
                 "ag_owned",
                 session="s1",
                 role="builder",
-                owner_principal_id=_bare(operator.id),
+                owner_principal_id=bare_record_key(operator.id),
                 session_keep_id=session_keep_id,
             )
         ).agent
@@ -402,7 +398,7 @@ class TestMigrateAgentOwner:
         before_owned = await run(
             connection,
             governed_projection + f"WHERE id = type::record('{_AGENT_TABLE}', $b)",
-            {"b": _bare(pre_owned.id)},
+            {"b": bare_record_key(pre_owned.id)},
         )
         result = await _migrate(
             connection, env, table=_AGENT_TABLE, keep_store=keep_store, principal_store=principal_store
@@ -411,22 +407,22 @@ class TestMigrateAgentOwner:
             f"migrate agent must backfill exactly the ONE legacy agent to the operator, got {result!r}"
         )
         rows = {
-            _bare(row["id"]): row
+            bare_record_key(row["id"]): row
             for row in await run(
                 connection,
                 governed_projection
                 + f"WHERE id IN [type::record('{_AGENT_TABLE}', $a), type::record('{_AGENT_TABLE}', $b)]",
-                {"a": _bare(none_owner.id), "b": _bare(pre_owned.id)},
+                {"a": bare_record_key(none_owner.id), "b": bare_record_key(pre_owned.id)},
             )
         }
-        legacy_owner = str(rows[_bare(none_owner.id)]["owner_principal"])
-        assert legacy_owner == f"{_PRINCIPAL_TABLE}:{_bare(operator.id)}", (
+        legacy_owner = rows[bare_record_key(none_owner.id)]["owner_principal"]
+        assert same_record(legacy_owner, f"{_PRINCIPAL_TABLE}:{bare_record_key(operator.id)}"), (
             f"the legacy agent was not stamped to the operator principal: {rows}"
         )
-        assert [rows[_bare(pre_owned.id)]] == before_owned, (
+        assert [rows[bare_record_key(pre_owned.id)]] == before_owned, (
             "the GOVERNED agent's owner/owner_agent/scope changed — the migrate must touch ONLY "
             f"NONE-scope agents (∀ scoped rows untouched, never a re-stamp): before={before_owned!r} "
-            f"after={rows[_bare(pre_owned.id)]!r}"
+            f"after={rows[bare_record_key(pre_owned.id)]!r}"
         )
         second = await _migrate(
             connection, env, table=_AGENT_TABLE, keep_store=keep_store, principal_store=principal_store
@@ -510,7 +506,7 @@ class TestMigrateMessageOwner:
                 {"m": message_id},
             )
         )[0]
-        assert str(row["owner_agent"]) == f"{_AGENT_TABLE}:{_bare(sender.id)}", (
+        assert same_record(row["owner_agent"], f"{_AGENT_TABLE}:{bare_record_key(sender.id)}"), (
             f"message.owner_agent must be the SENDER (§4.C), got {row['owner_agent']!r}"
         )
         # ⚠ MP-1 FIX (reviser-63b-ii-a, adversary REPORT-adversary-63b-ii-a.md §MP-1 BLOCKER / C-DEF).
@@ -520,11 +516,11 @@ class TestMigrateMessageOwner:
         # the test then raises ``AttributeError: 'Agent' object has no attribute 'owner_principal'`` —
         # UNSATISFIABLE (RED at HEAD only because the stub refuses before reaching the line). Read the
         # SENDER AGENT's stored ``owner_principal`` FROM THE STORE and compare (the adversary's door-build:
-        # the fixture registered the sender with ``owner_principal_id=_bare(operator.id)``).
+        # the fixture registered the sender with ``owner_principal_id=bare_record_key(operator.id)``).
         sender_owner_rows = await run(
             connection,
             f"SELECT owner_principal FROM type::record('{_AGENT_TABLE}', $s)",
-            {"s": _bare(sender.id)},
+            {"s": bare_record_key(sender.id)},
         )
         assert sender_owner_rows and sender_owner_rows[0]["owner_principal"] is not None, (
             "precondition: the sender agent must carry a stored owner_principal (the message_world "

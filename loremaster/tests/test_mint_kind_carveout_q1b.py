@@ -37,6 +37,7 @@ import test_mint_unknown_outcome_note_q1 as q1  # module-qualified, same reason
 from loremaster.principal_keys import PrincipalKeyStoreError
 from loremaster.store import _txn as _txn_module
 from loremaster.store._txn import (
+    RetryableConflictSignal,
     SurrealConnectionError,
     SurrealStoreError,
     TxnDomainRejectionError,
@@ -53,6 +54,11 @@ from lorerunes import reclassify
 _PROVEN = "proven"
 _UNKNOWN = "unknown"
 _TRANSPORT = "transport"
+#: SDK3 round 6 (R15, MP-C): a kind the seam RETRIES — it becomes the shared ``RetryableConflictSignal``
+#: and never reaches the mint as a rejection; sustained, it exhausts into ``TxnContentionExhaustedError``
+#: (proven by CLASS, §15 row 2, "rolled back"). Derived, not chosen: R11 + drop row #2 make the SDK's
+#: conflict typing THE conflict authority, so the classification is the seam's; this table records it.
+_RETRIED = "retried"
 
 #: §15 "Adjudication over the SDK's own enumerations". Query detail kinds are keyed by their DETAIL value
 #: (``QueryDetailKind``), top-level kinds by their ``ErrorKind`` value.
@@ -74,6 +80,9 @@ _RULED_KIND_FATE: dict[str, str] = {
     "TimedOut": _UNKNOWN,
     "Cancelled": _UNKNOWN,
     "Query": _UNKNOWN,  # FORK-2: spec-silent, safe side
+    # SDK 3.0 adds ``ErrorKind.TRANSACTION_CONFLICT`` (absent from SDK 2.0, so this row is RED at HEAD by
+    # name — "ruled kind the SDK no longer enumerates" — until the SDK-3.0 pin lands; intended).
+    "TransactionConflict": _RETRIED,
 }
 
 #: §15.2 (RULED, 9813259): the ``TxnDomainRejectionError`` subclasses CLASSIFIED BY CONSTRUCTION — proven
@@ -101,8 +110,17 @@ _RULED_CLASSIFIED_LABEL_NAMES: frozenset[str] = frozenset(
 
 #: §15 row 2 + §15.1: the classes proven by CLASS, whatever their kind (rolled back / never sent).
 _RULED_PROVEN_BY_CLASS: frozenset[str] = frozenset(
-    {"TxnContentionExhaustedError", "TxnParamCollisionError", "TxnEnvelopeViolationError"}
+    {
+        "TxnContentionExhaustedError",
+        "TxnParamCollisionError",
+        "TxnEnvelopeViolationError",
+        # SDK3 round 6 (R15, MP-C 3e; am-37 §14, as ruled in test_am37_13_3): refused at BUILD time.
+        "TxnRowCapExceededError",
+    }
 )
+#: The connection-family classes: UNKNOWN by class (never proven) — the original §14 class plus SDK3's F14
+#: subclass (a request SENT with no reply; R5 rider 2).
+_RULED_UNKNOWN_BY_CLASS: frozenset[str] = frozenset({"SurrealConnectionError", "SurrealOutcomeUnknownError"})
 
 
 def _sdk_kind_domain() -> set[str]:
@@ -176,7 +194,10 @@ def _proven_no_key() -> Callable[[BaseException], bool]:
 
 
 _DOMAIN: list[str] = sorted(_sdk_kind_domain())
-_NON_TRANSPORT_KINDS: list[str] = [kind for kind in _DOMAIN if _RULED_KIND_FATE.get(kind) != _TRANSPORT]
+#: The kinds that become a ``TxnDomainRejectionError`` (neither transport nor retried).
+_NON_TRANSPORT_KINDS: list[str] = [
+    kind for kind in _DOMAIN if _RULED_KIND_FATE.get(kind) not in (_TRANSPORT, _RETRIED)
+]
 _EMAIL, _NAME = fix531d._PLAIN  # noqa: SLF001
 _NOT_LANDED = f"could not mint key {_NAME!r} for principal {_EMAIL!r}"
 #: The ``TxnDomainRejectionError`` family in the GENERATED ``_txn`` taxonomy: decided by KIND (§15).
@@ -232,6 +253,10 @@ class TestEveryEngineKindIsAdjudicated:
             assert type(raised) is SurrealConnectionError, type(raised)
             assert predicate(raised) is False
             return
+        if fate == _RETRIED:
+            assert isinstance(raised, RetryableConflictSignal), type(raised)
+            assert predicate(raised) is False, "the retry signal is not a fault the mint can be proven by"
+            return
         assert isinstance(raised, TxnDomainRejectionError), type(raised)
         typed_kind = getattr(raised, "kind")  # noqa: B009 - a stub expectation: red by name
         assert isinstance(typed_kind, str) and typed_kind, (
@@ -256,7 +281,7 @@ class TestThePredicateOverTheTaxonomy:
         kind_decided = {
             cls.__name__ for cls in fix531d._store_taxonomy() if issubclass(cls, TxnDomainRejectionError)
         }  # noqa: SLF001
-        ruled = _RULED_PROVEN_BY_CLASS | kind_decided | {SurrealConnectionError.__name__}
+        ruled = _RULED_PROVEN_BY_CLASS | kind_decided | _RULED_UNKNOWN_BY_CLASS
         assert derived == ruled, (
             f"unadjudicated: {sorted(derived - ruled)} · retired: {sorted(ruled - derived)}"
         )

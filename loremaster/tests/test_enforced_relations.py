@@ -112,6 +112,7 @@ from loremaster.store.surreal_schema import (
     generate_agent_ddl,
     generate_brief_ddl,
 )
+from sdk3_shape_fakes import same_record
 from surrealdb import RecordID
 
 # --------------------------------------------------------------------------- #
@@ -794,7 +795,7 @@ class TestADanglingEdgeReadsAsAFirstClassMember:
             f"sentence is FALSE, and a pin written to it would pass on a build that never "
             f"wrote the edge at all. Got: {briefs!r}"
         )
-        assert str(briefs[0]).endswith(ghost_brief), (
+        assert same_record(briefs[0], ghost_brief), (
             f"the traversal must name the ghost itself, not some other row: {briefs!r}"
         )
 

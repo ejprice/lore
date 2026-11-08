@@ -574,11 +574,18 @@ _RULED_PROVEN_NO_KEY: frozenset[str] = frozenset(
         "TxnContentionExhaustedError",
         "TxnParamCollisionError",
         "TxnEnvelopeViolationError",
+        # SDK3 round 6 (R15, MP-C 3e): R3/R4/F12's row cap — ``compose`` refuses an over-cap transaction at
+        # BUILD time, "before anything was sent to the server": a driver refusal, the §14 proven-no-key kind.
+        "TxnRowCapExceededError",
     }
 )
-#: §14 Q1: the store layer's ONE unknown-outcome class (the engine may have committed and the answer been
-#: lost).
-_RULED_UNKNOWN_OUTCOME_STORE: frozenset[str] = frozenset({"SurrealConnectionError"})
+#: §14 Q1: the store layer's unknown-outcome classes (the engine may have committed and the answer been
+#: lost). SDK3 round 6 (R15, MP-C 3e) adds ``SurrealOutcomeUnknownError`` — F14 / R5 rider 2 / R9 D1: a
+#: request was SENT and no reply came back, so the commit may have landed (it subclasses
+#: ``SurrealConnectionError``, the original §14 unknown-outcome class).
+_RULED_UNKNOWN_OUTCOME_STORE: frozenset[str] = frozenset(
+    {"SurrealConnectionError", "SurrealOutcomeUnknownError"}
+)
 
 
 def _instance(cls: type[BaseException]) -> BaseException:

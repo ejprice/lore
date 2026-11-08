@@ -81,6 +81,7 @@ from loremaster.sanitise import CONTROL_CHAR_PATTERN
 from loremaster.store import surreal_schema
 from loremaster.store._txn import TxnDomainRejectionError
 from lorerunes.pdp import keep_scope
+from sdk3_shape_fakes import bare_record_key
 from test_fixwave_a19a_63c_i_a import _names, _stated_integers
 
 from loremaster import principals
@@ -153,11 +154,6 @@ _LEGACY_COUNT = 3
 _HOSTILE_TRAP_ID = HOSTILE_FREE_TEXT
 
 
-def _bare(value: Any) -> str:
-    text = str(getattr(value, "id", value))
-    return text.split(":", 1)[-1] if ":" in text else text
-
-
 @dataclass
 class _MigrateWorld:
     env: Any
@@ -181,7 +177,7 @@ class _MigrateWorld:
     async def project_scope(self) -> str:
         ids = await run(self.connection, "SELECT VALUE id FROM keep WHERE key = $k", {"k": PROJECT_KEEP_KEY})
         assert ids, "the migrate did not mint the canonical project keep"
-        return keep_scope(_bare(ids[0]))
+        return keep_scope(bare_record_key(ids[0]))
 
 
 @contextlib.asynccontextmanager
@@ -201,7 +197,8 @@ async def _migrate_world(finding_ddl: str) -> AsyncIterator[_MigrateWorld]:
         await apply_ddl(connection, finding_ddl, url=env.url)
         operator = await principal_store.create(email="operator@example.com", role="admin")
         handle, _calls = store_handle(connection, url=env.url)
-        yield _MigrateWorld(env, connection, principal_store, keep_store, handle, _bare(operator.id))
+        operator_bare = bare_record_key(operator.id)
+        yield _MigrateWorld(env, connection, principal_store, keep_store, handle, operator_bare)
     finally:
         await connection.close()
         await keep_store.close()
@@ -941,9 +938,12 @@ class TestTheRealProductionDumpMigrates:
             operator = await principals.resolve_operator_principal(principal_store)
             if operator is None:  # a pre-62 dump carries no principal: provision the ONE operator (65's step)
                 operator = await principal_store.create(email="s2-operator@example.com", role="admin")
-            operator_bare = _bare(operator.id)
+            operator_bare = bare_record_key(operator.id)
             legacy_ids = set(
-                map(_bare, await run(connection, f"SELECT VALUE id FROM {FINDING_TABLE} WHERE scope IS NONE"))
+                map(
+                    bare_record_key,
+                    await run(connection, f"SELECT VALUE id FROM {FINDING_TABLE} WHERE scope IS NONE"),
+                )
             )
             assert legacy_ids, "the restored dump carries NO legacy finding — S2 would certify nothing"
             # Amendment 4 §D2 rider — the consumer-side twin of the driver's read-back check: the REQUIRED
@@ -955,7 +955,7 @@ class TestTheRealProductionDumpMigrates:
                 f"{_S2_FINDING_FLOOR} (amendment 4 §D2) — a partial import read as success"
             )
             created_by_before = {
-                _bare(row["id"]): row.get("created_by")
+                bare_record_key(row["id"]): row.get("created_by")
                 for row in await run(connection, f"SELECT id, created_by FROM {FINDING_TABLE}")
             }
             admin_fragment, admin_params = governed.read_filter(
@@ -963,7 +963,7 @@ class TestTheRealProductionDumpMigrates:
             )
             admin_before = set(
                 map(
-                    _bare,
+                    bare_record_key,
                     await run(
                         connection,
                         f"SELECT VALUE id FROM {FINDING_TABLE} WHERE {admin_fragment}",
@@ -975,7 +975,7 @@ class TestTheRealProductionDumpMigrates:
             member_fragment, member_params = governed.read_filter(probe_member, FINDING_TABLE)
             member_before = set(
                 map(
-                    _bare,
+                    bare_record_key,
                     await run(
                         connection,
                         f"SELECT VALUE id FROM {FINDING_TABLE} WHERE {member_fragment}",
@@ -994,11 +994,12 @@ class TestTheRealProductionDumpMigrates:
             project_ids = await run(
                 connection, "SELECT VALUE id FROM keep WHERE key = $k", {"k": PROJECT_KEEP_KEY}
             )
-            household = member(operator_bare, "s2_member", frozenset({keep_scope(_bare(project_ids[0]))}))
+            project_scope = keep_scope(bare_record_key(project_ids[0]))
+            household = member(operator_bare, "s2_member", frozenset({project_scope}))
             household_fragment, household_params = governed.read_filter(household, FINDING_TABLE)
             household_after = set(
                 map(
-                    _bare,
+                    bare_record_key,
                     await run(
                         connection,
                         f"SELECT VALUE id FROM {FINDING_TABLE} WHERE {household_fragment}",
@@ -1012,7 +1013,7 @@ class TestTheRealProductionDumpMigrates:
                 f"extra {sorted(household_after - admin_before)[:10]}"
             )
             created_by_after = {
-                _bare(row["id"]): row.get("created_by")
+                bare_record_key(row["id"]): row.get("created_by")
                 for row in await run(connection, f"SELECT id, created_by FROM {FINDING_TABLE}")
             }
             assert created_by_after == created_by_before, "the migrate rewrote a created_by display string"

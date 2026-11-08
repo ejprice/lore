@@ -34,7 +34,7 @@ import pytest
 import surrealdb.errors as sdk_errors
 import test_mint_kind_carveout_q1b as q1b  # module-qualified: its Test* classes are not re-collected here
 from loremaster.store import _txn as _txn_module
-from loremaster.store._txn import SurrealConnectionError, TxnDomainRejectionError
+from loremaster.store._txn import RetryableConflictSignal, SurrealConnectionError, TxnDomainRejectionError
 
 import loremaster
 
@@ -216,6 +216,11 @@ class TestEveryKindOffTheAllowlistIsUnknown:
     async def test_the_single_statement_seam(self, cell: _KindCell) -> None:
         raised = await q1b._through_the_seam(_sdk_error(cell))  # noqa: SLF001
         if isinstance(raised, SurrealConnectionError):
+            assert cell.typed not in _RULED_PROVEN_KINDS
+        elif isinstance(raised, RetryableConflictSignal):
+            # SDK3 round 6 (MP-C): a kind the seam RETRIES (q1b ``_RETRIED``: SDK 3.0's TransactionConflict,
+            # top level or as a Query detail) never becomes a rejection; it is ruled retried, never proven.
+            assert q1b._RULED_KIND_FATE.get(cell.typed) == q1b._RETRIED, cell.label  # noqa: SLF001
             assert cell.typed not in _RULED_PROVEN_KINDS
         else:
             assert isinstance(raised, TxnDomainRejectionError), type(raised)

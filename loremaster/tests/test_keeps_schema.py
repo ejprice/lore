@@ -95,6 +95,7 @@ from loremaster.store.surreal_schema import (
     generate_keep_ddl,
     generate_principal_ddl,
 )
+from sdk3_shape_fakes import same_record
 from surrealdb import RecordID
 
 _DEFINE_TABLE = re.compile(r"^\s*DEFINE\s+TABLE\b", re.IGNORECASE)
@@ -718,7 +719,7 @@ class TestTheKeepRoundTrip:
         )
         assert by_id["type"] == "project"
         assert by_id["name"] == "Q3 launch"
-        assert str(by_id["keeper"]).endswith(_KEEPER_ID)
+        assert same_record(by_id["keeper"], _KEEPER_ID)
         by_keeper = await run(
             connection,
             f"SELECT id FROM {KEEP_TABLE} WHERE keeper = $p",

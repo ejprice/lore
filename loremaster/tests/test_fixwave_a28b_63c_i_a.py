@@ -67,6 +67,7 @@ from loremaster.store._txn import (
     run_query,
 )
 from lorerunes.pdp import keep_scope
+from sdk3_shape_fakes import bare_record_key
 from surrealdb import RecordID
 from test_fixwave_a28_63c_i_a import _spy_registry_queries
 
@@ -688,7 +689,7 @@ class TestKeepsCasDecidesFromTheOneClass63cIAa28b:
             except Exception as error:  # noqa: BLE001 - the pin classifies what is served
                 outcome = error
             if issubclass(error_class, _CONFLICT_CLASS) and winner:
-                assert not isinstance(outcome, Exception) and str(outcome.id).endswith("winnerkeep"), (
+                assert not isinstance(outcome, Exception) and bare_record_key(outcome.id) == "winnerkeep", (
                     f"{error_class.__name__} with a landed winner: keeps must return THE WINNER: {outcome!r}"
                 )
             else:
@@ -764,7 +765,7 @@ class TestK1TheGateReadsNoRegistryRowThroughANYDoor:
             ctx, admin_conn = world["ctx"], world["admin_conn"]
             session = "s-alice"
             await a28._alice_keeps_a_session(ctx, world, session)
-            keep_bare = a28._bare((await a28._session_keep_ids(admin_conn, session))[0])
+            keep_bare = bare_record_key((await a28._session_keep_ids(admin_conn, session))[0])
             await ctx._keep_store.add_household_member(keep_id=keep_bare, member_email=world["emails"]["bob"])
             seen = _spy_registry_queries(monkeypatch, ctx.agent_registry)
             world["holder"]["email"] = world["emails"]["carol"]
@@ -826,10 +827,10 @@ async def _shape_carol(ctx: Any, world: dict[str, Any], shape: str) -> None:
     elif shape == "householded-in-another-keep":
         world["holder"]["email"] = world["emails"]["dan"]
         await ctx.comms(action="register", agent="dans", session="s-dan", role="builder")
-        dan_keep = a28._bare((await a28._session_keep_ids(admin_conn, "s-dan"))[0])
+        dan_keep = bare_record_key((await a28._session_keep_ids(admin_conn, "s-dan"))[0])
         await ctx._keep_store.add_household_member(keep_id=dan_keep, member_email=world["emails"]["carol"])
     elif shape == "householded-in-this-keep":
-        alice_keep = a28._bare((await a28._session_keep_ids(admin_conn, "s-alice"))[0])
+        alice_keep = bare_record_key((await a28._session_keep_ids(admin_conn, "s-alice"))[0])
         await ctx._keep_store.add_household_member(keep_id=alice_keep, member_email=world["emails"]["carol"])
     world["holder"]["email"] = world["emails"]["carol"]
 
@@ -927,7 +928,7 @@ class TestK5NoRefusalClassCompensates:
             scopes = await run(
                 admin_conn, f"SELECT VALUE scope FROM agent WHERE session = '{session}' AND name = 'a'"
             )
-            assert len(keeps) == 1 and scopes == [keep_scope(a28._bare(keeps[0]))], (keeps, scopes)
+            assert len(keeps) == 1 and scopes == [keep_scope(bare_record_key(keeps[0]))], (keeps, scopes)
             assert deletes["count"] == 0, deletes
 
 
@@ -1019,7 +1020,7 @@ class TestK6NoRegisterPathRemovesOrWritesKeepState:
             await ctx.comms(
                 action="register", agent="first", session=session, role="builder"
             )  # K pre-exists (FOUND)
-            keep_bare = a28._bare((await a28._session_keep_ids(admin_conn, session))[0])
+            keep_bare = bare_record_key((await a28._session_keep_ids(admin_conn, session))[0])
             await ctx._keep_store.add_household_member(keep_id=keep_bare, member_email=world["emails"]["bob"])
             winner_kwargs = {
                 "role": dict(role="auditor", spawned_by="leadx"),

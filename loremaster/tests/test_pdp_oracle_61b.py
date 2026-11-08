@@ -59,9 +59,11 @@ from _surreal_harness import (  # the shared real-SurrealDB harness (env-driven 
     connect_admin,
     drop_database,
     make_env,
+    run,
     unique_database,
 )
 from loremaster.store import surreal_schema  # the module — for the D2 re-home SHARING pins
+from sdk3_shape_fakes import bare_record_key
 
 # --------------------------------------------------------------------------- #
 # RED-safe loader (finding #133) — identical to the pure-core file's gate.
@@ -199,12 +201,6 @@ async def _seed(connection: Any) -> None:
         )
 
 
-def _bare_id(record_id: Any) -> str:
-    """The bare id of a returned ``id`` cell (``RecordID`` or ``table:id`` string)."""
-    text = str(getattr(record_id, "id", record_id))
-    return text.split(":", 1)[-1] if ":" in text else text
-
-
 def _owner_principal_of(row_id: str) -> str | None:
     """The seeded owner_principal of a gov row id (for the #416 leak check)."""
     for rid, principal, _agent, _scope in _HOSTILE_ROWS:
@@ -216,9 +212,10 @@ def _owner_principal_of(row_id: str) -> str | None:
 async def _store_allowed_ids(connection: Any, table: str, predicate: Any) -> set[str]:
     """Run ``SELECT id FROM <table> WHERE <predicate.to_surql()>`` — the store's own verdict."""
     fragment, params = predicate.to_surql()
-    rows = await connection.query(f"SELECT id FROM {table} WHERE {fragment}", params)
+    # SDK3 round 6 (MP-C): read through the harness funnel (one statement's result on either SDK).
+    rows = await run(connection, f"SELECT id FROM {table} WHERE {fragment}", params)
     materialised = rows if isinstance(rows, list) else []
-    return {_bare_id(row["id"]) for row in materialised}
+    return {bare_record_key(row["id"]) for row in materialised}
 
 
 # --------------------------------------------------------------------------- #
@@ -426,11 +423,12 @@ class TestCompositionSafetyNoLeakUnderAnd:
         leaky = (
             "owner_principal = type::record('principal', $p) AND scope = $k0 OR scope = $k1"
         )
-        rows = await oracle_connection.query(
+        rows = await run(
+            oracle_connection,
             f"SELECT id FROM {_GOV} WHERE {leaky}",
             {"p": "alice", "k0": "keep:k1", "k1": "keep:k9"},
         )
-        ids = {_bare_id(row["id"]) for row in (rows if isinstance(rows, list) else [])}
+        ids = {bare_record_key(row["id"]) for row in (rows if isinstance(rows, list) else [])}
         leaked = {rid for rid in ids if _owner_principal_of(rid) not in (None, "alice")}
         assert leaked, (
             f"the unparenthesised twin did NOT leak — the composition-safety pin would be vacuous. "
@@ -476,7 +474,7 @@ class TestAbsentOwnerRowsAgree:
 
 
 async def _explain_plan(connection: Any, statement: str, params: dict[str, Any]) -> Any:
-    return await connection.query(f"{statement} EXPLAIN", params)
+    return await run(connection, f"{statement} EXPLAIN", params)
 
 
 class TestTheReadEmitterIndexScans:

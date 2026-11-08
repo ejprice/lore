@@ -311,6 +311,89 @@ class TestAnUnknownIndexCommitIsNotServedAsFailed:
         )
 
 
+def _refuse_once(real: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
+    """Wrap ``real`` so its NEXT call is a DEFINITE refusal (never sent; the control outcome class)."""
+    remaining = [1]
+
+    async def _wrapped(*args: Any, **kwargs: Any) -> Any:
+        if remaining[0] <= 0:
+            return await real(*args, **kwargs)
+        remaining[0] -= 1
+        raise _txn.TxnDomainRejectionError("refused (round-6 sweep-isolation control)", kind="Thrown")
+
+    return _wrapped
+
+
+#: ``(id, fault injector, edited files that must end up committed)`` — the outcome classes one file's store
+#: fault can take. ``n`` is the corpus size.
+_SWEEP_FAULTS: tuple[tuple[str, Callable[[Callable[..., Awaitable[Any]]], Callable[..., Awaitable[Any]]],
+                           Callable[[int], int]], ...] = (
+    ("unknown-NOT-landed", lambda real: _lose_the_reply(real, commit=False, times=1), lambda n: n - 1),
+    ("unknown-landed", lambda real: _lose_the_reply(real, commit=True, times=1), lambda n: n),
+    ("definite-refusal", _refuse_once, lambda n: n - 1),
+)
+
+
+class TestOneFilesStoreFaultNeverStopsTheSweep:
+    """SDK3 round 6, MP-A (R13 F-r5-3, confirmed by adversary round 2; R15). CLASS: one file's store fault
+    never stops the sweep, WHATEVER ITS OUTCOME CLASS — an unknown commit that did not land, one that did,
+    or a definite refusal — in BOTH sweep shapes (the realtime walk and the batch two-pass).
+
+    Three files are indexed, all three edited, and exactly ONE per-file commit meets the fault. ``index_all``
+    must RETURN, and every edited file the fault did not swallow must be committed: ``n - 1`` when the faulted
+    commit did not land, ``n`` when it did. A build that raises out of ``index_all`` (or out of the per-file
+    arm, e.g. ``_landed_after_unknown`` re-raising an unknown that did not land) aborts the sweep and leaves
+    every later file un-indexed — the wrong build the F18 pins above admitted (``wb_f18_abort``). The count
+    is also the anti-vacuity leg: ``n - 1`` (not ``n``) proves the fault actually fired on a commit."""
+
+    @pytest.mark.parametrize("mode", ["batch", "realtime"])
+    @pytest.mark.parametrize(
+        ("fault", "expected_committed"),
+        [pytest.param(inject, expected, id=label) for label, inject, expected in _SWEEP_FAULTS],
+    )
+    async def test_the_sweep_returns_and_commits_every_file_the_fault_did_not_swallow(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mode: str,
+        fault: Callable[[Callable[..., Awaitable[Any]]], Callable[..., Awaitable[Any]]],
+        expected_committed: Callable[[int], int],
+    ) -> None:
+        live = tmp_path / "live"
+        paths = bulk_suite._build_corpus(live, count=3)
+        config = bulk_suite._config(slug=unique_database(), live_path=live, batch={"mode": mode})
+        trio = bulk_suite._trio()
+        embedder = bulk_suite.RecordingBatchFlatEmbedder(dim=bulk_suite._DIM, supports_batch=True)
+        indexer = bulk_suite._make_indexer(
+            config=config, trio=trio, embedder=embedder, snapshot_root=tmp_path / "snap"
+        )
+        first = await indexer.index_all()
+        assert first.files_indexed == len(paths), "premise: every file indexed by the first sweep"
+        priors = {path: await trio.manifest.get("custom", path) for path in paths}
+        for path in paths:
+            (live / path).write_text(
+                (live / path).read_text(encoding="utf-8") + _EDITED_SUFFIX, encoding="utf-8"
+            )
+        monkeypatch.setattr(trio.store, "apply", fault(trio.store.apply))
+
+        summary: Any = await indexer.index_all()  # must RETURN — a raise here IS the defect
+
+        rows = {path: await trio.manifest.get("custom", path) for path in paths}
+        committed = [
+            path
+            for path in paths
+            if (row := rows[path]) is not None
+            and row.state == STATE_INDEXED
+            and (prior := priors[path]) is not None
+            and row.sha512 != prior.sha512
+        ]
+        assert len(committed) == expected_committed(len(paths)), (
+            f"{mode} sweep: after ONE per-file store fault, {len(committed)} of {len(paths)} edited files "
+            f"were committed (expected {expected_committed(len(paths))}) — one file's fault must never stop "
+            f"(or skip) the others: {summary!r}"
+        )
+
+
 # ----------------------------------------------------------------------------------------------------
 # calibration/engine.py::_file_drift_finding_deduped (a BROAD site whose served note is a definite failure)
 # ----------------------------------------------------------------------------------------------------

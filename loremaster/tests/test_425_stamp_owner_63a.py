@@ -42,15 +42,12 @@ from _surreal_harness import (
 from fastmcp.server.auth import AccessToken
 from loremaster.agents import AgentRegistry
 from loremaster.principals import PrincipalStore
+from sdk3_shape_fakes import bare_record_key, same_record
 
 import loremaster
 
 _EMAIL_ALICE = "alice@example.com"
 _loremaster_stamp_owner = getattr(loremaster, "stamp_owner", None)
-
-
-def _bare(record_id: str) -> str:
-    return record_id.partition(":")[2] or record_id
 
 
 def _token(email: str, *, role: str = "member") -> AccessToken:
@@ -81,7 +78,11 @@ async def cap_env() -> Any:
     admin = await connect_admin(env)
     try:
         yield SimpleNamespace(
-            env=env, registry=registry, principals=principals, admin=admin, alice_bare=_bare(alice.id)
+            env=env,
+            registry=registry,
+            principals=principals,
+            admin=admin,
+            alice_bare=bare_record_key(alice.id),
         )
     finally:
         await admin.close()
@@ -177,7 +178,7 @@ class TestStampOwnerIssuesOneRoundTrip:
         assert owner_agent == result.agent.id, (
             f"owner_agent must be the verified agent id, got {owner_agent!r}"
         )
-        assert cap_env.alice_bare in str(owner_principal), (
+        assert same_record(owner_principal, cap_env.alice_bare), (
             f"owner_principal must still name alice ({cap_env.alice_bare}) after the one-read closure, "
             f"got {owner_principal!r}"
         )

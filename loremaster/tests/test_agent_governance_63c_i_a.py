@@ -108,17 +108,13 @@ from loremaster.governed import PROJECT_KEEP_KEY
 from loremaster.store import surreal_schema
 from loremaster.store._txn import SurrealStoreError, TxnDomainRejectionError
 from lorerunes.pdp import keep_scope
+from sdk3_shape_fakes import bare_record_key, same_record
 from surrealdb import RecordID
 from test_comms_schema import _HOSTILE_IDENTIFIERS
 
 from loremaster import principals
 
 _DIM = 8
-
-
-def _bare(value: Any) -> str:
-    text = str(getattr(value, "id", value))
-    return text.split(":", 1)[-1] if ":" in text else text
 
 
 # =========================================================================== #
@@ -162,20 +158,20 @@ class TestRegisterStampsTheGovernedTriple63cIA:
         and ``scope`` = ``keep:<session keep>`` (RED — column absent). The session keep is the one
         ``_comms_register`` mints (SF-63-1); its scope is read from the keep store, never assumed."""
         async with credentialed_app_context(
-            monkeypatch, tmp_path, principals={"alice": "member"}, dim=_DIM
+            monkeypatch, tmp_path, principals={"alice": "member"}, dim=_DIM, digit_led_principals=True
         ) as world:
             row = await self._register_and_read(world, agent="fixer-b", session="wave7")
-            bare_id = _bare(row["id"])
-            assert str(row["owner_principal"]) == f"principal:{world['pids']['alice']}", (
+            bare_id = bare_record_key(row["id"])
+            assert same_record(row["owner_principal"], f"principal:{world['pids']['alice']}"), (
                 f"owner_principal must be the registrant's principal, got {row['owner_principal']!r}"
             )
-            assert str(row.get("owner_agent")) == f"{AGENT_TABLE}:{bare_id}", (
+            assert same_record(row.get("owner_agent"), f"{AGENT_TABLE}:{bare_id}"), (
                 f"owner_agent must be the row's OWN id (SF-63-2 owner = (owner_principal, id)), got "
                 f"{row.get('owner_agent')!r} — RED at HEAD (the owner_agent column is unbuilt)"
             )
             session_keep = await world["ctx"]._keep_store.get_by_key("session:wave7")  # noqa: SLF001
             assert session_keep is not None, "register did not mint the SF-63-1 session keep"
-            assert row.get("scope") == keep_scope(_bare(session_keep.id)), (
+            assert row.get("scope") == keep_scope(bare_record_key(session_keep.id)), (
                 f"scope must be keep:<the session keep register minted>, got {row.get('scope')!r} — "
                 f"RED at HEAD (the scope column is unbuilt)"
             )
@@ -189,18 +185,19 @@ class TestRegisterStampsTheGovernedTriple63cIA:
         fixture-doesn't-discriminate trap), so a build that re-derives/clobbers the triple on
         re-register reds. RED at HEAD (owner_agent/scope absent → the concrete-value assert fails)."""
         async with credentialed_app_context(
-            monkeypatch, tmp_path, principals={"alice": "member"}, dim=_DIM
+            monkeypatch, tmp_path, principals={"alice": "member"}, dim=_DIM, digit_led_principals=True
         ) as world:
             first = await self._register_and_read(world, agent="fixer-b", session="wave7")
             second = await self._register_and_read(world, agent="fixer-b", session="wave7")
-            bare_id = _bare(first["id"])
+            bare_id = bare_record_key(first["id"])
             session_keep = await world["ctx"]._keep_store.get_by_key("session:wave7")  # noqa: SLF001
-            expected_scope = keep_scope(_bare(session_keep.id))
+            expected_scope = keep_scope(bare_record_key(session_keep.id))
             for label, row in (("first", first), ("re-register", second)):
-                assert str(row["owner_principal"]) == f"principal:{world['pids']['alice']}", (label, row)
-                assert str(row.get("owner_agent")) == f"{AGENT_TABLE}:{bare_id}", (label, row)
+                alice_principal = f"principal:{world['pids']['alice']}"
+                assert same_record(row["owner_principal"], alice_principal), (label, row)
+                assert same_record(row.get("owner_agent"), f"{AGENT_TABLE}:{bare_id}"), (label, row)
                 assert row.get("scope") == expected_scope, (label, row)
-            assert _bare(second["id"]) == bare_id, "re-register minted a NEW id — not the same row"
+            assert bare_record_key(second["id"]) == bare_id, "re-register minted a NEW id — not the same row"
 
 
     async def test_scope_is_THE_session_keep_across_two_sessions(
@@ -212,14 +209,14 @@ class TestRegisterStampsTheGovernedTriple63cIA:
         which a one-session fixture cannot tell apart). The two scopes must also DIFFER (else the two
         sessions shared a keep and the leg discriminates nothing)."""
         async with credentialed_app_context(
-            monkeypatch, tmp_path, principals={"alice": "member"}, dim=_DIM
+            monkeypatch, tmp_path, principals={"alice": "member"}, dim=_DIM, digit_led_principals=True
         ) as world:
             scopes: dict[str, Any] = {}
             for agent, session in (("fixer-b", "wave7"), ("fixer-c", "wave8")):
                 row = await self._register_and_read(world, agent=agent, session=session)
                 keep = await world["ctx"]._keep_store.get_by_key(f"session:{session}")  # noqa: SLF001
                 assert keep is not None, f"register did not mint the session keep for {session!r}"
-                assert row.get("scope") == keep_scope(_bare(keep.id)), (
+                assert row.get("scope") == keep_scope(bare_record_key(keep.id)), (
                     f"{agent}@{session}: scope must be keep:<THIS session's keep>, got "
                     f"{row.get('scope')!r} (the {session!r} keep is {keep.id!r})"
                 )
@@ -236,14 +233,17 @@ class TestRegisterStampsTheGovernedTriple63cIA:
         principal and scoped to the SHARED session keep. The keeper's own LATER agent likewise. WB12
         stamped the scope only for the keeper (``kept_by_me``), leaving a joiner's agent NONE-scope."""
         async with credentialed_app_context(
-            monkeypatch, tmp_path, principals={"alice": "member", "bob": "member"}, dim=_DIM
+            monkeypatch, tmp_path,
+            principals={"alice": "member", "bob": "member"},
+            dim=_DIM,
+            digit_led_principals=True,
         ) as world:
             ctx = world["ctx"]
             await self._register_and_read(world, agent="keeper-a", session="shared")
             keep = await ctx._keep_store.get_by_key("session:shared")  # noqa: SLF001
             assert keep is not None, "the keeper's register did not mint the session keep"
             await ctx._keep_store.add_household_member(  # noqa: SLF001
-                keep_id=_bare(keep.id), member_email=world["emails"]["bob"]
+                keep_id=bare_record_key(keep.id), member_email=world["emails"]["bob"]
             )
             world["holder"]["email"] = world["emails"]["bob"]
             await ctx.comms(action="register", agent="joiner-b", session="shared", role="builder")
@@ -252,12 +252,12 @@ class TestRegisterStampsTheGovernedTriple63cIA:
                 f"SELECT owner_principal, scope FROM {AGENT_TABLE} WHERE name = 'joiner-b'",
             )
             assert rows, "the householded joiner's register wrote no agent row"
-            assert str(rows[0]["owner_principal"]) == f"principal:{world['pids']['bob']}", rows
-            assert rows[0].get("scope") == keep_scope(_bare(keep.id)), (
+            assert same_record(rows[0]["owner_principal"], f"principal:{world['pids']['bob']}"), rows
+            assert rows[0].get("scope") == keep_scope(bare_record_key(keep.id)), (
                 f"a householded JOINER's agent must be scoped to the SHARED session keep, got {rows!r}"
             )
             later = await self._register_and_read(world, agent="keeper-a2", session="shared")
-            assert later.get("scope") == keep_scope(_bare(keep.id)), (
+            assert later.get("scope") == keep_scope(bare_record_key(keep.id)), (
                 f"the keeper's own later agent must join the same session keep, got {later!r}"
             )
 
@@ -328,6 +328,7 @@ class TestRegisterStampsTheGovernedTriple63cIA:
             tmp_path,
             principals={"alice": "member", "bob": "member", "carol": "member"},
             dim=_DIM,
+            digit_led_principals=True,
         ) as world:
             ctx, admin = world["ctx"], world["admin_conn"]
             world["holder"]["email"] = world["emails"]["alice"]
@@ -335,11 +336,11 @@ class TestRegisterStampsTheGovernedTriple63cIA:
             keep = await ctx._keep_store.get_by_key("session:shared")  # noqa: SLF001
             assert keep is not None, "the keeper's register did not mint the session keep"
             await ctx._keep_store.add_household_member(  # noqa: SLF001
-                keep_id=_bare(keep.id), member_email=world["emails"]["bob"]
+                keep_id=bare_record_key(keep.id), member_email=world["emails"]["bob"]
             )
             before = await run(admin, projection, {"n": "keeper-a"})
             assert len(before) == 1, before
-            assert str(before[0]["owner_principal"]) == f"principal:{world['pids']['alice']}", (
+            assert same_record(before[0]["owner_principal"], f"principal:{world['pids']['alice']}"), (
                 f"CONTROL: the keeper's agent must be owned by the keeper before the joiner acts: {before!r}"
             )
             # CONTROL 1 — a FOREIGN principal is refused (SF-63-1) and writes nothing.
@@ -359,7 +360,8 @@ class TestRegisterStampsTheGovernedTriple63cIA:
                 **joiner_register_extras,
             )
             own_rows = await run(admin, projection, {"n": "joiner-b"})
-            assert own_rows and str(own_rows[0]["owner_principal"]) == f"principal:{world['pids']['bob']}", (
+            bob_principal = f"principal:{world['pids']['bob']}"
+            assert own_rows and same_record(own_rows[0]["owner_principal"], bob_principal), (
                 f"CONTROL: the joiner's own fresh agent must be owned by the joiner: {own_rows!r}"
             )
             # THE PIN — the joiner re-registers the KEEPER's agent (same role); outcome not asserted (i-b's).
@@ -395,7 +397,7 @@ class TestRegisterStampsTheGovernedTriple63cIA:
         import loremaster.server as server_mod
 
         async with credentialed_app_context(
-            monkeypatch, tmp_path, principals={"alice": "member"}, dim=_DIM
+            monkeypatch, tmp_path, principals={"alice": "member"}, dim=_DIM, digit_led_principals=True
         ) as world:
             ctx = world["ctx"]
             recorded: list[dict[str, Any]] = []
@@ -422,7 +424,7 @@ class TestRegisterStampsTheGovernedTriple63cIA:
             assert tokenless.get("owner_principal_id") is None, tokenless
             keep = await ctx._keep_store.get_by_key("session:wave8")  # noqa: SLF001
             assert keep is not None
-            assert credentialed.get("session_keep_id") == _bare(keep.id), (
+            assert credentialed.get("session_keep_id") == bare_record_key(keep.id), (
                 f"a credentialed register must pass THE session keep's BARE id (the keep the SF-63-1 "
                 f"gate just checked), got {credentialed.get('session_keep_id')!r} vs {keep.id!r}"
             )
@@ -480,10 +482,12 @@ class TestTheRegistryProvenanceSeam63cIA:
         rows = await run(
             connection,
             f"SELECT owner_principal, owner_agent, scope FROM type::record('{AGENT_TABLE}', $id)",
-            {"id": _bare(result.agent.id)},
+            {"id": bare_record_key(result.agent.id)},
         )
-        assert str(rows[0]["owner_principal"]) == "principal:alice_pid", rows
-        assert str(rows[0].get("owner_agent")) == f"{AGENT_TABLE}:{_bare(result.agent.id)}", rows
+        assert same_record(rows[0]["owner_principal"], "principal:alice_pid"), rows
+        assert same_record(rows[0].get("owner_agent"), f"{AGENT_TABLE}:{bare_record_key(result.agent.id)}"), (
+            rows
+        )
         assert rows[0].get("scope") == keep_scope("sessionkeep7"), rows
 
     async def test_the_scope_is_formed_by_the_SHARED_keep_scope_formatter(
@@ -504,7 +508,7 @@ class TestTheRegistryProvenanceSeam63cIA:
         rows = await run(
             connection,
             f"SELECT scope FROM type::record('{AGENT_TABLE}', $id)",
-            {"id": _bare(baseline.agent.id)},
+            {"id": bare_record_key(baseline.agent.id)},
         )
         assert rows[0].get("scope") == keep_scope("kpbase"), f"BASELINE: unpatched stamp wrong: {rows!r}"
         original_keep_scope = keep_scope
@@ -518,7 +522,7 @@ class TestTheRegistryProvenanceSeam63cIA:
         rows = await run(
             connection,
             f"SELECT scope FROM type::record('{AGENT_TABLE}', $id)",
-            {"id": _bare(mutated.agent.id)},
+            {"id": bare_record_key(mutated.agent.id)},
         )
         assert rows[0].get("scope") == "mutkeep:kpmut", identity_sweep_miss_message(
             f"the STAMPED scope (A2: ONE formatter, lorerunes.keep_scope) got {rows!r}", patched
@@ -578,9 +582,11 @@ class TestTheRegistryProvenanceSeam63cIA:
         assert result.re_registered is False
         expected_scope = keep_scope(session_keep_id) if session_keep_id is not None else None
         assert rows[0].get("scope") == expected_scope, rows
-        expected_owner = f"principal:{owner_principal_id}" if owner_principal_id is not None else None
         observed_owner = rows[0].get("owner_principal")
-        assert (str(observed_owner) if observed_owner is not None else None) == expected_owner, rows
+        if owner_principal_id is None:
+            assert observed_owner is None, rows
+        else:
+            assert same_record(observed_owner, f"principal:{owner_principal_id}"), rows
 
 
     # ------------------------------------------------------------------------------------------- #
@@ -642,7 +648,7 @@ class TestTheRegistryProvenanceSeam63cIA:
                 "fixer-b", session="wave7", role="builder",
                 owner_principal_id=None, session_keep_id=None,
             )
-            bare_id = _bare(first.agent.id)
+            bare_id = bare_record_key(first.agent.id)
         else:
             bare_id = await seed_agent_legacy(
                 connection,
@@ -827,7 +833,7 @@ async def agent_migrate_world() -> Any:
         await apply_ddl(connection, case.make_ddl(), url=env.url)
         await apply_ddl(connection, governed_overlay_ddl(AGENT_TABLE), url=env.url)
         operator = await principal_store.create(email="operator@example.com", role="admin")
-        yield principal_store, keep_store, connection, env, _bare(operator.id)
+        yield principal_store, keep_store, connection, env, bare_record_key(operator.id)
     finally:
         await connection.close()
         await keep_store.close()
@@ -1253,7 +1259,7 @@ class TestAgentMigrateScopeKeyed63cIA:
         for index, governed_id in enumerate(governed_ids):
             await seed_agent_governed(
                 connection, row_id=governed_id, name=f"gov-{index}", session="live",
-                owner_principal=_bare(member.id), owner_agent=governed_id, scope=session_scope,
+                owner_principal=bare_record_key(member.id), owner_agent=governed_id, scope=session_scope,
             )
         legacy_ids = await self._seed_clean_legacy(connection, count=3)
         governed_before = await run(
@@ -1293,7 +1299,7 @@ class TestAgentMigrateScopeKeyed63cIA:
                     {"id": legacy_id},
                 )
             )[0]
-            assert row.get("scope") == keep_scope(_bare(project_keep.id)), (
+            assert row.get("scope") == keep_scope(bare_record_key(project_keep.id)), (
                 f"legacy {legacy_id} was not scope-stamped to the project keep: {row!r}"
             )
 
@@ -1354,7 +1360,7 @@ class TestAgentMigrateScopeKeyed63cIA:
         assert not result.refused and result.backfilled == 3, result
         project_keep = await keep_store.get_by_key(PROJECT_KEEP_KEY)
         assert project_keep is not None, "the migrate did not mint the canonical project keep"
-        expected_scope = keep_scope(_bare(project_keep.id))
+        expected_scope = keep_scope(bare_record_key(project_keep.id))
         for row_id in ids:
             row = (
                 await run(
@@ -1364,13 +1370,13 @@ class TestAgentMigrateScopeKeyed63cIA:
                     {"id": row_id},
                 )
             )[0]
-            assert str(row.get("owner_agent")) == f"{AGENT_TABLE}:{row_id}", (
+            assert same_record(row.get("owner_agent"), f"{AGENT_TABLE}:{row_id}"), (
                 f"{row_id}: owner_agent must be the row's OWN id (SF-63-2), got {row.get('owner_agent')!r}"
             )
             assert row.get("scope") == expected_scope, (
                 f"{row_id}: scope must be the project keep (§2.2 grandfather), got {row.get('scope')!r}"
             )
-            assert str(row["owner_principal"]) == f"principal:{operator_bare}", (
+            assert same_record(row["owner_principal"], f"principal:{operator_bare}"), (
                 f"{row_id}: owner_principal must be the operator, got {row['owner_principal']!r}"
             )
 
@@ -1739,7 +1745,7 @@ class TestTheRealAgentMigrateSurvivesLegacyViolators63cIA:
                 f"{shape}: owner_principal/scope not backfilled, got {row!r}"
             )
             # r2 (§D item 12 / sidecar F7 / adversary R2): ALL THREE columns on the DIRTY population.
-            assert str(row.get("owner_agent")) == f"{AGENT_TABLE}:{ids[shape]}", (
+            assert same_record(row.get("owner_agent"), f"{AGENT_TABLE}:{ids[shape]}"), (
                 f"{shape}: owner_agent must be the violator row's OWN id (the 3-column stamp holds on the "
                 f"dirty population too — §4.4 Leg B 'all three columns'), got {row.get('owner_agent')!r}"
             )

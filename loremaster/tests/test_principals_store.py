@@ -57,6 +57,7 @@ from _surreal_harness import (
     unique_database,
 )
 from loremaster.store import surreal_schema
+from sdk3_shape_fakes import bare_record_key
 
 _REQUIRED_NAMES = (
     "PrincipalStore",
@@ -496,7 +497,7 @@ async def _insert_raw_key(env: SurrealEnv, *, key_id: str, principal_id: str, na
     """Insert a raw ``principal_key`` row owned by ``principal_id`` (a ``str(RecordID)``
     like ``principal:xxx``), binding the owner via ``type::record`` — no
     ``PrincipalKeyStore`` needed (the cascade is a ``PrincipalStore`` concern)."""
-    rid = principal_id.split(":", 1)[1]  # the id part after the table name
+    rid = bare_record_key(principal_id)  # the id part after the table name (any text form)
     connection = await connect_admin(env)
     try:
         await run(
@@ -538,7 +539,7 @@ class TestDelete:
         removed = await store.delete(email=_EMAIL_A)
         assert removed == 3, f"delete must report the 3 cascaded keys, got {removed!r}"
         assert await store.get_by_email(_EMAIL_A) is None  # principal gone
-        rid = created.id.split(":", 1)[1]
+        rid = bare_record_key(created.id)
         remaining = await _count(
             env, surreal_schema.PRINCIPAL_KEY_TABLE,
             "principal = type::record('principal', $pid)", {"pid": rid},
@@ -571,7 +572,7 @@ class TestDelete:
         await store.delete(email=_EMAIL_A)
 
         assert await store.get_by_email(_EMAIL_B) is not None  # bystander principal survives
-        keep_rid = keep.id.split(":", 1)[1]
+        keep_rid = bare_record_key(keep.id)
         survivors = await _count(
             env, surreal_schema.PRINCIPAL_KEY_TABLE,
             "principal = type::record('principal', $pid)", {"pid": keep_rid},

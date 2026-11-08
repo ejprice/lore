@@ -67,15 +67,13 @@ from loremaster.governed import GovernedDenied, MigrateGovernedResult
 from loremaster.store._txn import SurrealStoreError
 from lorerunes.pdp import keep_scope
 from pydantic import BaseModel
+from sdk3_shape_fakes import bare_record_key
 from surrealdb import RecordID
 from test_fixwave_a19_63c_i_a import (
     _MIGRATE_TABLES,
     _redirect_the_shared_preconditions,
     _seed_foreign_principals,
     _snapshot,
-)
-from test_fixwave_a19_63c_i_a import (
-    _bare as _bare,  # noqa: PLC0414 - an EXPLICIT re-export: a28b's AST-equal K-probes read `a28._bare`
 )
 
 from loremaster import principals
@@ -123,15 +121,20 @@ def _spy_delete_keep(monkeypatch: pytest.MonkeyPatch, ctx: Any) -> dict[str, int
 
 
 async def _session_keep_ids(admin_conn: Any, session: str) -> list[str]:
+    """The BARE keys of the session's keeps — from the RecordID's parts (R15 / MP-C 3c), never
+    ``str(RecordID)``, which SDK 3.0 renders ``keep:⟨01M6…⟩`` for a ULID (always digit-led) and production
+    would then target a record that does not exist."""
     return [
-        str(value)
+        bare_record_key(value)
         for value in await run(admin_conn, f"SELECT VALUE id FROM keep WHERE key = 'session:{session}'")
     ]
 
 
 async def _live_keep_scopes(admin_conn: Any) -> set[str]:
-    """``keep:<bare>`` for every keep that EXISTS (``str(RecordID)``, store-ref §7 — never a hand parse)."""
-    return {str(value) for value in await run(admin_conn, "SELECT VALUE id FROM keep")}
+    """``keep:<bare>`` for every keep that EXISTS — production's own ``keep_scope`` over the RecordID's bare
+    key (R15 / MP-C 3c: ``str(RecordID)`` is a DIFFERENT text form under SDK 3.0, ``keep:⟨01M6…⟩``)."""
+    keep_ids = await run(admin_conn, "SELECT VALUE id FROM keep")
+    return {keep_scope(bare_record_key(value)) for value in keep_ids}
 
 
 async def _agent_scopes(admin_conn: Any, session: str) -> list[dict[str, Any]]:
@@ -252,7 +255,9 @@ class TestTheRaceNeverStrandsAScope63cIAa28:
                 bad = [
                     row
                     for row in rows
-                    if row.get("scope") is None or row["scope"] not in live or [row["scope"]] != session_keeps
+                    if row.get("scope") is None
+                    or row["scope"] not in live
+                    or [row["scope"]] != [keep_scope(keep_bare) for keep_bare in session_keeps]
                 ]
                 if bad or len(session_keeps) != 1:
                     stranded_rounds.append(
@@ -363,7 +368,7 @@ class TestTheRaceNeverStrandsAScope63cIAa28:
             )
             keeps = await _session_keep_ids(admin_conn, session)
             assert len(keeps) == 1, f"the session keep K must SURVIVE the refused register: {keeps!r}"
-            keep_bare = _bare(keeps[0])
+            keep_bare = bare_record_key(keeps[0])
             assert await keep_store.get_keep(keep_bare) is not None, f"K ({keep_bare}) does not resolve"
             assert deletes["count"] == 0, (
                 f"the register path called delete_keep {deletes['count']}x (amendment 28 §F-1)"
@@ -382,7 +387,7 @@ class TestTheRaceNeverStrandsAScope63cIAa28:
                 keeper = await run(
                     admin_conn, f"SELECT VALUE keeper FROM keep WHERE key = 'session:{session}'"
                 )
-                assert [_bare(value) for value in keeper] == [world["pids"]["alice"]], (
+                assert [bare_record_key(value) for value in keeper] == [world["pids"]["alice"]], (
                     "CONTROL (the named β bound): K is left kept by P with no scoped agent — never deleted: "
                     f"{keeper!r}"
                 )
@@ -637,7 +642,7 @@ class TestAForeignPrincipalLearnsNothingBeforeTheGate63cIAa28:
             ctx, admin_conn = world["ctx"], world["admin_conn"]
             session = "s-alice"
             await _alice_keeps_a_session(ctx, world, session)
-            keep_bare = _bare((await _session_keep_ids(admin_conn, session))[0])
+            keep_bare = bare_record_key((await _session_keep_ids(admin_conn, session))[0])
             await ctx._keep_store.add_household_member(keep_id=keep_bare, member_email=world["emails"]["bob"])
             world["holder"]["email"] = world["emails"]["bob"]
             first = await _outcome(
@@ -1047,7 +1052,7 @@ class TestTheMessageLegServesOneRefusalInCheckOrder63cIAa28:
                 row_id="owned_unscoped",
                 name="owned-unscoped",
                 session="gs",
-                owner_principal=_bare(foreign.id),
+                owner_principal=bare_record_key(foreign.id),
                 owner_agent=None,
                 scope=None,
             )
@@ -1485,7 +1490,8 @@ async def _seed_unclassified_owner_population(world: Any) -> None:
     distinct owners 2, classification ``unclassified``."""
     second_admin = await world.principal_store.create(email="second-admin@example.com", role="admin")
     foreign = await _seed_foreign_principals(world)
-    for index, owner in enumerate((_bare(second_admin.id), _bare(second_admin.id), foreign[0])):
+    second_admin_bare = bare_record_key(second_admin.id)
+    for index, owner in enumerate((second_admin_bare, second_admin_bare, foreign[0])):
         await seed_agent_governed(
             world.connection,
             row_id=f"uowned{index}",
@@ -1666,8 +1672,9 @@ async def _population_identifiers(world: Any) -> list[str]:
     """Every stored id / principal id / keep marker a refusal may name (stripped before counting integers)."""
     ids: list[str] = ["sessionkeeppa", "sessionkeepgs", "sessionkeepother"]
     for table in (AGENT_TABLE, MESSAGE_TABLE, "principal"):
-        ids += [_bare(value) for value in await run(world.connection, f"SELECT VALUE id FROM {table}")]
-        ids += [str(value) for value in await run(world.connection, f"SELECT VALUE id FROM {table}")]
+        table_ids = await run(world.connection, f"SELECT VALUE id FROM {table}")
+        ids += [bare_record_key(value) for value in table_ids]
+        ids += [str(value) for value in table_ids]
     ids += [f"ghost{index}" for index in range(10)] + ["ghost_sender"]
     return ids
 

@@ -66,6 +66,7 @@ from loremaster.sanitise import CONTROL_CHAR_PATTERN, sanitise_line
 from loremaster.server import AppContext
 from loremaster.store import surreal_schema
 from lorerunes.pdp import keep_scope
+from sdk3_shape_fakes import bare_record_key
 from surrealdb import RecordID
 
 from loremaster import principals
@@ -87,11 +88,6 @@ _MIGRATE_TABLES = (AGENT_TABLE, MEMORY_TABLE, MESSAGE_TABLE, _BRIEF_TABLE)
 _BYTE_INERT_TABLES = (*_MIGRATE_TABLES, "keep", "member_of", "principal")
 #: The name amendment 19 D-1 proposes for THE shared agent-migration precondition function.
 _SHARED_PRECONDITIONS = "_agent_migration_preconditions"
-
-
-def _bare(value: Any) -> str:
-    text = str(getattr(value, "id", value))
-    return text.split(":", 1)[-1] if ":" in text else text
 
 
 async def _snapshot(connection: Any) -> dict[str, list[dict[str, Any]]]:
@@ -136,7 +132,7 @@ async def _governed_world() -> AsyncIterator[_World]:
         await apply_ddl(connection, surreal_schema.generate_brief_ddl(), url=env.url)
         operator = await principal_store.create(email="operator@example.com", role="admin")
         handle, _calls = store_handle(connection, url=env.url)
-        yield _World(env, connection, principal_store, keep_store, handle, _bare(operator.id))
+        yield _World(env, connection, principal_store, keep_store, handle, bare_record_key(operator.id))
     finally:
         await connection.close()
         await keep_store.close()
@@ -148,7 +144,7 @@ async def _seed_foreign_principals(world: _World) -> list[str]:
     """TWO real non-operator (member) principals — ≥2 foreign owners, never a monoculture."""
     first = await world.principal_store.create(email="foreign-a@example.com", role="member")
     second = await world.principal_store.create(email="foreign-b@example.com", role="member")
-    return [_bare(first.id), _bare(second.id)]
+    return [bare_record_key(first.id), bare_record_key(second.id)]
 
 
 async def _seed_multi_principal_store(world: _World) -> dict[str, Any]:
@@ -560,10 +556,25 @@ class TestTheRefusalRendersStoredIdsThroughTheSanitiser63cIAa19:
         )
 
     @staticmethod
-    def _renderings(table: str, bare: str) -> tuple[str, ...]:
-        """The sanitised forms a correct build may serve for one stored id: the full record id
-        (``table:⟨…⟩``, the SDK's own rendering) or its bare id — both through ``sanitise_line``."""
-        return (str(sanitise_line(str(RecordID(table, bare)))), str(sanitise_line(bare)))
+    async def _renderings(connection: Any, table: str, bare: str) -> tuple[str, ...]:
+        """The sanitised forms a correct build may serve for one stored id: the ENGINE's ``<string>``
+        rendering of the record id, or its bare id — both through ``sanitise_line``.
+
+        SDK3 round 6 (R15, MP-C 3h): the record-id form used to be the SDK's ``str(RecordID)`` — the form
+        ruling R7 (d) forbids for served text — while the engine's form (F15/RS4) was refused. The engine
+        renders it here, live, so the accepted form is whatever the engine says, not a reconstruction.
+        """
+        engine_text = await run(
+            connection, "RETURN <string> type::record($table, $key);", {"table": table, "key": bare}
+        )
+        return (str(sanitise_line(str(engine_text))), str(sanitise_line(bare)))
+
+    @staticmethod
+    def _forbidden_rendering(table: str, bare: str, accepted: tuple[str, ...]) -> str | None:
+        """The SDK's ``str(RecordID)`` form (R7 (d): never served text), sanitised — or ``None`` when the
+        installed SDK happens to render it exactly as an accepted form (then it is not distinguishable)."""
+        sdk_form = str(sanitise_line(str(RecordID(table, bare))))
+        return None if sdk_form in accepted else sdk_form
 
     @pytest.mark.parametrize("table", _MIGRATE_TABLES)
     async def test_a_hostile_stored_id_cannot_forge_a_line_in_the_refusal(self, table: str) -> None:
@@ -588,9 +599,15 @@ class TestTheRefusalRendersStoredIdsThroughTheSanitiser63cIAa19:
                 ),
                 ("the plain control agent id", AGENT_TABLE, "plain_trap"),
             ):
-                assert any(form in reason for form in self._renderings(table_name, bare)), (
+                accepted = await self._renderings(world.connection, table_name, bare)
+                assert any(form in reason for form in accepted), (
                     f"the refusal does not name {label} through sanitise_line (expected one of "
-                    f"{self._renderings(table_name, bare)!r}): {reason!r}"
+                    f"{accepted!r}): {reason!r}"
+                )
+                forbidden = self._forbidden_rendering(table_name, bare, accepted)
+                assert forbidden is None or forbidden not in reason, (
+                    f"the refusal serves {label} as the SDK's str(RecordID) text {forbidden!r} — R7 (d): "
+                    f"served text is the engine's form or the bare key, never the SDK's str(): {reason!r}"
                 )
 
     async def test_the_id_render_ROUTES_through_the_shared_sanitise_line(
@@ -607,7 +624,7 @@ class TestTheRefusalRendersStoredIdsThroughTheSanitiser63cIAa19:
             # The expected (UNPATCHED) renderings, computed BEFORE the sweep — the sweep rebinds this test
             # module's own ``sanitise_line`` import too.
             hostile_forms = {
-                table_name: self._renderings(table_name, bare)
+                table_name: await self._renderings(world.connection, table_name, bare)
                 for table_name, bare in (
                     (AGENT_TABLE, _HOSTILE_AGENT_ID),
                     ("principal", _HOSTILE_PRINCIPAL_ID),
@@ -677,7 +694,7 @@ class TestABlankRoleRegisterHasNoSideEffect63cIAa19:
             world["holder"]["email"] = world["emails"]["bob"]
             await ctx.comms(action="register", agent="bobs-agent", session="wave9", role="builder")
             keeper = await run(admin_conn, "SELECT VALUE keeper FROM keep WHERE key = 'session:wave9'")
-            assert [_bare(value) for value in keeper] == [world["pids"]["bob"]], (
+            assert [bare_record_key(value) for value in keeper] == [world["pids"]["bob"]], (
                 f"the session keep must be minted by (and kept by) bob's valid register, got {keeper!r}"
             )
 

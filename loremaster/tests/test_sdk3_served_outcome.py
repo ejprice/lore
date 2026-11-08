@@ -253,7 +253,9 @@ class TestEveryStoreErrorFamilyCatchSiteIsAdjudicated:
     production catch site whose caught classes include a ``SurrealStoreError``-family class that
     ``SurrealOutcomeUnknownError`` subclasses (and no earlier clause of its ``try`` catches it first). Each is
     adjudicated: a behaviour pin, or a one-line verdict. A new family site with no row is RED; a verdict row
-    whose site is gone is RED; a pin row must name a test class that exists."""
+    whose site is gone is RED. (R14, operator "B", 2026-11-07: round 5's clause that each "pin" row names
+    an existing test class — a test about tests — was REMOVED in round 6; the walker-derived reach checks
+    stay.)"""
 
     def test_the_family_derivation_is_not_vacuous(self) -> None:
         sites = _family_sites_an_unknown_outcome_reaches()
@@ -279,18 +281,6 @@ class TestEveryStoreErrorFamilyCatchSiteIsAdjudicated:
             if kind == "verdict" and key not in derived
         )
         assert not stale, f"verdict rows whose site no longer exists in the derived set: {stale}"
-
-    def test_every_pin_row_names_a_real_behaviour_pin(self) -> None:
-        import importlib  # noqa: PLC0415
-
-        missing = []
-        for key, (kind, target) in _FAMILY_ADJUDICATION.items():
-            if kind != "pin":
-                continue
-            module_name, _, class_name = target.partition("::")
-            if not isinstance(getattr(importlib.import_module(module_name), class_name, None), type):
-                missing.append(f"{key} -> {target}")
-        assert not missing, f"pin rows naming no test class: {missing}"
 
 
 class TestTheBatchVerbNeverServesAnUnknownOutcomeAsAborted:

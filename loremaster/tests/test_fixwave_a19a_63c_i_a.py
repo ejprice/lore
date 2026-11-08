@@ -60,11 +60,11 @@ from _governed_contract import (
 )
 from _surreal_harness import drop_database, run
 from loremaster.agents import AGENT_NAME_PATTERN, AgentRegistry, AgentRegistryError
-from loremaster.sanitise import CONTROL_CHAR_PATTERN
+from loremaster.sanitise import CONTROL_CHAR_PATTERN, sanitise_line
 from lorerunes.pdp import keep_scope
+from sdk3_shape_fakes import bare_record_key
 from test_fixwave_a19_63c_i_a import (
     _MIGRATE_TABLES,
-    _bare,
     _redirect_the_shared_preconditions,
     _registry_refusal,
     _seed_multi_principal_store,
@@ -110,13 +110,15 @@ def _stated_integers(reason: str, *, identifiers: list[str]) -> list[int]:
     return [int(token) for token in re.findall(r"\d+", residue)]
 
 
-#: The sanitised forms a correct build may serve for one stored id — REUSED from a19's CA-1 pin (ONE home; the
-#: full ``table:⟨…⟩`` rendering or the bare id, both through THE shared ``sanitise_line``).
-_renderings = a19.TestTheRefusalRendersStoredIdsThroughTheSanitiser63cIAa19._renderings
-
-
 def _names(reason: str, table: str, bare: str) -> bool:
-    return any(form in reason for form in _renderings(table, bare))
+    """Whether ``reason`` NAMES the stored id ``table:bare``: its bare key through THE shared
+    ``sanitise_line``, which every accepted rendering contains (the bare key itself, ``table:key`` for a
+    word key, the engine's bracketed form for a non-word one). SDK3 round 6 (R15, MP-C 3h): a19's
+    ``_renderings`` became the LIVE engine-form check (it needs a connection); WHICH form is served is
+    a19's pin, not this counting helper's, so this one keys on the part every allowed form shares.
+    ``table`` stays for the call sites' readability."""
+    del table
+    return str(sanitise_line(bare)) in reason
 
 
 def _scan_counts(result: Any) -> tuple[Any, Any]:
@@ -707,7 +709,7 @@ class TestEveryRegisterRefusalPrecedesTheKeepMint63cIAa19a:
             keeper = await run(
                 admin_conn, f"SELECT VALUE keeper FROM keep WHERE key = 'session:{kwargs['session']}'"
             )
-            assert [_bare(value) for value in keeper] == [world["pids"]["bob"]], (
+            assert [bare_record_key(value) for value in keeper] == [world["pids"]["bob"]], (
                 "the next principal's register must mint and keep the session (SF-63-1 third party): "
                 f"{keeper!r}"
             )
@@ -1439,7 +1441,8 @@ class TestAnUnresolvableOperatorAndOwnedUnscopedRowsAreBothNamed63cIAa19a:
         async with _governed_world() as world:
             second_admin = await world.principal_store.create(email="second-admin@example.com", role="admin")
             foreign = await _seed_foreign_principals(world)
-            owners = [_bare(second_admin.id), _bare(second_admin.id), foreign[0], foreign[0]]
+            admin_bare = bare_record_key(second_admin.id)
+            owners = [admin_bare, admin_bare, foreign[0], foreign[0]]
             trap_ids = [f"owned_unscoped_{index:03d}" for index in range(len(owners))]
             for index, (row_id, owner) in enumerate(zip(trap_ids, owners, strict=True)):
                 await seed_agent_governed(

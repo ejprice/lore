@@ -58,6 +58,7 @@ from _surreal_harness import (
 from loremaster.memory.ledger import MemoryLedger
 from loremaster.memory.local import LocalMemoryBackend
 from loresigil.testing import FakeEmbedder
+from sdk3_shape_fakes import bare_record_key
 
 _DIM = 8
 _SERVER_SCOPE = "server"
@@ -138,7 +139,7 @@ async def _snapshot_stamps(connection: Any) -> dict[str, dict[str, Any]]:
     )
     snapshot: dict[str, dict[str, Any]] = {}
     for row in rows if isinstance(rows, list) else []:
-        row_id = str(row["id"]).split(":", 1)[-1]
+        row_id = bare_record_key(row["id"])
         snapshot[row_id] = {
             column: (None if row.get(column) is None else str(row.get(column)))
             for column in _STAMP_COLUMNS

@@ -42,6 +42,7 @@ from _governed_contract import (
     seed_memory_governed,
 )
 from _surreal_harness import run
+from sdk3_shape_fakes import bare_record_key
 
 import lorerunes as pdp
 from loremaster import governed
@@ -54,11 +55,6 @@ _E_ALICE = "alice@example.com"
 _E_BOB = "bob@example.com"
 _E_CAROL = "carol@example.com"
 _QUERY_TOKEN = "zebracorn"  # a rare token so ONLY the seeded rows match
-
-
-def _bare(value: Any) -> str:
-    text = str(getattr(value, "id", value))
-    return text.split(":", 1)[-1] if ":" in text else text
 
 
 def _count(rows: Any) -> int:
@@ -113,7 +109,7 @@ async def wire_world(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
         )
         keep_a = await keep_store.create_keep(keeper_email=_E_ALICE, type="project", name="alicespace")
         keep_b = await keep_store.create_keep(keeper_email=_E_BOB, type="project", name="bobspace")
-        id_ka, id_kb = _bare(keep_a.id), _bare(keep_b.id)
+        id_ka, id_kb = bare_record_key(keep_a.id), bare_record_key(keep_b.id)
 
         # Idempotent double-apply of the §4.1 overlay (the emitter also emits these post-retrofit).
         await apply_ddl(admin_conn, governed_overlay_ddl(MEMORY_TABLE), url=env.url)
@@ -321,7 +317,7 @@ class TestTheCredentialingSeamIsSharedByMutation:
         assert principal_alice is not None and principal_bob is not None, (
             "baseline — both provisioned emails must resolve to a principal through the shared seam"
         )
-        id_alice, id_bob = _bare(principal_alice.id), _bare(principal_bob.id)
+        id_alice, id_bob = bare_record_key(principal_alice.id), bare_record_key(principal_bob.id)
         assert id_alice != id_bob, (
             "control — alice's and bob's ambient emails must resolve to DIFFERENT principals, else a "
             "'flip' would be indistinguishable from resolving the same principal twice"
@@ -340,9 +336,10 @@ class TestTheCredentialingSeamIsSharedByMutation:
         principal_after = await governed.resolve_principal(
             get_ambient_token(), principal_store=principal_store
         )
-        assert principal_after is not None and _bare(principal_after.id) == id_bob, (
+        assert principal_after is not None and bare_record_key(principal_after.id) == id_bob, (
             "mutating the shared credentialed home's token seam (_governed_contract.access_token) did "
             "NOT flip wire_world's resolved identity — the wire harness is not routing identity through "
             "the shared home (§11.3 F-DUP: a per-file private copy would keep resolving alice). Got "
-            f"{None if principal_after is None else _bare(principal_after.id)!r}, expected bob's {id_bob!r}"
+            f"{None if principal_after is None else bare_record_key(principal_after.id)!r}, "
+            f"expected bob's {id_bob!r}"
         )

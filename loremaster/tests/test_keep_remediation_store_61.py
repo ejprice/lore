@@ -56,16 +56,13 @@ from loremaster.keeps import KeepNotFoundError, KeepStore, KeepStoreError
 from loremaster.principal_keys import PrincipalKeyStore
 from loremaster.principals import PrincipalStore, PrincipalStoreError
 from loremaster.store.surreal_schema import KEEP_TABLE, MEMBER_OF_RELATION
+from sdk3_shape_fakes import bare_record_key
 from surrealdb import RecordID
 
 _KEEPER_EMAIL = "keeper@example.com"
 _SUCCESSOR_EMAIL = "successor@example.com"
 _MEMBER_EMAIL = "member@example.com"
 _UNKNOWN_EMAIL = "nobody@example.com"
-
-
-def _bare(record_id: str) -> str:
-    return record_id.partition(":")[2] or record_id
 
 
 def _verb(store: KeepStore, name: str) -> Any:
@@ -147,8 +144,8 @@ class TestSetKeeper:
         await _verb(keep_store, "set_keeper")(keep_id=keep.id, new_keeper_email=_SUCCESSOR_EMAIL)
         after = await keep_store.get_keep(keep.id)
         assert after is not None
-        assert after.keeper_id == _bare(successor.id), (
-            f"set_keeper must set keep.keeper to the successor {_bare(successor.id)!r}, "
+        assert after.keeper_id == bare_record_key(successor.id), (
+            f"set_keeper must set keep.keeper to the successor {bare_record_key(successor.id)!r}, "
             f"got {after.keeper_id!r}"
         )
 
@@ -169,7 +166,7 @@ class TestSetKeeper:
         with pytest.raises(KeepStoreError):
             await set_keeper(keep_id=keep.id, new_keeper_email=_UNKNOWN_EMAIL)
         after = await keep_store.get_keep(keep.id)
-        assert after is not None and after.keeper_id == _bare(keeper.id), (
+        assert after is not None and after.keeper_id == bare_record_key(keeper.id), (
             "a refused set_keeper changed keep.keeper — the refusal must precede the UPDATE"
         )
 
@@ -214,7 +211,8 @@ class TestSetKeeper:
         # The keep survives under its new keeper (no data loss — the whole point of refuse).
         successor = await principal_store.get_by_email(_SUCCESSOR_EMAIL)
         after = await keep_store.get_keep(keep.id)
-        assert after is not None and successor is not None and after.keeper_id == _bare(successor.id)
+        assert after is not None and successor is not None, (after, successor)
+        assert after.keeper_id == bare_record_key(successor.id)
 
 
 # =========================================================================== #
@@ -238,7 +236,7 @@ class TestDeleteKeep:
         principal_store, keep_store, env = remediation_env
         keep = await keep_store.create_keep(keeper_email=_KEEPER_EMAIL, type="team", name="crew")
         await keep_store.add_household_member(keep_id=keep.id, member_email=_MEMBER_EMAIL)
-        keep_bare = _bare(keep.id)
+        keep_bare = bare_record_key(keep.id)
         assert await _member_of_count_out(env, keep_bare) == 2, "control: keeper + member edges pre-delete"
 
         await _verb(keep_store, "delete_keep")(keep_id=keep.id)

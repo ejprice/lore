@@ -60,7 +60,7 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-from _governed_contract import seed_agent_legacy
+from _governed_contract import digit_led_record_key, rekey_principal, seed_agent_legacy
 from _surreal_harness import (
     PRODUCTION_DIM,
     SurrealConnection,
@@ -80,6 +80,7 @@ from loremaster.store.surreal_schema import (
     AGENT_TABLE,
     PRINCIPAL_TABLE,
 )
+from sdk3_shape_fakes import bare_record_key, same_record
 from surrealdb import RecordID
 
 _OWNER_FIELD = "owner_principal"
@@ -152,12 +153,6 @@ def _one(rows: Any) -> Any:
 
 async def _apply_agent_ddl(connection: SurrealConnection) -> None:
     await run(connection, surreal_schema.generate_agent_ddl())
-
-
-def _bare(record_id: str) -> str:
-    """The id part of a ``table:id`` string (``principal:abc`` -> ``abc``); a bare id passes
-    through. Mirrors ``PrincipalStore.delete``'s own ``partition(':')[2] or id``."""
-    return record_id.partition(":")[2] or record_id
 
 
 # --------------------------------------------------------------------------- #
@@ -575,7 +570,9 @@ class TestPrincipalDeleteDanglesTheOwnedAgentBackLink:
         principal_store, admin, _env = dangle_env
         alice = await principal_store.get_by_email(_EMAIL_ALICE)
         assert alice is not None
-        alice_bare = _bare(alice.id)
+        # R15 / MP-C 3c: a FIXED digit-led key, so the owner compare below is deterministic on SDK 3 (an
+        # engine-minted id is digit-led only ~28% of runs). Nothing references alice yet.
+        alice_bare = await rekey_principal(admin, alice.id, digit_led_record_key("alice"))
         await seed_agent_legacy(
             admin,
             row_id="owned",
@@ -588,7 +585,7 @@ class TestPrincipalDeleteDanglesTheOwnedAgentBackLink:
         pre = _one(
             await run(admin, f"SELECT {_OWNER_FIELD} FROM type::record('{AGENT_TABLE}', 'owned')")
         )
-        assert str(pre[_OWNER_FIELD]) == f"{PRINCIPAL_TABLE}:{alice_bare}", pre
+        assert same_record(pre[_OWNER_FIELD], f"{PRINCIPAL_TABLE}:{alice_bare}"), pre
 
         # DANGLE-TOLERATED: the delete is NOT refused even though alice owns an agent, and it
         # cascades only alice's OWN children (her zero principal_keys) — never the agent.
@@ -603,7 +600,7 @@ class TestPrincipalDeleteDanglesTheOwnedAgentBackLink:
             "(agents are retired-not-deleted; cascading erases fleet history, R3.2)"
         )
         # … with a now-STALE owner_principal still naming the deleted principal.
-        assert str(rows[0][_OWNER_FIELD]) == f"{PRINCIPAL_TABLE}:{alice_bare}", (
+        assert same_record(rows[0][_OWNER_FIELD], f"{PRINCIPAL_TABLE}:{alice_bare}"), (
             "owner_principal was cleaned/nulled on principal delete — record<> links do NOT "
             "auto-clean (store §2); the tolerated dangle preserves the stale back-link"
         )
@@ -619,7 +616,7 @@ class TestPrincipalDeleteDanglesTheOwnedAgentBackLink:
         principal_store, admin, _env = dangle_env
         alice = await principal_store.get_by_email(_EMAIL_ALICE)
         assert alice is not None
-        alice_bare = _bare(alice.id)
+        alice_bare = bare_record_key(alice.id)
         await seed_agent_legacy(
             admin,
             row_id="own_a",

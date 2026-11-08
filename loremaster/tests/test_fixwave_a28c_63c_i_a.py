@@ -69,6 +69,7 @@ from loremaster.store._txn import (
     execute_transaction,
 )
 from lorerunes.pdp import keep_scope
+from sdk3_shape_fakes import bare_record_key, same_record
 
 from loremaster import principals
 
@@ -957,18 +958,18 @@ async def _give_carol(
             carol_keep = await keep_store.create_keep(
                 keeper_email=emails["carol"], type="team", name="carol-own"
             )
-            reached["carol-own"] = a28._bare(carol_keep.id)
+            reached["carol-own"] = bare_record_key(carol_keep.id)
         if "member-of-other" in relations:
             dan_keep = await keep_store.create_keep(keeper_email=emails["dan"], type="team", name="dan-own")
             await keep_store.add_household_member(
-                keep_id=a28._bare(dan_keep.id), member_email=emails["carol"]
+                keep_id=bare_record_key(dan_keep.id), member_email=emails["carol"]
             )
-            reached["dan-own"] = a28._bare(dan_keep.id)
+            reached["dan-own"] = bare_record_key(dan_keep.id)
 
     if order == "other-keep-first":
         await _other_relations()
     await a28._alice_keeps_a_session(ctx, world, "s-alice")
-    this_bare = a28._bare((await a28._session_keep_ids(world["admin_conn"], "s-alice"))[0])
+    this_bare = bare_record_key((await a28._session_keep_ids(world["admin_conn"], "s-alice"))[0])
     if order == "this-keep-first":
         await _other_relations()
     if _VISIBLE_RELATION in relations:
@@ -1534,7 +1535,7 @@ async def _drive_keeps_get_or_create(env: SurrealEnv, _ledger: Any, seam: Driver
             )
         finally:
             keep_store.get_by_key = real_get
-        assert reads["n"] >= 2 and a28._bare(loser.id) == a28._bare(winner.id), (reads, loser, winner)
+        assert reads["n"] >= 2 and same_record(loser.id, winner.id), (reads, loser, winner)
     finally:
         await keep_store.close()
         await principal_store.close()

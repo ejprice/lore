@@ -79,6 +79,7 @@ import pytest_asyncio
 from _governed_contract import (
     build_principal_and_keep_stores,
     derive_member_source_roots,
+    digit_led_record_key,
     frozen_asserted_message_ddl,
     frozen_asserted_to_ack_note_ddl,
     governed_table_raw_mutation_sites,
@@ -113,6 +114,7 @@ from loremaster.store.surreal_schema import (
     generate_graph_ddl,
 )
 from render_injection_scaffold import _INJECTION_THREAT_CHARS, _ROW_FORGE_PAYLOAD
+from sdk3_shape_fakes import bare_record_key, same_record
 from surrealdb import RecordID
 
 # --------------------------------------------------------------------------- #
@@ -1026,18 +1028,20 @@ class TestBriefedUniqueInOutIndex:
     async def test_relate_endpoint_ids_round_trip_via_str_of_record_id(
         self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
     ) -> None:
-        # Store idiom (repo CLAUDE.md / brief): str(RecordID) round-trips to
-        # "table:id" — the shape a ledger's ``_bare_id`` helper depends on.
+        # The RELATE endpoints come back as THE records related — compared by PARTS (R15 / MP-C 3c). The old
+        # idiom "str(RecordID) is 'table:id'" holds on SDK 2.0 only: SDK 3.0 renders a digit-led key
+        # 'table:⟨id⟩', so a test-side text compare is C9's class. FIXED digit-led ids make that
+        # deterministic (a uuid4 hex is digit-led on ~62% of runs).
         connection, _env = admin_db
         await run(connection, generate_agent_ddl())
         await run(connection, generate_brief_ddl())
-        agent_id = uuid.uuid4().hex
-        brief_id = uuid.uuid4().hex
+        agent_id = digit_led_record_key("comms-schema/briefed-endpoint/agent")
+        brief_id = digit_led_record_key("comms-schema/briefed-endpoint/brief")
         await _create_agent(connection, agent_id=agent_id, name="fixer-b", session="wave7")
         await _create_brief(connection, brief_id=brief_id, name="project", version=1)
         edge = _one(await _relate_briefed(connection, agent_id=agent_id, brief_id=brief_id))
-        assert str(edge["in"]) == f"{AGENT_TABLE}:{agent_id}"
-        assert str(edge["out"]) == f"{BRIEF_TABLE}:{brief_id}"
+        assert same_record(edge["in"], f"{AGENT_TABLE}:{agent_id}")
+        assert same_record(edge["out"], f"{BRIEF_TABLE}:{brief_id}")
 
     @pytest.mark.parametrize("legal_via", ["register", "explicit", "publish"])
     async def test_every_legal_via_is_accepted_by_the_live_assert(
@@ -1116,7 +1120,7 @@ class TestAgentIdDerivation:
                 connection, "SELECT * FROM type::record($t, $id)", {"t": AGENT_TABLE, "id": agent_id}
             )
         )
-        assert str(row["id"]) == f"{AGENT_TABLE}:{agent_id}"
+        assert same_record(row["id"], f"{AGENT_TABLE}:{agent_id}")
 
     async def test_recreate_at_the_same_derived_id_is_rejected(
         self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
@@ -1192,7 +1196,7 @@ class TestBriefIdDerivation:
                 connection, "SELECT * FROM type::record($t, $id)", {"t": BRIEF_TABLE, "id": brief_id}
             )
         )
-        assert str(row["id"]) == f"{BRIEF_TABLE}:{brief_id}"
+        assert same_record(row["id"], f"{BRIEF_TABLE}:{brief_id}")
 
     async def test_recreate_at_the_same_derived_id_is_rejected(
         self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
@@ -3348,7 +3352,7 @@ class TestALegacyOverCapNoteCannotDenyADrain:
             # 2. one member principal + one recipient agent owned by it (a governed member Subject).
             await principal_store.create(email="recip@example.com", role="member")
             principal = (await principal_store.list())[0]
-            principal_bare = str(principal.id).split(":", 1)[-1]
+            principal_bare = bare_record_key(principal.id)
             recipient = (
                 await registry.register(
                     "recip",
@@ -3360,7 +3364,7 @@ class TestALegacyOverCapNoteCannotDenyADrain:
                     ),  # r2 (A3): the owner travels WITH THE session keep
                 )
             ).agent
-            recipient_bare = str(recipient.id).split(":", 1)[-1]
+            recipient_bare = bare_record_key(recipient.id)
             # 3. TWO REAL server-scope messages (member-visible) + 4. their delivery edges, one over-cap
             #    ack_note, one clean, both seen_at NONE — RELATEd under the downgraded (unbounded) note.
             cap = _schema().MESSAGE_BODY_MAX_CHARS

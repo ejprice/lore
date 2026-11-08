@@ -72,12 +72,13 @@ from __future__ import annotations
 
 import inspect
 import os
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, Protocol
+from typing import Any, ClassVar, Protocol, cast
 
 import pytest_asyncio
 import surrealdb as _surrealdb_package
@@ -338,17 +339,42 @@ class StoreTraffic:
     #: guard (autouse, from conftest) replaces these class attributes with its own
     #: wrapper, and ``inspect.getsource`` on a wrapped method returns the GUARD's source.
     #: Derived later, this set would be silently empty.
-    COUNTABLE_DOORS: ClassVar[frozenset[str]] = frozenset({"query_raw"}) | frozenset(
-        name
-        for connection_class in SDK_CONNECTION_CLASSES
-        for name, function in inspect.getmembers(connection_class, inspect.isfunction)
-        if not name.startswith("_")
-        and inspect.iscoroutinefunction(function)
-        and any(
-            delegation in inspect.getsource(function)
-            for delegation in ("self.query_raw(", "self.query(")
+    #:
+    #: ⚠ SDK3 round 6 (R15, MP-C 3d): the delegation is followed THROUGH the class's own private helpers.
+    #: SDK 3.0's ``query()`` is a plain ``def`` returning an awaitable builder whose executor —
+    #: built by ``self._make_executor(...)`` — calls ``self.query_raw(...)``; reading ``query``'s own body
+    #: alone saw no delegation, so the instrument shadowed SDK 3.0's ``query`` as UNCOUNTABLE and refused
+    #: every reading a correct build produced. The rule is unchanged (a door is countable iff the SDK's
+    #: own source routes it to ``query_raw``); only its reach now covers a delegation one helper deep,
+    #: on either SDK, derived rather than listed.
+    @staticmethod
+    def _routes_to_query_raw(connection_class: type, function: Any) -> bool:
+        """Whether ``function``'s source — or a private ``self._helper(...)`` it calls, transitively —
+        sends its statement through ``self.query_raw(`` / ``self.query(``. A worklist, not recursion:
+        this runs in the class body, before the class name is bound."""
+        pending: list[Any] = [function]
+        seen: set[str] = set()
+        while pending:
+            source = inspect.getsource(pending.pop())
+            if any(delegation in source for delegation in ("self.query_raw(", "self.query(")):
+                return True
+            for helper_name in re.findall(r"self\.(_\w+)\(", source):
+                helper = getattr(connection_class, helper_name, None)
+                if helper_name not in seen and inspect.isfunction(helper):
+                    seen.add(helper_name)
+                    pending.append(helper)
+        return False
+
+    # A lambda called directly ON PURPOSE: a generator in a class body cannot see class-level names.
+    COUNTABLE_DOORS: ClassVar[frozenset[str]] = (  # noqa: PLC3002
+        lambda routes: frozenset({"query_raw"})
+        | frozenset(
+            name
+            for connection_class in SDK_CONNECTION_CLASSES
+            for name, function in inspect.getmembers(connection_class, inspect.isfunction)
+            if not name.startswith("_") and routes(connection_class, function)
         )
-    )
+    )(cast("Any", _routes_to_query_raw).__func__)
 
     @staticmethod
     def uncountable_doors() -> frozenset[str]:
@@ -524,14 +550,17 @@ async def measure_store_traffic(
         rows += _rows_in(result)
         return result
 
-    async def _delegating(*args: Any, **kwargs: Any) -> Any:
+    def _delegating(*args: Any, **kwargs: Any) -> Any:
         """``query`` is COUNTABLE — it reaches the engine through ``query_raw`` above.
 
         Recorded rather than ignored so :meth:`StoreTraffic.require_full_reach` can
         CHECK that delegation instead of trusting the docstring that asserts it.
+        A PLAIN ``def`` returning whatever the SDK's ``query`` returns (SDK 2.0: a coroutine;
+        SDK 3.0: an awaitable builder whose executor calls ``query_raw`` — round 6, MP-C 3d), so
+        the caller awaits exactly what it would have awaited unmeasured.
         """
         doors.append("query")
-        return await original_query(*args, **kwargs)
+        return original_query(*args, **kwargs)
 
     sdk_package_root = str(Path(_surrealdb_package.__file__ or "").resolve().parent)
 

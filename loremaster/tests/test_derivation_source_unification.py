@@ -37,7 +37,8 @@ happened to be tested.
 permanently RED until packet 43 lands is ``@pytest.mark.skip``ped with a reason naming
 both ``packet 43`` and the finding, so it is greppable and cannot be silently inherited.
 The five pins that are GREEN today and must STAY green **run**: four of them exercise
-``_unsatisfied_relate_endpoints`` — the helper the headline ∀ pin depends on — and a
+``_commit_fragment_under_enforced`` — the instrument the headline ∀ pin depends on (behavioural
+since SDK3 round 6) — and a
 helper nobody runs between now and packet 43 is a helper that can rot into a false green
 the day everything is unskipped.  *A guard nobody runs is a hope with a filename.*  This
 is a deliberate deviation from "skip every moved pin", disclosed in
@@ -46,7 +47,6 @@ is a deliberate deviation from "skip every moved pin", disclosed in
 
 from __future__ import annotations
 
-import re
 import textwrap
 from collections.abc import Callable
 from pathlib import Path
@@ -71,11 +71,13 @@ from _enforced_relations_scaffold import (
 from _surreal_harness import SurrealConnection, SurrealEnv, run
 from loremaster.graph import CodeGraph
 from loremaster.graph_surreal import SurrealCodeGraph
+from loremaster.store._txn import SurrealStoreError, execute_transaction
 from loremaster.store.surreal_schema import (
     ANSWERS_TO_RELATION,
     CODE_NODE_TABLE,
     NAME_TABLE,
     REFERS_RELATION,
+    _define_relation_table,
     generate_graph_ddl,
 )
 from lorescribe.models import Chunk, ChunkContext
@@ -463,9 +465,6 @@ class TestTheUnEnforcingDoor:
 # "this fragment never RELATEs from an endpoint it did not create".
 # =========================================================================== #
 
-_FRAGMENT_CREATE_RE = re.compile(r"^CREATE \$(\w+)\b")
-_FRAGMENT_UPSERT_RE = re.compile(r"^UPSERT \$(\w+)\b")
-_FRAGMENT_RELATE_RE = re.compile(r"^RELATE \$(\w+)->(\w+)->\$(\w+)\b")
 
 _GRAPH_TIER = "custom"
 _GRAPH_FILE = "demo/svc.py"
@@ -550,70 +549,101 @@ def code_graph(graph_project: Path) -> SurrealCodeGraph:
     )
 
 
-def _unsatisfied_relate_endpoints(fragment: Any) -> list[tuple[str, str, str]]:
-    """Every RELATE endpoint in ``fragment`` that no EARLIER statement created.
-
-    Statement-ORDERED on purpose.  Probe §6.4, MEASURED: ``ENFORCED`` is checked at
-    RELATE time, not deferred to COMMIT (leg L5 — the endpoint exists by the end of the
-    transaction and the RELATE is still rejected because it ran first), and it is
-    per-RECORD, not per-transaction (leg L8).  So "statement order" IS the contract, and
-    an unordered set check would pass a fragment the engine rejects.
-
-    Returns ``(edge, param name, rendered RecordID)`` triples.
-    """
-    created: set[str] = set()
-    unsatisfied: list[tuple[str, str, str]] = []
-    for raw in fragment.statements:
-        statement = raw.strip()
-        mint = _FRAGMENT_CREATE_RE.match(statement) or _FRAGMENT_UPSERT_RE.match(statement)
-        if mint is not None:
-            created.add(str(fragment.params[mint.group(1)]))
-            continue
-        relate_match = _FRAGMENT_RELATE_RE.match(statement)
-        if relate_match is None:
-            continue
-        for param_name in (relate_match.group(1), relate_match.group(3)):
-            rendered = str(fragment.params[param_name])
-            if rendered not in created:
-                unsatisfied.append((relate_match.group(2), param_name, rendered))
-    return unsatisfied
+# Round 6 (R15, MP-C 3f): the fragment instrument is BEHAVIOURAL. It used to parse the fragment's
+# TEXT (``CREATE $p`` / ``UPSERT $p`` / ``RELATE $a->edge->$b`` regexes) — a spelling scan R4 retired when
+# the graph slice became batched ``INSERT`` / ``INSERT RELATION`` rows, and on a correct R4 build it counted 0
+# RELATEs. Now the fragment is EXECUTED, in one ``BEGIN … COMMIT`` exactly as production composes it, against
+# a fresh database whose two code-graph edges carry ``ENFORCED`` — packet 43's flip, applied here so that
+# "an edge whose endpoint no EARLIER statement created" is the ENGINE's verdict (store ref §4: ENFORCED is
+# checked at RELATE time, per record, and it shuts ``INSERT RELATION`` too), whatever grammar the builder
+# emits.
+_CODE_GRAPH_EDGES = (REFERS_RELATION, ANSWERS_TO_RELATION)
 
 
-def _relate_count(fragment: Any) -> int:
-    """How many RELATEs the fragment carries (the anti-vacuity counter)."""
-    return sum(1 for raw in fragment.statements if _FRAGMENT_RELATE_RE.match(raw.strip()))
+def _enforced_code_graph_ddl() -> str:
+    """Today's graph DDL plus an ``OVERWRITE … ENFORCED`` re-declaration of both code-graph edges."""
+    enforced = "".join(
+        f"{_define_relation_table(edge, CODE_NODE_TABLE, NAME_TABLE, enforced=True)};\n"
+        for edge in _CODE_GRAPH_EDGES
+    )
+    return generate_graph_ddl() + enforced
+
+
+async def _commit_fragment_under_enforced(
+    world: tuple[SurrealConnection, SurrealEnv], fragment: Any
+) -> BaseException | None:
+    """Apply the ENFORCED graph schema, then commit ``fragment`` as ONE transaction; return the rejection
+    (``None`` when it committed). Statement order is the fragment's own — that is what ENFORCED judges."""
+    connection, env = world
+    await apply_ddl(connection, _enforced_code_graph_ddl(), url=env.url)
+
+    async def _acquire() -> Any:
+        return connection
+
+    async def _never_drop(_connection: Any) -> None:
+        raise AssertionError("a fragment rejection must never drop the connection")
+
+    body = "\n".join(statement.strip() for statement in fragment.statements)
+    try:
+        await execute_transaction(
+            f"BEGIN;\n{body}\nCOMMIT;\n",
+            dict(fragment.params),
+            acquire=_acquire,
+            drop=_never_drop,
+            url=env.url,
+        )
+    except SurrealStoreError as rejection:
+        return rejection
+    return None
+
+
+async def _edge_counts(world: tuple[SurrealConnection, SurrealEnv]) -> dict[str, int]:
+    """How many rows each code-graph edge table holds (the anti-vacuity counter, read from the store)."""
+    connection, _env = world
+    counts: dict[str, int] = {}
+    for edge in _CODE_GRAPH_EDGES:
+        rows = await run(connection, f"SELECT count() AS n FROM {edge} GROUP ALL;")
+        counts[edge] = int(rows[0]["n"]) if rows else 0
+    return counts
 
 
 class TestTheCodeGraphFragmentNeverRelatesFromAnUncreatedEndpoint:
     """§I — the property that makes the ``refers``/``answers_to`` flip SAFE, stated as a ∀
     over the fragment rather than as a survey of a corpus.
 
-    Four of these five pins RUN today and must STAY green: they exercise
-    ``_unsatisfied_relate_endpoints`` itself, and an instrument nobody runs between now
-    and packet 43 can rot into a false green the day the headline pin is unskipped.
+    Four of these five pins RUN today and must STAY green: they exercise the ENFORCED
+    commit instrument itself, and an instrument nobody runs between now and packet 43 can
+    rot into a false green the day the headline pin is unskipped.
     """
 
-    def test_a_realistic_multi_chunk_file_is_self_consistent(
-        self, code_graph: SurrealCodeGraph
+    async def test_a_realistic_multi_chunk_file_is_self_consistent(
+        self,
+        code_graph: SurrealCodeGraph,
+        migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - imported fixture
     ) -> None:
-        """RUNS.  The establishing leg: the shape production actually indexes.  If this
+        """RUNS.  The establishing leg: the shape production actually indexes commits under
+        ENFORCED, and it carries edges (a fragment with none would commit vacuously).  If this
         ever reddens, packet 43's change is breaking real indexing.
         """
         chunks = _chunk(_GRAPH_FILE, _GRAPH_SOURCE)
         fragment = code_graph.build_file_graph_fragment(
             _GRAPH_TIER, _GRAPH_FILE, chunks, module_name=_GRAPH_MODULE
         )
-        assert _relate_count(fragment) >= 4, (
-            "the fixture must actually produce RELATEs — a fragment with none satisfies "
-            f"the assertion below vacuously. Got {_relate_count(fragment)}"
+        rejection = await _commit_fragment_under_enforced(migration_db, fragment)
+        assert rejection is None, f"a realistic fragment was REJECTED under ENFORCED: {rejection!r}"
+        counts = await _edge_counts(migration_db)
+        assert sum(counts.values()) >= 4, (
+            "the fixture must actually produce edges — a fragment with none commits under "
+            f"ENFORCED vacuously. Got {counts}"
         )
-        assert _unsatisfied_relate_endpoints(fragment) == []
 
-    def test_BOTH_edge_kinds_are_present_in_the_fixture(
-        self, code_graph: SurrealCodeGraph
+    async def test_BOTH_edge_kinds_are_present_in_the_fixture(
+        self,
+        code_graph: SurrealCodeGraph,
+        migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - imported fixture
     ) -> None:
         """RUNS.  FIXTURES MUST DISCRIMINATE.  ``answers_to``'s src is a ``code_node``
-        CREATEd one statement earlier (structurally safe); ``refers``' src comes from a
+        minted by the same fragment (structurally safe); ``refers``' src comes from a
         DIFFERENT derivation and is the one at risk.  A fixture carrying only
         ``answers_to`` would pass the pin above while proving nothing about the edge
         packet 43 is actually about.
@@ -622,18 +652,17 @@ class TestTheCodeGraphFragmentNeverRelatesFromAnUncreatedEndpoint:
         fragment = code_graph.build_file_graph_fragment(
             _GRAPH_TIER, _GRAPH_FILE, chunks, module_name=_GRAPH_MODULE
         )
-        edges = {
-            match.group(2)
-            for match in (_FRAGMENT_RELATE_RE.match(raw.strip()) for raw in fragment.statements)
-            if match is not None
-        }
-        assert edges == {REFERS_RELATION, ANSWERS_TO_RELATION}, (
-            f"the fixture must exercise BOTH code-graph edges; got {sorted(edges)}"
+        assert await _commit_fragment_under_enforced(migration_db, fragment) is None
+        counts = await _edge_counts(migration_db)
+        assert all(counts[edge] >= 1 for edge in _CODE_GRAPH_EDGES), (
+            f"the fixture must exercise BOTH code-graph edges; got {counts}"
         )
 
     @pytest.mark.skip(reason=SKIP_REASON)
-    def test_a_DIVERGENT_chunk_set_still_yields_a_self_consistent_fragment(
-        self, code_graph: SurrealCodeGraph
+    async def test_a_DIVERGENT_chunk_set_still_yields_a_self_consistent_fragment(
+        self,
+        code_graph: SurrealCodeGraph,
+        migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - imported fixture
     ) -> None:
         """**THE HEADLINE PIN OF PACKET 43.**  RED until the derivation sources are
         unified; do not delete it, do not weaken it, and do not satisfy it by dropping
@@ -646,7 +675,7 @@ class TestTheCodeGraphFragmentNeverRelatesFromAnUncreatedEndpoint:
         ``Indexer.index_file(tier, path, source)`` takes ``source`` from its caller, so a
         save landing between the watcher's read and the derivation's read makes the two
         disagree — and MEASURED 2026-07-26, a divergent chunk set makes
-        ``build_file_graph_fragment`` emit ``refers`` RELATEs whose ``src`` code_node no
+        ``build_file_graph_fragment`` emit ``refers`` edges whose ``src`` code_node no
         statement ever created.
 
         Today those become invisible dangling edges.  After the flip they abort the whole
@@ -655,28 +684,32 @@ class TestTheCodeGraphFragmentNeverRelatesFromAnUncreatedEndpoint:
         mints the missing node or drops the edge.
 
         The empty chunk set is the SMALLEST input that forces the divergence; it is not
-        the only one, and the pin is written over the fragment's PROPERTY rather than over
-        this input so any other divergence is caught too.
+        the only one, and the pin is written over the fragment's PROPERTY (it commits under
+        ENFORCED) rather than over this input so any other divergence is caught too.
         """
         fragment = code_graph.build_file_graph_fragment(
             _GRAPH_TIER, _GRAPH_FILE, [], module_name=_GRAPH_MODULE
         )
-        assert _relate_count(fragment) >= 1, (
-            "the divergent fixture must still produce RELATEs, or it cannot discriminate "
-            "a fragment that fixed the problem from one that emits nothing at all"
-        )
-        assert _unsatisfied_relate_endpoints(fragment) == [], (
-            "build_file_graph_fragment must NEVER RELATE from an endpoint no earlier "
+        rejection = await _commit_fragment_under_enforced(migration_db, fragment)
+        assert rejection is None, (
+            "build_file_graph_fragment must NEVER relate from an endpoint no earlier "
             "statement of the SAME fragment created: ENFORCED is checked at RELATE time, "
             "per record, and statement order IS the contract (probe §6.4 legs L5/L8). "
-            "Under ENFORCED each of these aborts the whole file's index transaction"
+            f"Under ENFORCED this aborts the whole file's index transaction: {rejection!r}"
+        )
+        assert (await _edge_counts(migration_db))[REFERS_RELATION] >= 1, (
+            "the divergent fixture must still produce refers edges, or it cannot discriminate "
+            "a fragment that fixed the problem from one that emits nothing at all"
         )
 
-    def test_the_instrument_can_SEE_a_violation(self, code_graph: SurrealCodeGraph) -> None:
-        """RUNS.  A PROBE NEEDS A CONTROL.  ``_unsatisfied_relate_endpoints`` returning
-        ``[]`` is worthless until it has been shown returning something on a fragment that
-        is known-inconsistent — otherwise a parser that matches no statement at all reads
-        exactly like a perfectly self-consistent fragment.
+    async def test_the_instrument_can_SEE_a_violation(
+        self,
+        code_graph: SurrealCodeGraph,
+        migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - imported fixture
+    ) -> None:
+        """RUNS.  A PROBE NEEDS A CONTROL.  The instrument committing a fragment is worthless
+        until it has been shown REJECTING one that is known-inconsistent — otherwise a harness
+        whose edge tables were never ENFORCED reads exactly like a self-consistent fragment.
 
         Deliberately UNSKIPPED: this is the guard on the guard, and it must not sit
         un-run for the length of packet 43's design pass.
@@ -694,18 +727,20 @@ class TestTheCodeGraphFragmentNeverRelatesFromAnUncreatedEndpoint:
                 "forged_dst": RecordID(NAME_TABLE, "also.never.made"),
             },
         )
-        assert len(_unsatisfied_relate_endpoints(forged)) == 2, (
-            "the instrument must report BOTH endpoints of a RELATE nothing created"
+        assert await _commit_fragment_under_enforced(migration_db, forged) is not None, (
+            "the instrument must REJECT a fragment relating endpoints nothing created"
         )
 
-    def test_the_ORDER_matters_not_merely_the_presence(
-        self, code_graph: SurrealCodeGraph
+    async def test_the_ORDER_matters_not_merely_the_presence(
+        self,
+        code_graph: SurrealCodeGraph,
+        migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - imported fixture
     ) -> None:
-        """RUNS.  The second control, and the one an unordered implementation would fail.
+        """RUNS.  The second control, and the one an unordered check would fail.
 
-        Probe §6.4 leg L5: a RELATE that runs BEFORE its endpoint's CREATE is rejected
-        even though the endpoint exists by COMMIT.  An instrument that collected every
-        minted id first and then checked RELATEs would call that fragment fine.
+        Probe §6.4 leg L5: an edge written BEFORE its endpoint's mint is rejected even though
+        the endpoint exists by COMMIT.  An instrument that judged only the final state
+        would call the reversed fragment fine.
         """
         chunks = _chunk(_GRAPH_FILE, _GRAPH_SOURCE)
         fragment = code_graph.build_file_graph_fragment(
@@ -714,8 +749,8 @@ class TestTheCodeGraphFragmentNeverRelatesFromAnUncreatedEndpoint:
         reversed_fragment = type(fragment)(
             statements=list(reversed(fragment.statements)), params=dict(fragment.params)
         )
-        assert _unsatisfied_relate_endpoints(reversed_fragment) != [], (
-            "reversing the statements must break the check — otherwise it is not "
+        assert await _commit_fragment_under_enforced(migration_db, reversed_fragment) is not None, (
+            "reversing the statements must break the commit — otherwise the instrument is not "
             "statement-ordered and cannot model what ENFORCED actually enforces"
         )
 

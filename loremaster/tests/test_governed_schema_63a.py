@@ -33,6 +33,7 @@ import pytest
 from _governed_contract import (
     MEMORY_TABLE,
     apply_ddl,
+    digit_led_record_key,
     explain,
     field_statement,
     index_served,
@@ -43,6 +44,7 @@ from _governed_contract import (
 )
 from _surreal_harness import SurrealConnection, SurrealEnv, admin_db  # noqa: F401 - fixture
 from loremaster.store import surreal_schema
+from sdk3_shape_fakes import same_record
 
 import lorerunes as pdp
 
@@ -218,14 +220,17 @@ class TestGovernedColumnsOnTheLiveEngine:
         owner_principal/owner_agent/scope is REJECTED. On a correct build they store and read back."""
         connection, env = admin_db
         await apply_ddl(connection, _memory_ddl(), url=env.url)
-        await run_governed_create(connection, row_id="g1", owner="alice", agent="ag_a", scope="server")
+        # R15 / MP-C 3c: FIXED digit-led keys (SDK 3.0 brackets them in ``str(RecordID)``), so the read-back
+        # compare is by PARTS and a text-form compare would fail on SDK 3 every run, not never.
+        owner, agent = digit_led_record_key("alice"), digit_led_record_key("ag_a")
+        await run_governed_create(connection, row_id="g1", owner=owner, agent=agent, scope="server")
         row = _one(
             await _select(
                 connection, "SELECT owner_principal, owner_agent, scope FROM type::record('memory', 'g1')"
             )
         )
-        assert str(row["owner_principal"]) == f"{_PRINCIPAL_TABLE}:alice", row
-        assert str(row["owner_agent"]) == "agent:ag_a", row
+        assert same_record(row["owner_principal"], f"{_PRINCIPAL_TABLE}:{owner}"), row
+        assert same_record(row["owner_agent"], f"agent:{agent}"), row
         assert row["scope"] == "server", row
 
     async def test_a_legacy_memory_row_reads_governed_columns_as_none(

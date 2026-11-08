@@ -73,6 +73,7 @@ from fastmcp.server.auth import AccessToken
 from loremaster.agents import AgentRegistry
 from loremaster.principal_keys import PrincipalKeyStore
 from loremaster.principals import PrincipalStore
+from sdk3_shape_fakes import bare_record_key, same_record
 
 import loremaster
 import lorerunes
@@ -90,10 +91,6 @@ _loremaster_stamp_owner = getattr(loremaster, "stamp_owner", None)
 
 _EMAIL_ALICE = "alice@example.com"
 _EMAIL_BOB = "bob@example.com"
-
-
-def _bare(record_id: str) -> str:
-    return record_id.partition(":")[2] or record_id
 
 
 def _token(email: str, *, role: str = "member") -> AccessToken:
@@ -123,7 +120,11 @@ async def seam_env() -> Any:
     admin = await connect_admin(env)
     try:
         yield SimpleNamespace(
-            env=env, registry=registry, principals=principals, admin=admin, alice_bare=_bare(alice.id)
+            env=env,
+            registry=registry,
+            principals=principals,
+            admin=admin,
+            alice_bare=bare_record_key(alice.id),
         )
     finally:
         await admin.close()
@@ -321,7 +322,7 @@ class TestStampOwnerSeam:
         assert owner_agent == result.agent.id, (
             f"owner_agent must be the VERIFIED agent id {result.agent.id!r}, got {owner_agent!r}"
         )
-        assert seam_env.alice_bare in str(owner_principal), (
+        assert same_record(owner_principal, seam_env.alice_bare), (
             f"owner_principal must name the owning principal ({seam_env.alice_bare}), got "
             f"{owner_principal!r} — it is derived from the credential, never a tool argument"
         )
@@ -400,7 +401,7 @@ class TestStampOwnerSeam:
             owner_principal, owner_agent = await _call_stamp_owner(
                 seam_env, _token(_EMAIL_ALICE), capability
             )
-        assert owner_agent == result.agent.id and seam_env.alice_bare in str(owner_principal), (
+        assert owner_agent == result.agent.id and same_record(owner_principal, seam_env.alice_bare), (
             "stamp_owner routed through verify_capability (its boom surfaced, or it returned no valid "
             "pair) — §425 requires stamp_owner to read ONCE via the SHARED _verify_capability_owner, "
             f"NOT verify_capability + a second read: got ({owner_principal!r}, {owner_agent!r})"

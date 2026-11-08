@@ -27,6 +27,7 @@ probed live on spike-surreal 3.2.x before this module was authored.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
@@ -36,6 +37,7 @@ from loremaster.store._txn import (
     TxnFragment,
     bootstrap_session,
     execute_transaction,
+    run_query,
     signin_credentials,
 )
 from pydantic import BaseModel, ConfigDict, SecretStr
@@ -251,9 +253,18 @@ class FakeDomainStore:
 
     async def fetch_nodes(self) -> list[dict[str, Any]]:
         """Every committed ``fake_node`` row (the phase-2 endpoint-resolution READ)."""
-        connection = await self._ensure_connection()
-        result = await connection.query(
-            f"SELECT slug, source_book, edges FROM {FAKE_NODE_TABLE}"
+        # SDK3 round 6 (R15, MP-C 3g): read through the shared single-statement seam, not a raw
+        # ``connection.query`` — SDK 3.0's ``query()`` answers one entry PER STATEMENT, so the raw read
+        # saw ``[[rows]]``, filtered every row out, and phase 2 resolved no edge (``links=[]`` ×8 on a
+        # correct reference). ``run_query`` selects the ONE statement's result on either SDK.
+        result = await run_query(
+            acquire=self._ensure_connection,
+            drop=self._drop_connection,
+            url=self._url,
+            noun="fake domain",
+            label="fake_domain.query",
+            statement=f"SELECT slug, source_book, edges FROM {FAKE_NODE_TABLE}",
+            logger=logging.getLogger(__name__),
         )
         return [row for row in result if isinstance(row, dict)] if isinstance(result, list) else []
 

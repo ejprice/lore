@@ -73,6 +73,7 @@ from _surreal_harness import (
 )
 from loremaster.keeps import KeepStore
 from loremaster.store import _txn, surreal_schema
+from sdk3_shape_fakes import bare_record_key
 
 from loremaster import principals
 
@@ -350,7 +351,7 @@ async def world(tmp_path: Path) -> Any:
             await apply_ddl(connection, surreal_schema.generate_memory_ddl(dim=PRODUCTION_DIM), url=env.url)
         finally:
             await connection.close()
-        yield _World(env, config_path, str(operator.id).partition(":")[2] or str(operator.id))
+        yield _World(env, config_path, bare_record_key(operator.id))
     finally:
         await drop_database(env)
 

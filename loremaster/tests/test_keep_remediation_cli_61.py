@@ -63,6 +63,7 @@ from loremaster.keeps import KeepStore
 from loremaster.principal_keys import PrincipalKeyStore
 from loremaster.principals import PrincipalStore
 from loremaster.store.surreal_schema import KEEP_TABLE
+from sdk3_shape_fakes import bare_record_key
 
 from loremaster import principals as p_module
 
@@ -214,10 +215,6 @@ async def _create_keep(
     return capsys.readouterr().out.strip()
 
 
-def _bare(record_id: str) -> str:
-    return record_id.partition(":")[2] or record_id
-
-
 # =========================================================================== #
 # Parser surface (offline). RED at HEAD — the new verbs are not in build_parser yet.
 # =========================================================================== #
@@ -283,7 +280,8 @@ class TestDeleteVerbRefusesAKeeper:
         assert rc == 1, "deleting a keeper must be a loud non-zero exit (PrincipalHasKeepsError laundered)"
         err = capsys.readouterr().err
         assert "lore-adm:" in err, f"the refusal must be a loud `lore-adm:` stderr line: {err!r}"
-        assert _bare(keep_id) in err, f"the refusal must NAME the kept keep id {_bare(keep_id)!r}: {err!r}"
+        keep_bare = bare_record_key(keep_id)
+        assert keep_bare in err, f"the refusal must NAME the kept keep id {keep_bare!r}: {err!r}"
         async with _keep_store_for(cli_env.env) as (keep_store, principal_store):
             assert await principal_store.get_by_email(_KEEPER) is not None, "keeper deleted despite refusal"
             assert await keep_store.get_keep(keep_id) is not None, "the kept keep vanished despite refusal"
@@ -351,7 +349,7 @@ class TestSetKeeperVerb:
             keep = await keep_store.get_keep(keep_id)
             successor = await principal_store.get_by_email(_SUCCESSOR)
         assert keep is not None and successor is not None
-        assert keep.keeper_id == _bare(successor.id), "set-keeper did not reassign to the successor"
+        assert keep.keeper_id == bare_record_key(successor.id), "set-keeper did not reassign to the successor"
 
     async def test_set_keeper_to_a_ghost_email_is_loud_and_nonzero(
         self, cli_env: _CliEnv, capsys: pytest.CaptureFixture[str]
@@ -370,7 +368,7 @@ class TestSetKeeperVerb:
         async with _keep_store_for(cli_env.env) as (keep_store, principal_store):
             keep = await keep_store.get_keep(keep_id)
             keeper = await principal_store.get_by_email(_KEEPER)
-        assert keep is not None and keeper is not None and keep.keeper_id == _bare(keeper.id), (
+        assert keep is not None and keeper is not None and keep.keeper_id == bare_record_key(keeper.id), (
             "a refused set-keeper changed keep.keeper"
         )
 
@@ -389,7 +387,8 @@ class TestSetKeeperVerb:
         assert rc == 1, "set-keeper on a ghost keep must exit 1 (KeepNotFoundError laundered)"
         err = capsys.readouterr().err
         assert "lore-adm:" in err, f"the ghost-keep refusal must be a loud `lore-adm:` line: {err!r}"
-        assert _bare(ghost) in err, f"the refusal must NAME the missing keep {_bare(ghost)!r}: {err!r}"
+        ghost_bare = bare_record_key(ghost)
+        assert ghost_bare in err, f"the refusal must NAME the missing keep {ghost_bare!r}: {err!r}"
 
 
 class TestDeleteKeepVerb:
@@ -450,7 +449,8 @@ class TestTheRemediationFlow:
             assert await principal_store.get_by_email(_KEEPER) is None, "the former keeper must be deleted"
             keep = await keep_store.get_keep(keep_id)
             successor = await principal_store.get_by_email(_SUCCESSOR)
-        assert keep is not None and successor is not None and keep.keeper_id == _bare(successor.id), (
+        assert keep is not None and successor is not None, (keep, successor)
+        assert keep.keeper_id == bare_record_key(successor.id), (
             "the keep must survive under its new keeper (refuse-while-keeping loses no data)"
         )
 

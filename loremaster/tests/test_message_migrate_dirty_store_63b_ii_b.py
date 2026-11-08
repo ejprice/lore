@@ -44,6 +44,7 @@ from _surreal_harness import connect_admin, drop_database, make_env, run, unique
 from loremaster.agents import AgentRegistry
 from loremaster.store import surreal_schema
 from loremaster.store._txn import TxnDomainRejectionError
+from sdk3_shape_fakes import bare_record_key, same_record
 
 from loremaster import principals
 
@@ -54,11 +55,6 @@ _DIM = 8
 # The five LENGTH violator shapes Leg B migrates (grade is P-G3, a pinned KNOWN BOUND — it is NOT in
 # Leg B's stamped set because R19 keeps its ASSERT and a junk-grade row REFUSES the cutover by design).
 _LENGTH_VIOLATOR_SHAPES = ("body", "thread", "refs_count", "refs_entry", "task_id")
-
-
-def _bare(value: Any) -> str:
-    text = str(getattr(value, "id", value))
-    return text.split(":", 1)[-1] if ":" in text else text
 
 
 def _violator_overrides(shape: str) -> dict[str, Any]:
@@ -133,13 +129,13 @@ async def dirty_message_world() -> Any:
                 "sender_agent",
                 session="s1",
                 role="builder",
-                owner_principal_id=_bare(operator.id),
+                owner_principal_id=bare_record_key(operator.id),
                 session_keep_id=await session_keep_id_for(
-                    keep_store, principal_store, owner_principal_id=_bare(operator.id), session="s1"
+                    keep_store, principal_store, owner_principal_id=bare_record_key(operator.id), session="s1"
                 ),  # r2 (A3): the owner travels WITH THE session keep
             )
         ).agent
-        yield principal_store, keep_store, connection, env, _bare(sender.id)
+        yield principal_store, keep_store, connection, env, bare_record_key(sender.id)
     finally:
         await registry.close()
         await connection.close()
@@ -228,7 +224,7 @@ class TestTheRealMigrateSurvivesLegacyViolators:
                     {"id": ids[shape]},
                 )
             )[0]
-            assert str(row["owner_agent"]) == f"{_AGENT_TABLE}:{sender_bare}", (
+            assert same_record(row["owner_agent"], f"{_AGENT_TABLE}:{sender_bare}"), (
                 f"{shape}: owner_agent must be the SENDER after migrate (§4.C), got {row['owner_agent']!r}"
             )
             assert row["owner_principal"] is not None and isinstance(row["scope"], str), (
