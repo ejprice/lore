@@ -303,17 +303,3 @@ bounds:
       count: 1
       reason: _act_as returns arm_finding_identity(...), which mypy types Any while the import is unresolved (the arm lands
         with §HELD part B) — the same missing symbol, surfacing as a return-type line
-# Packet 66 / R30 validator rider (contract-sdk3-r7, 2026-11-08; lead #19063): the F6 registry must refuse a listed
-# id whose path prefix names a different file than its entry. The two refusal pins are red until the builder adds the
-# one validator line. SELF-DESTRUCTS: the line lands, both ids go green, this entry fails the gate until deleted.
-- id: packet-66-r30-validator
-  owner: the SDK3 builder (packet 66)
-  reopen_trigger: the builder adds the R30 validator line (PendingContractRegistry refuses an id whose path prefix
-    names another file than its entry) — both listed ids go green and this entry self-destructs
-  ruling: docs/plans/v2/sdk3-rulings.md R30 (sidecar RULING-8 rider), landed per lead 19063
-  rationale: contract-ahead — the pins are written before the production line, so their reds are owned per node
-  files:
-  - path: scripts/test_pending_contract_gate_f6.py
-    red_nodeids:
-    - 'scripts/test_pending_contract_gate_f6.py::test_the_registry_refuses_an_id_whose_path_prefix_names_another_file[another-file]'
-    - 'scripts/test_pending_contract_gate_f6.py::test_the_registry_refuses_an_id_whose_path_prefix_names_another_file[a-near-miss-prefix]'
