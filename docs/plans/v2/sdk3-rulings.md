@@ -497,3 +497,23 @@ modernize or remove SDK-2.0 tests); R22's riders now bind the SERVICING AUTHOR's
 - **Lead:** commits each servicing batch by explicit path in a commit SEPARATE from the builder's production commits
   (R22 rider 1's both-ways diff runs over those commits); the cold audit's contract-blind pass adjudicates every
   servicing edit, and any test edit authored by the builder is a NO-GO.
+
+## R24 — design sidecar ruling 4: R23's channel CONFIRMED, six holes closed (design-sidecar-66; recorded by the lead)
+Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-4.md`.
+1. **The builder's request is a claim** → the servicer REPRODUCES (runs the node itself) before ruling. Request body =
+   node id + one-line claim + log path in refs; a verdict without the servicer's own run is void.
+2. **REMOVE needs a home** → its fate must be `carried-by <pin id>` or `retired-with drop-list row #N`; neither ⇒ a FORK
+   to the sidecar BEFORE the edit. REFUSE = a product red, back to the builder; the servicer never touches production.
+3. **Shared tree** → the servicer COMMITS ONLY TEST PATHS itself (explicit-path commits; amends R23's "lead commits"
+   so the commit is the artifact the builder can watch). Its receipts carry TREE= and run only the targeted nodes; the
+   builder holds commits while a servicing run it was told of is in flight. The AUTHORITATIVE both-ways diff (R22
+   rider 1) is computed ONCE at the cold audit over the whole packet: pre-build test tree × final production → R1;
+   final test tree × final production → R2. Per-request receipts are attribution, not the gate.
+4. **A waiting builder reads as done/stalled** → never block on one request; continue other items and drain at
+   boundaries. When blocked only on servicing, arm a `Bash(run_in_background)` watcher on the servicer's ARTIFACT (a
+   commit touching the requested file) — never inbox polls or repeated await turns. Proof of service is the commit.
+5. **The servicer's idle is benign** → spawned with the `{"artifact": null}` idle-gate contract, registered on lore_comms
+   with a cadence, draining at EVERY turn boundary; its state lives in am-37 rows + commits, so a context-full respawn
+   (suffixed name) loses nothing.
+6. **Interim reds while a request is open** → accepting a request registers the node under F6 `red_nodeids` (owner:
+   servicer; trigger: the ruling commit); self-destruct clears it on green.
