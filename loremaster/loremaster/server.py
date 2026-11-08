@@ -5217,9 +5217,12 @@ class AppContext:
         """One cursor-paged rollup leg's header — counted elision, never silent truncation (R44).
 
         h1 — a head stamp group wider than the page: the cursor HOLDS, and the header names the group and
-        the remedy (``limit`` equals ``shown`` in this case by construction). h3 — a truncated leg: the
-        cursor resumes at the elision point, and the OTHER legs re-serve their rows above it
-        (at-least-once, #592 Q2).
+        the remedy (``limit`` equals ``shown`` in this case by construction). h3 — a truncated leg: ONE
+        leg-agnostic sentence true in every state (R45 / RULING-16 S1): the next cursor is the EARLIEST resume
+        point of any leg, so rows above it in ANY leg — this one included — are served again next call
+        (at-least-once, #592 Q2); rollup rows carry no stamp, so the actionable rule is "dedupe by task id or
+        finding number". A leg header states leg-local facts plus that one global sentence; the cursor's value
+        lives on the ``next cursor:`` line alone.
         """
         if held_group is not None:
             return (
@@ -5229,8 +5232,9 @@ class AppContext:
             )
         if total > shown:
             return (
-                f"{label} (showing {shown} of {total} — the next cursor resumes at the elision point, "
-                f"and the other legs re-serve their rows above it; re-call rollup with it, or raise limit):"
+                f"{label} (showing {shown} of {total} — the next cursor is the earliest resume point of any "
+                f"leg, so rows above it in any leg, this one included, are served again next call: dedupe by "
+                f"task id or finding number; re-call rollup with it, or raise limit):"
             )
         return f"{label} ({shown}):"
 
@@ -5246,9 +5250,10 @@ class AppContext:
         Reads each leg's ``resume_at`` (R44: the leg's exact resume stamp, never ``rows[-1]``'s — a page
         never ends inside a stamp group, and a held group's leg resumes at the cursor itself). Zero rows
         served (both legs empty) echoes ``effective_since`` unchanged (an idle poll never advances the
-        cursor); ANY leg truncated takes the MIN over truncated legs' ``resume_at`` (rows in other legs
-        beyond it are RE-SERVED next call — at-least-once, never lost; a held leg contributes the cursor
-        itself, so the whole cursor holds); no leg truncated takes the MAX ``resume_at`` over the legs that
+        cursor); ANY leg truncated takes the MIN over truncated legs' ``resume_at`` (rows above it in ANY
+        leg — a non-MIN truncated leg's own rows included — are RE-SERVED next call: at-least-once, never
+        lost; a held leg contributes the cursor itself, so the whole cursor holds); no leg truncated takes
+        the MAX ``resume_at`` over the legs that
         served rows. MIN/MAX order by :func:`~loremaster.store.stamp_paging.stamp_key` — the engine's
         nanosecond order, which ``PreciseDatetime``'s own ``<`` ignores. The message leg is NOT read here
         (#592 Q1(ii)); its header says so.
