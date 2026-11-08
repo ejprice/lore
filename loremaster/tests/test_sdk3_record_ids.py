@@ -363,3 +363,122 @@ class TestANonWordKeyServesTheEnginesText:
             f"served id compared with persisted text (keep scopes) is the ENGINE form, never a parts-join"
         )
         assert minted.id != served.id, "premise: two distinct keeps"
+
+
+class TestTheOwnerClassifierRecognisesTheOperatorWhateverItsKey:
+    """Round 5 — C9 (ruling R12: "an SDK3 REGRESSION, not noise"). The governed-migrate precondition
+    classifies the owners of owned-but-unscoped agents against THE operator principal
+    (``principals._measured_counts`` → ``owner_classification``; the owner sentence in
+    ``principals._owned_unscoped_part``). On both SDK3 references ``test_fixwave_a28_63c_i_a::
+    TestTheMeasuredCountsAreTypedFields63cIAa28`` failed NONDETERMINISTICALLY as ``owner_classification
+    'foreign'``: the operator's id was rendered one way (``Principal.id``, the parts-join) and each agent's
+    ``owner_principal`` RecordID another (``str(RecordID)``, which SDK 3.0.0 brackets for a digit-led or
+    non-word key — ~28 % of engine-minted principal ids are digit-led, hence the flake).
+
+    DETERMINISTIC by construction: the operator principal is re-keyed to a FIXED key of each shape that
+    renders differently across forms (digit-led; non-word), and each case also runs under the SDK
+    renderings R7 names (``angle`` = 3.0.0, ``backtick`` = 3.0.1, applied to EVERY string key). The
+    property is rendering-blind: the operator's own agents are classified ``operator`` and the owner
+    sentence says so; with one foreign owner beside the operator the classification is ``mixed`` and the
+    sample of OTHERS never names the operator. A build comparing two different text forms of one record
+    fails at least one case on every run."""
+
+    _OPERATOR_KEYS: dict[str, str] = {
+        "digit_led": "9c9operator0000000000",
+        "non_word": "c9-op.erator",
+    }
+
+    @staticmethod
+    async def _rekey_the_operator(world: Any, key: str) -> None:
+        """Replace the world's ONE (engine-minted) operator principal with the same row under ``key``."""
+        rows = await run(world.connection, "SELECT * FROM principal")
+        assert len(rows) == 1, f"premise: the governed world holds exactly its operator ({rows!r})"
+        content = {field: value for field, value in rows[0].items() if field != "id"}
+        await run(world.connection, "DELETE principal")
+        await run(
+            world.connection,
+            "CREATE $id CONTENT $content",
+            {"id": RecordID("principal", key), "content": content},
+        )
+        world.operator_bare = key
+
+    @pytest.mark.parametrize("rendering", sorted(_RENDERINGS))
+    @pytest.mark.parametrize("key_shape", sorted(_OPERATOR_KEYS))
+    async def test_the_operators_own_agents_are_classified_operator(
+        self, monkeypatch: pytest.MonkeyPatch, key_shape: str, rendering: str
+    ) -> None:
+        import test_fixwave_a19_63c_i_a as a19  # noqa: PLC0415 - module-qualified: never re-collect its tests
+        from _governed_contract import AGENT_TABLE, seed_agent_governed, seed_agent_legacy  # noqa: PLC0415
+
+        key = self._OPERATOR_KEYS[key_shape]
+        async with a19._governed_world() as world:
+            await self._rekey_the_operator(world, key)
+            for index in range(3):
+                await seed_agent_governed(
+                    world.connection,
+                    row_id=f"c9owned{index}",
+                    name=f"c9owned{index}",
+                    session="c9",
+                    owner_principal=key,
+                    owner_agent=None,
+                    scope=None,
+                )
+            await seed_agent_legacy(world.connection, row_id="c9legacy", name="c9legacy", session="c9")
+            with _rendered(monkeypatch, rendering):
+                result = await world.migrate(AGENT_TABLE)
+        counts = result.preconditions
+        assert result.refused is True and counts is not None, f"premise: a verb-level refusal ({result!r})"
+        assert counts.owned_but_unscoped_agents == 3 and counts.distinct_owner_principals == 1, counts
+        assert counts.owner_classification == "operator", (
+            f"[{key_shape} key {key!r}, rendering {rendering}] the operator's own 3 agents were classified "
+            f"{counts.owner_classification!r}: the classifier compared two different TEXT forms of the same "
+            f"record (C9 — str(RecordID) vs the served Principal.id). Compare one form, or the values."
+        )
+        assert "owned by the operator" in str(result.reason), (
+            f"[{key_shape}, {rendering}] the owner sentence does not name the operator: {result.reason!r}"
+        )
+
+    @pytest.mark.parametrize("rendering", sorted(_RENDERINGS))
+    @pytest.mark.parametrize("key_shape", sorted(_OPERATOR_KEYS))
+    async def test_a_mixed_owner_sample_never_names_the_operator(
+        self, monkeypatch: pytest.MonkeyPatch, key_shape: str, rendering: str
+    ) -> None:
+        import test_fixwave_a19_63c_i_a as a19  # noqa: PLC0415
+        from _governed_contract import AGENT_TABLE, seed_agent_governed  # noqa: PLC0415
+
+        key = self._OPERATOR_KEYS[key_shape]
+        async with a19._governed_world() as world:
+            await self._rekey_the_operator(world, key)
+            await world.principal_store.create(email="c9-foreign@example.com", role="member")
+            foreign_key = (
+                await run(
+                    world.connection,
+                    "SELECT VALUE record::id(id) FROM principal WHERE email = $e",
+                    {"e": "c9-foreign@example.com"},
+                )
+            )[0]
+            for index, owner in enumerate((key, key, foreign_key)):
+                await seed_agent_governed(
+                    world.connection,
+                    row_id=f"c9mixed{index}",
+                    name=f"c9mixed{index}",
+                    session="c9m",
+                    owner_principal=owner,
+                    owner_agent=None,
+                    scope=None,
+                )
+            with _rendered(monkeypatch, rendering):
+                result = await world.migrate(AGENT_TABLE)
+        counts = result.preconditions
+        assert result.refused is True and counts is not None, f"premise: a verb-level refusal ({result!r})"
+        assert counts.distinct_owner_principals == 2, counts
+        assert counts.owner_classification == "mixed", (
+            f"[{key_shape} key {key!r}, rendering {rendering}] operator + one foreign owner classified "
+            f"{counts.owner_classification!r} (C9: two text forms of the operator's record compared)"
+        )
+        sample = str(result.reason).split("a sample of the others:", 1)[-1]
+        assert key not in sample, (
+            f"[{key_shape}, {rendering}] the sample of OTHER owners names the operator ({key!r}): "
+            f"{result.reason!r}"
+        )
+        assert foreign_key in sample, f"premise: the foreign owner is sampled: {result.reason!r}"
