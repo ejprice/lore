@@ -387,3 +387,35 @@ MP-B's "slept == drawn" pin — tests of the old implementation shaping producti
   `RetryCallState` shim is DELETED (not "if no caller needs it"); `additive_jitter` for Retry-After stays only if
   tenacity has no native form (check `wait_combine`/`wait_chain` against the installed source first).
 Routing: contract round 7 (R16 budget) rewrites the retry pins; round 6 is in flight and is not steered mid-run.
+
+## R19 — design sidecar ruling 1 (design-sidecar-66, Fable, under the operator's 2026-11-08 delegation; recorded by the lead)
+Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-1.md` (archived from the sidecar's scratch at close-out).
+- **CONFIRMED:** R9 D1/D2/D3; R12 F18, F19, F21, F22 (since amended by R18), F-a…F-d, C9, X18/X19; R13 F-r5-1/2/3; R15
+  MP-A/MP-B/ownership. No operator ruling should be reversed.
+- **R12 F20 bound re-worded:** scout has no claim-before-dispatch — the CAS is the terminal MARK after the handler ran
+  (`scout._dispatch` → `_mark`), so the true bound is AT-LEAST-ONCE across a lost mark reply, as `_mark`'s docstring says.
+- **R13 RS7 confirmed + rider:** the kept `upsert` is `apply([replace_file_fragment(...)])`-shaped with zero private
+  row-building or SQL, proven by one fragment-builder mutation reddening the upsert pins.
+- **R13 C10 OVERTURNED in part:** `_sdk_guard` and `_surreal_harness.run()` are CONTRACT surface (the guard that fails
+  tests when a build escapes the seam; run()'s rule — first statement vs R2 raise vs list — feeds `drop_database` and
+  the #486 reaper, so it is stated, not chosen by a builder). The builder keeps only the `store/surreal.py` `ensure_ready`
+  timeout routing.
+- **R15 MP-C sharpened:** a BOTH-WAYS node-id diff against HEAD on the same test tree — green@HEAD ∖ green@ref = ∅ AND
+  red@HEAD ∖ red@ref = the DECLARED set. The narrowed governed scan must still fire on a positive control.
+  `test_ingest_entity_seam` ×8: TRACE BY EXECUTION (index one fixture on HEAD and on the reference; both-ways diff of
+  refers/answers_to/entity-edge row counts) and add an edge-COUNT pin to the B family (B4 proves no dangling edge;
+  nothing proves no MISSING edge).
+- **Open questions, adopted as recommended:**
+  - **Q1 — the conformance image is NEVER tagged `latest`:** tag it `sdk3-conform-<sha>`, and the close-out carries a
+    receipt that `latest`'s image id is unchanged — else the next `lore-deploy start` ships SDK 3 to :18500 by
+    accident (packet 66 has no prod deploy).
+  - **Q2:** the :18500-COPY conformance run greps for `TransportTimeoutError` / `SurrealOutcomeUnknownError` (expected 0)
+    and names the slowest served tool; non-zero fires R5's "until measured" on the 30 s default.
+  - **Q3:** at close-out the lead adds store reference §0b "SDK 3.0.0 receipts" (its §3/§6.5/§6.6 teach SDK 2.0 today).
+  - **Q4:** drop rows #29/#30 (keepalive, version gate) accepted, recorded in §0b.
+  - **Q5:** no cron/timer runs any `scripts/` SDK site; unported scripts get a header naming the bound; port only
+    named re-runs.
+  - **Q6:** D1's served advice splits by shape — "write: verify before retrying / read: safe to re-run".
+  - **Q7:** the ~30 `_bare` clones collapse to `bare_record_key`, proven by mutation.
+Routing: everything contract-side not already in round 6 (C10 split, RS7 rider, entity-edge count pin, Q6, MP-C
+both-ways form, governed-scan control) goes to contract round 7 with R18.
