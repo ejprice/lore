@@ -682,3 +682,28 @@ The operator chose: adopt the adversary's measured probes as pins, plus one more
 - Delta 3 = `6ae8338`: MP6-1..4 pins; r11ref = r10ref + D3 passes 520/520; 61 RED@HEAD = declared; the survivors Y2, unfixed r10ref, Y3 and Y7 are red as declared.
 - MP6-5 is a NAMED residual, stated in the pin block.
 - The operator also directed: *"Work autonomously. Use the sidecar to resolve forks."*
+
+## R40 — adversary round 5, final re-grade: F6 SATISFIED (R39's last round)
+`receipts/2026-11-08-sdk3/ADVERSARY5.md` §RE-GRADE-2 graded `6ae8338` and found it SUFFICIENT under the stop rule: 0 unsatisfiable, 0 STOP. r11ref passes 520/520; HEAD was red on exactly the 61 F6 nodes; MP6-1..4 are closed; D3 parity holds (16/16 identical across selector shapes, with a control).
+Named RESIDUALS (the same classes receding one level), each with a re-open trigger in the pin block (`dfa9e23`):
+- **W5:** the walk's ∀ over selectors is pinned only at the plumbing.
+- **W6:** under an unrecognised selector, owned listed reds are pinned only through currency-ok, not through the RED_ADJUDICATED label.
+- **MP6-5:** a module-skipped registered file gets no KEPT note. 0 of 59 such files at `2f07c0a`. Trigger: the first one.
+F6 then landed as `58fd5df`, built to the right side of W5 and W6. The 302-id entry regenerated EMPTY (all green), so there was nothing to register. R30's validator rider landed anyway (`d7c880d`): its contract-ahead bound discharged itself live and was deleted (`6453214`), the first full F6 lifecycle.
+
+## R41 — sidecar ruling 13: the teardown-kill bound on the SDK's own timeout; the 18 `_safe_close` wrappers retired (adopted by the lead)
+Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-13.md`.
+- **FORK T:** use `with connection.timeout(N): await connection.kill(id)`, not stdlib `asyncio.timeout`. `kill()` parks in `_await_reconnect`, bounded by exactly the budget `connection.timeout()` overrides, and raises a typed `TransportTimeoutError`. The stdlib form injects a CancelledError the SDK was not designed to receive, and is swallowed only because `TimeoutError` ⊂ `OSError`. Worst case is 2·N, stated.
+  - Builder: `5e464bc` (re-measured 2.00 s vs 30.00 s uncapped).
+  - Servicer: one `SdkRequestTimeoutMixin` on 8 doubles (`81f9cbd`), fake honesty checked against the installed SDK (`3e3af09`). Mutation: drop the `with` ⇒ exactly the 4 awaiter + 2 scout bound legs red.
+- **FORK S:** retire all 18 `_safe_close` wrappers (drop list #16 → R; SDK 3.0.0 `close()` is designed idempotent; 40/40 measured). Builder `6b43b65`.
+  - Live pin `5fb57fc` over `test_retry_seam._discover_bootstrap_owners` (18 owners, REUSED, not a new scanner): 17 close owners × 2 proxy modes, plus scout's drop-path leg (trigger: scout gains a close()).
+  - Mutation: SDK close() raises ⇒ exactly 36 legs red.
+  - The lead's directive first named a non-existent "factory runtime owner registry"; the servicer caught it, and the lead corrected it to the ruling's own owner set.
+
+## R42 — the inbox awaiter's teardown close() swallow: REMOVED (operator override of the sidecar's addendum)
+The RULING-13 §ADDENDUM proposed keeping the swallow as a design guard (with a debug log, a non-loss leg and a control) and a run-wide `_sdk_guard` close-site recorder.
+- **The operator declined the recorder** (a run-wide recorder feeding a pin, the same call as R38). The cold audit's one-time grep is the receipt.
+- **The operator then overrode the rest**, verbatim: *"I don't want to create tests to check if a feature is removed. That's silly. Have a sonnet agent remove it, and move on. Then the auditor checks."*
+- The swallow was removed in `7d44cf1` (a Sonnet edit, verified and committed by the lead; awaiter tests 34 passed). No test for its absence. The cold audit verifies the removal, and states under R17 what an `await` caller is served if close() raises there.
+- Knock-on: REQ-H, packet-58's catch-site non-vacuity floor, re-baselined 51 → 42 as a named constant citing `6b43b65` (18) and `7d44cf1` (1), by the R36 route (`769903c`).

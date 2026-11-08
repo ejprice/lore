@@ -1,4 +1,5 @@
 brief-base v25 read · brief project v7 read
+**RE-GRADE-2 (R39, F6 delta 3 = 6ae8338, FINAL) SUMMARY: CONTRACT SUFFICIENT (SATISFIED under the stop rule). 0 UNSATISFIABLE, 0 STOP. MP6-1..4 closed. D3 parity holds for every collected outcome under every selector shape. Named RESIDUALS (the same classes receding one level): W5 (a multi-selector scope walk), W6 (listed reds under an unrecognised selector render GREEN), and MP6-5 (its bound needs a re-open trigger). See §RE-GRADE-2.**
 **RE-GRADE (R35, F6 delta 2 = 64fcdd6) SUMMARY: CONTRACT INSUFFICIENT. 0 UNSATISFIABLE. 2 STOP-tagged: MP6-1, a wrong build that hides every red under a directory --wave, survives all 51 F6 pins; MP6-2, r10ref silences the outcome of COLLECTED ids under a directory/'./'/absolute selector (a ruling-bound question, D3). Both are satisfiable and measured. Round-5 survivors N8/N9/N12 + MP5-4 are all KILLED. See §RE-GRADE.**
 # ADVERSARY5: adversary-sdk3-r5 on the F6 gate pins (c01b114), adversary round 5 (the last in budget, R25/R32)
 
@@ -470,3 +471,89 @@ def test_probe_a_class_selector_stops_at_the_name_boundary(tmp_path):
 Other instruments: `adv5/mkbuilds2.py` (specs + declarations), `adv5/runwb2.sh`, `adv5/control2.sh`, `adv5/probes/live/drive_d2.py`, `adv5/probes/y2_live_demo.py`.
 
 DONE · (report in hand-back) · RE-GRADE 64fcdd6: INSUFFICIENT, 0 unsatisfiable — MP5-1..4 closed (N8/N9/N12/MP5-4 killed); STOP MP6-1 (scope leaks into partition: dir --wave passes over orphan reds, survives all 51 pins); STOP-candidate MP6-2 (r10ref silences collected ids under dir/./abs selector; one-line fix 517/517, D3); residuals MP6-3..5
+
+---------------------------------------------------------------------------------------------------------------
+## RE-GRADE-2 — F6 delta 3 (`6ae8338`), R39; FINAL (no round follows)
+- **Graded:** 6ae8338 · HEAD-at-report: 2f07c0a · DIFFERENT (3 behind: `pending_contracts.yaml` (packet-58 D′ rows) plus docs). The gate, wave_gate and F6 file are byte-unchanged 6ae8338..HEAD.
+- **VERDICT: CONTRACT SUFFICIENT. SATISFIED under the lead's stop rule.** 0 UNSATISFIABLE, 0 STOP.
+  - **2 surviving builds**, each the same class as a closed finding receding one level, tagged RESIDUAL with a named bound: W5, W6.
+  - **1 bound needs its trigger written down:** MP6-5.
+- **Runs used:** 10. They were: ref control (520), HEAD (520), collect-only, and 6 scoped wrong builds (~1 s each, inline). The 3 in-memory demos and 1 grep sweep ran no pytest.
+- Packages considered: none. Odoo-20 portability: n/a. Reuse ledger: none. Fan-out: haiku 2 · sonnet 0 · peak 2.
+
+### Provenance and the servicer's receipts (re-measured)
+- `scratch_copy.sh --verify-only sdk3f6r11/ref`: VERIFIED, and `loremaster.__file__` resolves inside the copy. The ref is a scratch copy of 7135da4 with 3 dirty files.
+  - Its gate = `pending_contract_gate.r11ref.py`, which is exactly r10ref plus the one D3 line (`diff`).
+  - Its wave_gate = `wave_gate.r11ref.py` = r10's wave_gate.
+  - **The F6 file's sha256 equals 6ae8338's (`4b5e2dce…`).** The gate and wave_gate are the reference versions by design.
+  - `sdk3f6r9/ref` is untouched (its gate is still `cmp`-equal to r10ref).
+- My copy `adv5/b3`: TREE=e7097f07… = the ref.
+- **r11ref: 520 passed, EXIT=0** (`logs/ref11_control.log`). The servicer's 520/520 reproduced.
+- **HEAD 2f07c0a: 61 failed / 459 passed, EXIT=1** (`logs/head11_red.log`, TREE=39cecf7b…). All 61 are F6 nodes (F6 collects 61), so 61 = declared reproduced. Every red is for the right reason: 59 × RegistryError (`red_nodeids`), 1 × the "neither" regex, 2 × AttributeError (both plumbing pins: no `selection` field).
+- **Survivor replays** (declared before the run, `adv5/DECLARED3.sha256`, 10:27): all reproduce the servicer's receipts.
+  - W1 = Y2 → exactly MP6-1 ×4 red.
+  - W2 = unfixed r10ref → exactly MP6-2 ×4.
+  - W3 = Y3 → exactly MP6-3.
+  - W4 = Y7 → exactly MP6-4.
+  - All PROOF HELD and restored byte-exact; TREE e7097f07 after.
+
+### 1. Did the transcription keep each probe's discriminating power?
+**Yes.** Each of the 10 new nodes asserts what its message promises:
+- MP6-1: "hidden by the selector's spelling" ↔ RED_ORPHANED plus the unlisted orphan.
+- MP6-2: "got no verdict" ↔ not ok plus the green line naming the id.
+- MP6-3: the boundary ↔ no `PinExtra` line.
+- MP6-4: "records BOTH" ↔ tuple equality over 2 selectors.
+
+The transcription strengthened two pins: it added an absolute-path shape to MP6-1 and MP6-2, and it moved MP6-4 to 2 selectors. Each probe's kill set fired exactly (W1–W4).
+
+### 2. Did D3's line open anything? (scope vs adjudication, once more)
+- **D3 parity probe** (`probes/d3_parity.py`, r11ref). A COLLECTED listed id that **failed / passed / skipped / xfail** gets a byte-identical served leg (verdict, ok, every ORPHAN/NOTE line) under the file spelling and under `loremaster/tests`, `loremaster/tests/`, `./file` and `/abs/file`.
+  - Result: **SAME ×16.**
+  - Control: a NOT-collected (renamed) id differs (file ok=False, directory ok=True), which is the ruled bound. So the instrument can see a difference.
+- New wrong builds:
+| build | mutation | F6 result | served consequence (`probes/regrade2_demo.py`, r11ref = control) | tag |
+|---|---|---|---|---|
+| **W5** | `selecting_selector` reads only `selection[:1]` (plumbing intact) | **61/61 green** (MP6-4's plumbing pin passes) | `--wave <F6 file> <other file>`, a renamed listed id in the SECOND file: r11ref `RED_ORPHANED ok=False` (stale); **W5 `RED_ADJUDICATED ok=True`** | **RESIDUAL**: the MP6-4 class receding one level (plumbing → walk) |
+| **W6** | `partition_pytest` drops a LISTED red that no selector covers | **61/61 green** | `--wave loremaster/tests`, only listed reds: r11ref `RED_ADJUDICATED ok=True`; **W6 `GREEN ok=True`**. No unowned red is hidden (MP6-1's pins still hold for unlisted reds) | **RESIDUAL**: the MP6-1 class receding one level (unlisted → listed reds) |
+
+**Stop-rule application (explicit):**
+- **W5** serves a stale id as live in a multi-file wave. That is an R17 false clear in form. But a builder following R37's letter (`in_scope := any(… for selector in selection)`) does not write `selection[:1]`, and the class is MP6-4's, one level down. **RESIDUAL, named bound:** *"the walk's ∀ over selectors is pinned only at the plumbing; a stale verdict for an id covered by a 2nd+ selector is unpinned."* Re-open trigger: any edit to `selecting_selector`. Cold-audit probe: the W5 demo case (2 selectors, renamed id in the second file → stale).
+- **W6** hides no unowned red: currency-ok is unchanged, and only the label differs (GREEN/SCOPED vs RED_ADJUDICATED). It contradicts R39 D3's letter ("a collected id is always judged"), so a letter-follower does not ship it. The class is MP6-1's, one level down. **RESIDUAL, named bound:** *"under an unrecognised selector, owned listed reds are pinned only through currency-ok, not through the RED_ADJUDICATED label."* Re-open trigger: any edit to `partition_pytest`.
+
+### 3. Is MP6-5's stated bound honest under R17?
+- **Honest as a CONTRACT bound, not served:**
+  - The pin block states it accurately: a module-level-skipped registered file renders GREEN with no KEPT note.
+  - Reachability at HEAD (grep, 535 .py; a non-symbol textual seam, so this is a grep fallback, said out loud): **0 of 59** registered or planned files skip at module level. The only F6 hits are comment and fixture strings (`:698`, `:713`). The only real site, `skills/lore-deploy/tests/test_prod_store_guard.py`, is unregistered.
+  - So no consumer can meet the unnamed state today.
+- **Gap:** the pin block names the bound but **no re-open trigger** (CLAUDE.md: every bound carries one).
+  - **RESIDUAL, NO ROUND (prose):** add *"re-open trigger: the first REGISTERED file that skips at module level (`pytest.skip(allow_module_level=True)` / a module-level `importorskip`) — then the KEPT note must reach file granularity (R17 Leg 1)"*.
+  - Until then the render does not name the state, and the bound is honest only because the state is unreachable.
+
+### P1b / P1c (final)
+- **P1b:**
+  - Every invariant in the round-5 table is ∀ under its pins.
+  - The two rows that were guarded at RE-GRADE (unlisted red → ORPHANED; collected pass → self-destruct, each "guarded by a recognised selector") are now ∀ over the 4 selector shapes (MP6-1/2 pins plus D3 parity).
+  - Remaining guarded rows: "stale ∀ selectors" (W5, residual) and "listed red → the RED_ADJUDICATED label ∀ selectors" (W6, residual).
+- **P1c:**
+  - The scope chokepoint is `selecting_selector` (one), proven by mutation: W2 and W3 redden their pins. Its ∀-over-selection reach is proven only at the plumbing (W5).
+  - The partition stays scope-blind for unlisted reds (W1 killed).
+  - The rider's render is one chokepoint (`detail_lines`, X5/X6 last round).
+  - The stale/green/skip ordering is proven per outcome (D3 parity).
+  - No spelling tests: the plumbing pins read the ruled `PytestRun.selection` interface.
+
+### Residuals carried to the builder brief and the cold audit (R16)
+1. **W5:** a multi-selector stale case; probe `probes/regrade2_demo.py` (W5 block).
+2. **W6:** the RED_ADJUDICATED label under an unrecognised selector; probe the same file (W6 block).
+3. **MP6-5:** add the re-open trigger to the pin block (prose).
+4. Carried forward, unchanged: R5-2 (xpass readings, correct), R5-3/R5-7 (message-gap notes), R5-4 (`-k`/maxfail/deselect, not forwarded).
+
+### Re-grade-2 receipts
+| run | log | EXIT | count | TREE |
+|---|---|---|---|---|
+| r11ref control (5 gate files) | `logs/ref11_control.log` | 0 | 520 passed | e7097f07… |
+| HEAD 2f07c0a (5 gate files) | `logs/head11_red.log` | 1 | 61 failed, 459 passed | 39cecf7b… |
+| 6 builds (`runwb3.sh`, `mutation_proof.py`, cgroup, `-n 4 --timeout=300`) | `logs/wb3_*.log`, `logs/batch3_summary.txt` | W1–W4 0; W5, W6 4 (declared pin stayed green = survival receipt) | W1/W2 4F/57P, W3/W4 1F/60P, W5/W6 61P | e7097f07… before and after; 6/6 RESTORED byte-exact |
+| collect | `logs/f6_collect_r11.txt` | 0 | 61 collected | |
+Instruments: `adv5/mkbuilds3.py` (specs + declarations), `adv5/runwb3.sh`, `adv5/probes/d3_parity.py`, `adv5/probes/regrade2_demo.py`.
+
+DONE · (report in hand-back) · RE-GRADE-2 6ae8338: CONTRACT SUFFICIENT (SATISFIED) — 0 unsatisfiable, 0 STOP; MP6-1..4 closed (W1–W4 killed exactly), D3 parity SAME ×16 with control; residuals W5 (multi-selector walk), W6 (listed-red label), MP6-5 needs re-open trigger
