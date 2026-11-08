@@ -879,11 +879,22 @@ def test_D2_the_wave_selector_reaches_the_run_as_its_SELECTION() -> None:
 # ========================================================================================================
 # F6 delta 3 (R39, operator-granted): adversary round 5's RE-GRADE probes, transcribed (adversary-sdk3-r5,
 # docs/plans/v2/receipts/2026-11-08-sdk3/ADVERSARY5.md §RE-GRADE; probe file
-# adv5/b2/scripts/test_adv5_d2_probe.py). CLASS: the scope walk answers ONE question — is a NOT-collected id's
-# absence evidence? It never touches an id the run COLLECTED (that id's outcome adjudicates it — R31's class)
-# and never the partition (D3, ruled YES). STATED BOUND (MP6-5, a named residual, no pin): a registered file
-# pytest skipped at MODULE level renders the pytest leg GREEN with no KEPT note for its listed ids — the
-# rider's "the render says so" at file granularity.
+# adv5/b2/scripts/test_adv5_d2_probe.py).
+# CLASS: the scope walk answers ONE question — is a NOT-collected id's absence evidence? It never touches an
+# id the run COLLECTED (that id's outcome adjudicates it — R31's class) and never the partition (D3, ruled
+# YES).
+# STATED BOUND (MP6-5, a named residual, no pin): a registered file pytest skipped at MODULE level renders the
+# pytest leg GREEN with no KEPT note for its listed ids — the rider's "the render says so" at file
+# granularity. RE-OPEN TRIGGER: the first REGISTERED file that skips at module level
+# (`pytest.skip(allow_module_level=True)` / a module-level `importorskip`) — then the KEPT note must reach
+# file granularity (R17 Leg 1). Measured: 0 of 59 registered or planned files skip at module level (adversary
+# 5's grep, §RE-GRADE-2, 2026-11-08 at 2f07c0a).
+# NAMED BOUND (W5, adversary 5 §RE-GRADE-2): "the walk's ∀ over selectors is pinned only at the plumbing; a
+# stale verdict for an id covered by a 2nd+ selector is unpinned." RE-OPEN TRIGGER: any edit to
+# `selecting_selector`.
+# NAMED BOUND (W6, adversary 5 §RE-GRADE-2): "under an unrecognised selector, owned listed reds are pinned
+# only through currency-ok, not through the RED_ADJUDICATED label." RE-OPEN TRIGGER: any edit to
+# `partition_pytest`.
 # ========================================================================================================
 
 #: Selector shapes ``wave_gate`` forwards and pytest accepts but the prefix walk does not recognise.
