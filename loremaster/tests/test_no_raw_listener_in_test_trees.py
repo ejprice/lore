@@ -223,6 +223,7 @@ _EXEMPT_SITES: dict[tuple[str, str], str] = {
         "unchanged by the length."
     ),
     ("loremaster/tests/_sdk3_proxy.py", "StoreBounceProxy._listen_held"): (
+        "(R43 B2, ca8a7a3; lead 19104) "
         "`asyncio.start_server(handler, sock=held.socket)` BINDS NOTHING: it is handed the socket a "
         "`LoopbackPort` bound and has held since, and asyncio's `sock=` branch only `listen()`s it "
         "(CPython 3.14 `BaseEventLoop.create_server`, read). This detector keys the listener VERB on any "
