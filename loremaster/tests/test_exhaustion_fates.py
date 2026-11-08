@@ -748,6 +748,11 @@ def _fail_closed_sites() -> dict[str, CatchSite]:
     }
 
 
+#: The census of flattened catch sites at 7d44cf1 (re-baselined from adversary-58-r3's 51; see the pin's
+#: docstring for the cited deletions).
+_MEASURED_FLATTENED_FLOOR = 42
+
+
 class TestTheResolverFailsClosed:
     """packet 58 amendment 12 §2 (F-A): the caught set is what PYTHON catches — a Name bound to a tuple, a
     nested tuple and a ``*starred`` element are FLATTENED; an element that does not resolve is RED by name
@@ -803,10 +808,16 @@ class TestTheResolverFailsClosed:
             "scout.py::_safe_kill",
         } <= keys
 
-    def test_NON_VACUITY_the_flattened_spellings_reach_at_least_the_adversarys_51_sites(self) -> None:
+    def test_NON_VACUITY_the_flattened_spellings_reach_at_least_the_measured_floor(self) -> None:
         """am-12 §2: the derived count of sites whose handler names a tuple-valued constant or a starred
-        element is ≥ adversary-58-r3's measured 51 — a floor, so a resolver that stops flattening reds
-        here."""
+        element is ≥ a MEASURED floor — so a resolver that stops flattening reds here.
+
+        RE-BASELINED 2026-11-08 under packet 66 (the R36 route, lead 19085): adversary-58-r3 measured 51; at
+        7d44cf1 the census is 42, because 18 sites were retired by R41 FORK S (6b43b65, drop list #16: the
+        ``_safe_close`` wrappers' tuple catches) and one more by 7d44cf1 (the inbox awaiter's teardown close
+        swallow, operator override of R42). The resolver still flattens — the drop is deleted sites, not a
+        blind resolver. Owner and trigger unchanged (packet 58). RE-BASELINE TRIGGER: a deliberate deletion
+        of tuple-catch sites lowers the census — re-measure and cite the deletion; never lower it silently."""
         flattened = 0
         for site in production_catch_sites():
             handler = site.handler
@@ -819,7 +830,10 @@ class TestTheResolverFailsClosed:
                 for element in elements
             ):
                 flattened += 1
-        assert flattened >= 51, flattened
+        assert flattened >= _MEASURED_FLATTENED_FLOOR, (
+            f"{flattened} flattened sites, below the measured floor {_MEASURED_FLATTENED_FLOOR} — the "
+            "resolver stopped flattening, or tuple-catch sites were deleted without a re-baseline"
+        )
 
 
 _UNUSED: tuple[object, ...] = (Fate,)
