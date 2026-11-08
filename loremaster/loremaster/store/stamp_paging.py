@@ -145,6 +145,19 @@ async def read_stamp_page(  # noqa: PLR0913 - one leg's full description; every 
     one more ``count()`` at that stamp, so its ``N`` describes the whole group. ``LIMIT`` rides a bound
     param (never interpolated).
 
+    THE PREDICATE, stated once (R46 / RULING-17, finding #597): a leg reads the rows whose stamp is a
+    ``datetime`` above the cursor. On 3.3.5, ``<column> > $since`` (``$since`` a datetime) EXCLUDES a stamp of
+    type string, number, bool, null or duration — that row is outside every leg's rows AND its ``total`` —
+    while an array, object, uuid or record stamp is admitted and refused loudly by :func:`required_datetime`
+    (measured: servicer ``build66/r45/probe/order_probe.py``, datetime controls both sides). Every production
+    write into these SCHEMAFULL ``datetime`` / ``option<datetime>`` columns is held to the type, so a
+    non-datetime stamp is reachable ONLY through an admin retype of the column (store reference §1.4).
+    KNOWN BOUND #597, pinned by ``test_sdk3_retirement_pins_66d::TestANonDatetimeStampIsOutsideEveryLeg``.
+    Re-open triggers (any one): a migration that retypes a stamp column; a SCHEMALESS or ``TYPE any`` period
+    on these tables; an import door writing untyped literals; ``option<datetime>`` found to admit NULL. The
+    closing instrument named by the ruling is a once-per-boot integrity count in ``ensure_ready()``, not a
+    per-call check here.
+
     Args:
         query: The ledger's single-statement seam (its ``_query``).
         as_rows: The ledger's narrowing of a ``SELECT`` result to dict rows.
