@@ -83,6 +83,7 @@ from loremaster.index.schema import (
     SCHEMA_REBUILD_STATUS_META_KEY,
 )
 from loremaster.source.snapshot import SnapshotLayout
+from loremaster.store._txn import SurrealOutcomeUnknownError, TxnRowCapExceededError
 from loremaster.store.surreal import SurrealStoreError
 
 if TYPE_CHECKING:
@@ -172,12 +173,28 @@ _FAILED_EMBED_REASON = "embed_failed_or_non_finite"
 
 # The reason attached to ``index.file.failed`` when the composed per-file STORE
 # transaction is REFUSED — a typed :class:`~loremaster.store.surreal.SurrealStoreError`
-# from ``compose``/``apply`` (the hard statement-count cap overflow of a
-# pathologically chunk-heavy file, or a server-side rollback). The atomic apply
-# replaces the old upsert-then-purge ordering, so there is no partial residue: THIS
-# one file is isolated ``failed`` and the sweep continues, exactly like the chunker
-# fault-isolation contract one step earlier in the pipeline.
+# from ``compose``/``apply`` (the row-cap overflow of a pathologically large file, or a
+# server-side rollback). The atomic apply replaces the old upsert-then-purge ordering, so
+# there is no partial residue: THIS one file is isolated ``failed`` and the sweep
+# continues, exactly like the chunker fault-isolation contract one step earlier in the
+# pipeline. A row-cap refusal appends the refusal's own text, which names the row count
+# and the cap (operator ruling R4 rider 3: a refused file is NAMED with its bound).
 _FAILED_STORE_REASON = "store_op_failed_after_retries"
+
+
+# What ``index_status`` serves for a ``failed`` row whose reason was never recorded (a row failed by an
+# image older than the reason key) — stated, never a blank.
+_NO_RECORDED_REASON = "reason not recorded (failed before failure reasons were persisted)"
+
+
+def failed_reason_meta_key(tier: str, path: str) -> str:
+    """The manifest meta key holding WHY ``(tier, path)`` last failed — served by ``index_status``.
+
+    Written by :meth:`Indexer._mark_file_failed` (every failure path: embed, store, chunk-free) and read
+    back for each ``failed`` row, so a refused file is named on a served surface with its reason, never
+    silently absent (operator ruling R4 rider 3).
+    """
+    return f"index.failed_reason:{tier}:{path}"
 
 # The reason attached to ``index.file.failed`` when the CHUNK step (the
 # registry's ``dispatch_file``) raises. Deliberately broad at the catch site —
@@ -415,6 +432,11 @@ class IndexSummary(BaseModel):
     # ``index_status`` manifest roll-up green (extra="forbid"). BUILDER populates
     # it in the per-scope apply loop; the field is a stub here.
     scopes_failed: list[str] = Field(default_factory=list)
+    # Operator ruling R4 rider 3: every ``failed`` manifest row, NAMED with the reason its last failure
+    # recorded (``<tier>:<path> — <reason>``) — a refused file is never silently absent from the served
+    # status. Populated by ``index_status`` (a manifest roll-up); empty on a per-run summary, whose
+    # ``outcomes`` already name each file.
+    failed_files: list[str] = Field(default_factory=list)
     embedding_schema: EmbeddingSchemaStatus | None = None
     schema_rebuild: SchemaRebuildStatus | None = None
 
@@ -710,16 +732,11 @@ class Indexer:
                 mtime_ns=mtime_ns, size=size, chunks=chunks,
             )
             await self._store.apply(fragments)
-        except SurrealStoreError:
-            logger.warning(
-                "index.file.store_failed",
-                extra={"tier": tier, "file_path": path, "reason": _FAILED_STORE_REASON},
-                exc_info=True,
-            )
-            return await self._mark_file_failed(
-                tier=tier, path=path, content_hash=content_hash, mtime_ns=mtime_ns,
-                size=size, prior=prior, prior_ids=prior_ids,
-                reason=_FAILED_STORE_REASON,
+        except SurrealStoreError as store_error:
+            return await self._isolate_store_failure(
+                store_error, tier=tier, path=path, content_hash=content_hash,
+                mtime_ns=mtime_ns, size=size, prior=prior, prior_ids=prior_ids,
+                new_ids=new_ids, n_chunks=len(records),
             )
 
         duration_ms = (time.monotonic_ns() - started_ns) / 1_000_000
@@ -917,6 +934,68 @@ class Indexer:
             return doc_results[0]
         return await self._embedder.embed_documents(texts)
 
+    async def _isolate_store_failure(
+        self,
+        error: SurrealStoreError,
+        *,
+        tier: str,
+        path: str,
+        content_hash: str,
+        mtime_ns: int,
+        size: int,
+        prior: FileRow | None,
+        prior_ids: list[str],
+        new_ids: list[str],
+        n_chunks: int,
+    ) -> IndexOutcome:
+        """THE one disposition of a refused per-file store transaction — both sweep shapes call this.
+
+        Shared by :meth:`_index_chunks` (realtime / single file) and :meth:`_commit_batch_file` (the
+        two-pass batch sweep), so their fates cannot drift (adversary round 3 MP-1: the two cloned
+        ``except`` arms had already diverged once). Never raises the store error: one file's fault never
+        stops the sweep, whatever its outcome class (R15 MP-A).
+
+        1. **Outcome unknown** (:class:`SurrealOutcomeUnknownError`, R9 D1 / R12 F18): the transaction may
+           have committed, so the manifest row is READ BACK. It is atomic with the chunks, so a row that
+           is ``indexed`` at this content hash with exactly the new chunk ids proves the commit landed —
+           the file is served ``indexed``, never ``failed``. Otherwise it provably did not land and falls
+           through to 2.
+        2. **Refused** — logged, and the file isolated ``failed`` (last-good retained) with a reason that
+           NAMES the bound for a row-cap refusal (R4 rider 3) and is persisted for ``index_status``.
+
+        Returns:
+            ``indexed`` when an unknown-outcome commit is proven landed; otherwise ``failed``.
+        """
+        if isinstance(error, SurrealOutcomeUnknownError):
+            row = await self._manifest.get(tier, path)
+            landed = (
+                row is not None
+                and row.state == STATE_INDEXED
+                and row.sha512 == content_hash
+                and list(row.chunk_ids) == list(new_ids)
+            )
+            logger.warning(
+                "index.file.store_outcome_unknown",
+                extra={"tier": tier, "file_path": path, "landed": landed},
+                exc_info=True,
+            )
+            if landed:
+                return IndexOutcome(tier=tier, file_path=path, state=STATE_INDEXED, n_chunks=n_chunks)
+        reason = (
+            f"{_FAILED_STORE_REASON}: {error}"
+            if isinstance(error, TxnRowCapExceededError)
+            else _FAILED_STORE_REASON
+        )
+        logger.warning(
+            "index.file.store_failed",
+            extra={"tier": tier, "file_path": path, "reason": reason},
+            exc_info=True,
+        )
+        return await self._mark_file_failed(
+            tier=tier, path=path, content_hash=content_hash, mtime_ns=mtime_ns,
+            size=size, prior=prior, prior_ids=prior_ids, reason=reason,
+        )
+
     async def _mark_file_failed(
         self,
         *,
@@ -947,7 +1026,8 @@ class Indexer:
             size: The file size in bytes.
             prior: The prior manifest row, if any (its chunk count is retained).
             prior_ids: The prior point ids (retained — last-good points survive).
-            reason: A generic, leak-free reason string for the failure event.
+            reason: A leak-free reason string for the failure event, also persisted under
+                :func:`failed_reason_meta_key` so ``index_status`` serves it.
 
         Returns:
             A ``failed`` :class:`IndexOutcome` (``n_chunks=0`` — nothing stored).
@@ -957,6 +1037,7 @@ class Indexer:
             size=size, n_chunks=prior.n_chunks if prior else 0,
             chunk_ids=prior_ids, state=STATE_FAILED,
         )
+        await self._manifest.meta_set(failed_reason_meta_key(tier, path), reason)
         logger.warning(
             "index.file.failed",
             extra={"tier": tier, "file_path": path, "reason": reason},
@@ -1847,18 +1928,11 @@ class Indexer:
                 new_ids=pf.new_ids, mtime_ns=pf.mtime_ns, size=pf.size, chunks=pf.chunks,
             )
             await self._store.apply(fragments)
-        except SurrealStoreError:
-            logger.warning(
-                "index.file.store_failed",
-                extra={
-                    "tier": pf.tier, "file_path": pf.path, "reason": _FAILED_STORE_REASON,
-                },
-                exc_info=True,
-            )
-            return await self._mark_file_failed(
-                tier=pf.tier, path=pf.path, content_hash=pf.content_hash,
+        except SurrealStoreError as store_error:
+            return await self._isolate_store_failure(
+                store_error, tier=pf.tier, path=pf.path, content_hash=pf.content_hash,
                 mtime_ns=pf.mtime_ns, size=pf.size, prior=prior, prior_ids=prior_ids,
-                reason=_FAILED_STORE_REASON,
+                new_ids=pf.new_ids, n_chunks=len(pf.records),
             )
         duration_ms = (time.monotonic_ns() - started_ns) / 1_000_000
         logger.info(
@@ -2260,20 +2334,26 @@ class Indexer:
         Counts each file row by state across every tier — the cheap health
         surface the deploy healthcheck polls. ``outcomes`` is empty (this is a
         roll-up, not a per-file run) and the tier lists are empty (no run
-        happened); the counts reflect the manifest's current state.
+        happened); the counts reflect the manifest's current state. ``failed_files`` names
+        every ``failed`` row with the reason its last failure recorded (R4 rider 3).
 
         Returns:
             An :class:`IndexSummary` whose counts come from the manifest.
         """
         indexed = failed = 0
+        failed_files: list[str] = []
         for row in await self._manifest.all_files():
             if row.state == STATE_INDEXED:
                 indexed += 1
             elif row.state == STATE_FAILED:
                 failed += 1
+                reason = await self._manifest.meta_get(failed_reason_meta_key(row.tier, row.file_path))
+                failed_files.append(
+                    f"{row.tier}:{row.file_path} — {reason if reason is not None else _NO_RECORDED_REASON}"
+                )
         return IndexSummary(
             files_indexed=indexed, files_failed=failed, files_skipped=0,
-            tiers_rebuilt=[], tiers_skipped=[], outcomes=[],
+            tiers_rebuilt=[], tiers_skipped=[], outcomes=[], failed_files=failed_files,
         )
 
     @staticmethod

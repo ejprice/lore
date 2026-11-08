@@ -216,6 +216,7 @@ from loremaster.search import (
 )
 from loremaster.store._txn import (
     SurrealConnectionError,
+    SurrealOutcomeUnknownError,
     SurrealStoreError,
     TxnContentionExhaustedError,
 )
@@ -3942,11 +3943,9 @@ class AppContext:
                     finding = await self.finding_ledger.acknowledge(
                         ref_item.id_or_number, actor, ref_item.note
                     )
-            except SurrealConnectionError:
+            except SurrealConnectionError as error:
                 aborted = True
-                outcome_lines.append(
-                    f"- {ref_label} ABORTED — store connection lost; retry these"
-                )
+                outcome_lines.append(AppContext._batch_connection_loss_line(ref_label, error))
                 continue
             except TxnContentionExhaustedError:
                 # A healthy connection that lost a write-write race after exhausting
@@ -3975,6 +3974,22 @@ class AppContext:
 
         header = f"{verb} {success_count} of {len(parsed_items)}:"
         return "\n".join([header, *outcome_lines]), success_count
+
+    @staticmethod
+    def _batch_connection_loss_line(ref_label: str, error: SurrealConnectionError) -> str:
+        """The served line for the batch item whose write lost the store connection.
+
+        An outcome-unknown error means the write was SENT and no answer came — it may have been applied,
+        so it is never served as ABORTED or "retry these", which would re-apply a landed write (R9 D1 /
+        R5 rider 2). The surface is a WRITE, so it serves the write half of the advice only (R19 Q6). Any
+        other connection loss happened before the write was answered or sent: ABORTED is true.
+        """
+        if isinstance(error, SurrealOutcomeUnknownError):
+            return (
+                f"- {ref_label} OUTCOME UNKNOWN — the store connection dropped with this write in "
+                f"flight; it may have been applied: verify (lore_findings action=get) before retrying"
+            )
+        return f"- {ref_label} ABORTED — store connection lost; retry these"
 
     @classmethod
     def _render_chain_head(cls, head: ChainHead) -> str:
@@ -5577,6 +5592,7 @@ class AppContext:
             tiers_rebuilt=summary.tiers_rebuilt,
             tiers_skipped=summary.tiers_skipped,
             outcomes=summary.outcomes,
+            failed_files=summary.failed_files,
             embedding_schema=embedding_schema,
             schema_rebuild=schema_rebuild,
             calibration=calibration,

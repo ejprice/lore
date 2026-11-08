@@ -53,9 +53,8 @@ so an agent supplies its filter keys, ``k`` and query text):
   expression-recursion-depth limit on the BM25 OR-predicate, not a size/DoS
   concern (finding #66) — the vector arm embeds the caller's full text
   upstream and is unaffected.
-* **Write-path sizes are bounded too** — a composed transaction's body-
-  statement count is capped at
-  :data:`~loremaster.store._txn.TXN_STATEMENT_HARD_CAP` (in ``compose()``) and
+* **Write-path sizes are bounded too** — a composed transaction's ROW count is
+  capped at :data:`~loremaster.store._txn.TXN_ROW_HARD_CAP` (in ``compose()``) and
   a single ``file_text`` body is capped at :data:`FILE_TEXT_MAX_BYTES`, both
   refused at BUILD time, before anything reaches the server.
 
@@ -94,13 +93,13 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from pydantic import SecretStr
-from surrealdb import AsyncSurreal, RecordID
+from surrealdb import RecordID
 
 from loremaster.config import LoreConfig, resolve_config_value, resolve_secret
 from loremaster.index.records import Record
+from loremaster.store import _txn
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
-    TXN_STATEMENT_WARN_THRESHOLD,
     SurrealConnectionError,
     SurrealStoreError,
     TxnContentionExhaustedError,
@@ -108,7 +107,12 @@ from loremaster.store._txn import (
     _SurrealConnection,
     bootstrap_session,
     compose,
+    ensure_ready_operation,
     execute_transaction,
+    fragment_rows,
+    index_transaction_operation,
+    open_surreal_connection,
+    record_key,
     run_query,
     signin_credentials,
 )
@@ -322,8 +326,16 @@ _IDENT_TEXT_KEY = "ident_text"
 # never drift from the DDL.
 _DECLARED_CHUNK_COLUMNS = frozenset(CHUNK_COLUMNS) - {_METADATA_KEY, _EMBEDDING_KEY}
 
-# The record-id table separator in a stringified ``RecordID`` (``chunk:uuid``).
-_TABLE_SEPARATOR = ":"
+# The batched chunk write's overwrite clause (operator rulings R4, R27-2(a)): ``INSERT INTO chunk $rows ON
+# DUPLICATE KEY UPDATE <every column> = $input.<column>``. Every column the schema declares is re-assigned
+# from the incoming row, and an absent key reads NONE, so a duplicate id is OVERWRITTEN wholly — exactly
+# what the retired per-row ``UPSERT … CONTENT`` did — and a duplicate id inside one batch collapses to the
+# last row. Measured on the 3.3.5 TEST store (build-66 probe ``probe_chunk_overwrite.py``: old vs new rows
+# byte-equal for an overwrite that drops an optional column and for an intra-batch duplicate; control: a
+# plain ``INSERT`` over an existing id fails ``AlreadyExists``). Derived from ``CHUNK_COLUMNS`` (the schema's
+# own field specs), never a hand list, so a new column joins the overwrite automatically.
+_CHUNK_OVERWRITE_CLAUSE = ", ".join(f"{column} = $input.{column}" for column in CHUNK_COLUMNS)
+
 
 # Every hybrid hit is a fusion of both arms, so it is reported as ``fused``.
 _FUSED_ORIGIN: CandidateOrigin = "fused"
@@ -345,7 +357,7 @@ _FILE_TEXT_SHA_KEY = "sha512"
 # The per-row byte ceiling on a ``file_text`` body — defense-in-depth against
 # one pathological file (a giant generated/vendored blob) inflating a single
 # row, and the composed transaction it rides in (see
-# ``loremaster.store._txn.TXN_STATEMENT_HARD_CAP`` for the sibling statement-
+# ``loremaster.store._txn.TXN_ROW_HARD_CAP`` for the sibling row-
 # count guard), without limit. Measured in UTF-8 BYTES, not code points — the
 # actual on-the-wire/row size a multi-byte body (CJK, emoji, …) really costs —
 # comfortably above realistic large generated/vendored source files (a few MB).
@@ -483,7 +495,7 @@ class SurrealStore:
             # ``watcher.py``'s identical double-checked-lock pattern).
             if self._connection is not None:
                 return self._connection  # type: ignore[unreachable]
-            connection = AsyncSurreal(self._url)
+            connection = open_surreal_connection(self._url)
             credentials = signin_credentials(
                 user=self._user, password=self._password
             )
@@ -530,6 +542,7 @@ class SurrealStore:
         """
         return FILE_TEXT_MAX_BYTES
 
+    @ensure_ready_operation
     async def ensure_ready(self) -> None:
         """Connect and apply the schema — idempotent and safe to re-run.
 
@@ -753,18 +766,20 @@ class SurrealStore:
         overwrites in place (never duplicates) and two tiers' copies of one path
         coexist. A duplicate id within a single batch collapses to the last write.
 
+        One batched statement composed through :meth:`apply` (so the row cap binds — R13 RS7), built by the
+        SAME pure chunk-row builder :meth:`replace_file_fragment` uses (R27-2(a)): no SQL or row-building of
+        its own.
+
         Args:
             records_with_vectors: ``(Record, vector)`` pairs to persist.
 
         Raises:
             VectorDimensionError: Any vector is the wrong width (nothing persists).
+            TxnRowCapExceededError: The batch writes more than ``TXN_ROW_HARD_CAP`` rows (nothing sent).
         """
-        self._validate_dimensions(records_with_vectors)
-        for record, vector in records_with_vectors:
-            await self._query(
-                f"UPSERT type::record('{CHUNK_TABLE}', $id) CONTENT $content",
-                {"id": record.point_id, "content": self._chunk_content(record, vector)},
-            )
+        if not records_with_vectors:
+            return
+        await self.apply([self._chunk_rows_fragment(records_with_vectors)])
 
     async def record_trace(
         self,
@@ -978,10 +993,10 @@ class SurrealStore:
         so a wrong-width vector (:class:`VectorDimensionError`) or a reserved
         metadata key (:class:`SurrealStoreError` from :meth:`_split_payload`) is
         rejected LOUDLY here, before anything is composed or applied. The fragment
-        DELETEs every existing chunk of ``(tier, file_path)`` and UPSERTs the new
-        ones; composed into a single transaction (see :meth:`apply`) that DELETE +
-        UPSERT set is what makes a concurrent reader observe only the complete pre-
-        or post-replace state. Every param is namespaced with
+        DELETEs every existing chunk of ``(tier, file_path)`` and writes the new
+        ones through the shared :meth:`_chunk_rows_fragment` (one batched statement); composed
+        into a single transaction (see :meth:`apply`), that DELETE + INSERT set is what makes a
+        concurrent reader observe only the complete pre- or post-replace state. Every param is namespaced with
         :data:`CHUNK_FRAGMENT_PARAM_PREFIX` so it never collides with a sibling
         producer's params in the merged transaction.
 
@@ -992,8 +1007,8 @@ class SurrealStore:
                 — the DELETE still runs, purging any stale chunks).
 
         Returns:
-            The chunk-replace :class:`TxnFragment` (a DELETE followed by the
-            per-record UPSERTs), carrying no ``BEGIN``/``COMMIT`` of its own.
+            The chunk-replace :class:`TxnFragment` (a DELETE followed by one batched
+            ``INSERT``), carrying no ``BEGIN``/``COMMIT`` of its own.
 
         Raises:
             VectorDimensionError: Any vector is the wrong width (nothing is built).
@@ -1004,18 +1019,49 @@ class SurrealStore:
         prefix = CHUNK_FRAGMENT_PARAM_PREFIX
         tier_param, file_param = f"{prefix}tier", f"{prefix}file"
         params: dict[str, Any] = {tier_param: tier, file_param: file_path}
-        statements = [
-            f"DELETE {CHUNK_TABLE} WHERE tier = ${tier_param} AND file_path = ${file_param}"
+        delete = f"DELETE {CHUNK_TABLE} WHERE tier = ${tier_param} AND file_path = ${file_param}"
+        if not records_with_vectors:
+            return TxnFragment(statements=[delete], params=params)
+        rows = self._chunk_rows_fragment(records_with_vectors)
+        return TxnFragment(
+            statements=[delete, *rows.statements],
+            params={**params, **rows.params},
+            rows=1 + fragment_rows([rows]),
+        )
+
+    def _chunk_rows_fragment(
+        self, records_with_vectors: Sequence[tuple[Record, list[float]]]
+    ) -> TxnFragment:
+        """THE pure chunk-row builder (operator ruling R27-2(a)): one batched overwrite of ``chunk`` rows.
+
+        No I/O. Validates every vector's width, reshapes each payload into the schema's row shape
+        (:meth:`_chunk_content`), and emits ONE ``INSERT INTO chunk $rows ON DUPLICATE KEY UPDATE …`` (see
+        :data:`_CHUNK_OVERWRITE_CLAUSE`) that writes them all. Composed by :meth:`replace_file_fragment`
+        (after its per-file DELETE) and, alone, by :meth:`upsert` — so the two callers cannot drift.
+
+        Args:
+            records_with_vectors: The non-empty ``(Record, vector)`` pairs to write.
+
+        Returns:
+            A one-statement fragment declaring its row count (what ``TXN_ROW_HARD_CAP`` bounds).
+
+        Raises:
+            VectorDimensionError: Any vector is the wrong width (nothing is built).
+            SurrealStoreError: A payload carries a reserved key that cannot be round-tripped faithfully.
+        """
+        self._validate_dimensions(records_with_vectors)
+        rows_param = f"{CHUNK_FRAGMENT_PARAM_PREFIX}rows"
+        rows = [
+            {**self._chunk_content(record, vector), "id": RecordID(CHUNK_TABLE, record.point_id)}
+            for record, vector in records_with_vectors
         ]
-        for index, (record, vector) in enumerate(records_with_vectors):
-            id_param = f"{prefix}id{index}"
-            content_param = f"{prefix}content{index}"
-            params[id_param] = record.point_id
-            params[content_param] = self._chunk_content(record, vector)
-            statements.append(
-                f"UPSERT type::record('{CHUNK_TABLE}', ${id_param}) CONTENT ${content_param}"
-            )
-        return TxnFragment(statements=statements, params=params)
+        return TxnFragment(
+            statements=[
+                f"INSERT INTO {CHUNK_TABLE} ${rows_param} ON DUPLICATE KEY UPDATE {_CHUNK_OVERWRITE_CLAUSE}"
+            ],
+            params={rows_param: rows},
+            rows=len(rows),
+        )
 
     def delete_file_fragment(self, tier: str, file_path: str) -> TxnFragment:
         """Build the fragment that purges every chunk of ``(tier, file_path)``.
@@ -1095,6 +1141,7 @@ class SurrealStore:
             params={id_param: [tier, file_path]},
         )
 
+    @index_transaction_operation
     async def apply(self, fragments: Sequence[TxnFragment]) -> None:
         """Compose ``fragments`` into ONE transaction and run it atomically.
 
@@ -1108,10 +1155,11 @@ class SurrealStore:
         rolls the WHOLE thing back (the manifest/graph instances that produced the
         fragments read the committed rows back over their own connections).
 
-        The composed transaction's size is logged (statement + param counts) and a
-        WARNING is emitted above :data:`~loremaster.store._txn.
-        TXN_STATEMENT_WARN_THRESHOLD` — the guard against an accidentally-huge
-        batch. Runs through the shared :func:`~loremaster.store._txn.
+        The composed transaction's size is logged (statement, param and ROW counts) and a
+        WARNING is emitted above :data:`~loremaster.store._txn.TXN_ROW_WARN_THRESHOLD` rows (R9 D2) —
+        the guard against an accidentally-huge batch. The whole transaction runs under the named
+        :data:`~loremaster.store._txn.INDEX_TRANSACTION_TIMEOUT_SECONDS` override (R5 F4b), not the
+        30 s default. Runs through the shared :func:`~loremaster.store._txn.
         execute_transaction`, which verifies EVERY statement's status (never the
         SDK's first-statement-only ``query()``) and self-heals a transport failure.
 
@@ -1123,13 +1171,16 @@ class SurrealStore:
         Raises:
             ValueError: No fragments were given.
             TxnParamCollisionError: Two fragments bound the same param name.
+            TxnRowCapExceededError: The fragments write more than ``TXN_ROW_HARD_CAP`` rows (nothing sent).
+            SurrealOutcomeUnknownError: The transaction was sent and no answer came — it may have
+                committed.
             SurrealConnectionError: The server is unreachable or the socket died.
             SurrealStoreError: The transaction was rejected/rolled back
                 server-side; nothing is left half-applied.
         """
         statement_text, merged_params = compose(*fragments)
         statement_count = sum(len(fragment.statements) for fragment in fragments)
-        self._log_transaction_size(statement_count, len(merged_params))
+        self._log_transaction_size(statement_count, len(merged_params), fragment_rows(fragments))
         await execute_transaction(
             statement_text,
             merged_params,
@@ -1139,17 +1190,17 @@ class SurrealStore:
         )
 
     @staticmethod
-    def _log_transaction_size(statement_count: int, param_count: int) -> None:
+    def _log_transaction_size(statement_count: int, param_count: int, row_count: int) -> None:
         """Emit the transaction-size telemetry, WARNing above the ceiling.
 
-        A DEBUG record for a normal-sized transaction; a WARNING once the body
-        statement count crosses :data:`~loremaster.store._txn.
-        TXN_STATEMENT_WARN_THRESHOLD`, so a runaway batch is visible before it
-        strains the engine. Both records carry ``statement_count`` / ``param_count``
-        as structured fields.
+        A DEBUG record for a normal-sized transaction; a WARNING once the ROW count
+        crosses :data:`~loremaster.store._txn.TXN_ROW_WARN_THRESHOLD` (R9 D2: rows are the one strain
+        measure; read live from ``_txn`` so one value governs), so a runaway batch is visible before it
+        strains the engine. Both records carry ``statement_count`` / ``param_count`` / ``row_count`` as
+        structured fields.
         """
-        extra = {"statement_count": statement_count, "param_count": param_count}
-        if statement_count > TXN_STATEMENT_WARN_THRESHOLD:
+        extra = {"statement_count": statement_count, "param_count": param_count, "row_count": row_count}
+        if row_count > _txn.TXN_ROW_WARN_THRESHOLD:
             logger.warning("store.apply.large_transaction", extra=extra)
         else:
             logger.debug("store.apply.transaction", extra=extra)
@@ -1750,7 +1801,7 @@ class SurrealStore:
             )
             candidates.append(
                 Candidate(
-                    key=self._bare_id(row.get(_ID_KEY)),
+                    key=record_key(row.get(_ID_KEY)),
                     score=float(row.get(_RRF_SCORE_KEY, 0.0)),
                     payload=payload,
                     origin=_FUSED_ORIGIN,
@@ -1780,19 +1831,6 @@ class SurrealStore:
             return None
         return float(raw)
 
-    @staticmethod
-    def _bare_id(raw: Any) -> str:
-        """Return the BARE point id — no ``chunk:`` record-table prefix.
-
-        The SDK returns a chunk id as a :class:`RecordID` whose ``.id`` is the
-        bare ``uuid5`` string; a stringified fallback strips any ``table:`` prefix.
-        """
-        if isinstance(raw, RecordID):
-            return str(raw.id)
-        text = str(raw)
-        if _TABLE_SEPARATOR in text:
-            return text.split(_TABLE_SEPARATOR, 1)[1]
-        return text
 
     # =========================================================================
     # ⚠ PACKET 11-i-a — the C8 narrowed calibration-pool projection.

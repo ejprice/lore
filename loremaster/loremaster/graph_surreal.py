@@ -67,14 +67,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
 from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, NoReturn
 
 from lorescribe.models import Chunk
 from pydantic import SecretStr
-from surrealdb import AsyncSurreal, RecordID
+from surrealdb import RecordID
 
 from loremaster.graph import (
     _QUALIFIER_SEPARATOR,
@@ -107,7 +106,10 @@ from loremaster.store._txn import (
     _SurrealConnection,
     bootstrap_session,
     compose,
+    ensure_ready_operation,
     execute_transaction,
+    open_surreal_connection,
+    record_text,
     run_query,
     signin_credentials,
 )
@@ -197,23 +199,17 @@ _P_EXACT_NAME = "exact_name"
 _P_TIER = f"{GRAPH_FRAGMENT_PARAM_PREFIX}tier"
 _P_FILE = f"{GRAPH_FRAGMENT_PARAM_PREFIX}file"
 
-# Generated (per-node / per-edge / per-name) bound-parameter prefixes for the
-# per-file build transaction — each anchored under
-# :data:`GRAPH_FRAGMENT_PARAM_PREFIX` and kept distinct so a node/edge/name index
-# can never collide on a param name (nor with a sibling producer's).
-_NAME_PARAM_PREFIX = f"{GRAPH_FRAGMENT_PARAM_PREFIX}nm"
-_NODE_PARAM_PREFIX = f"{GRAPH_FRAGMENT_PARAM_PREFIX}nd"
-_EDGE_PARAM_PREFIX = f"{GRAPH_FRAGMENT_PARAM_PREFIX}ed"
+# The per-file build transaction's batched-row params (operator ruling R4: ONE ``INSERT`` per table, each
+# carrying an array of rows) — anchored under :data:`GRAPH_FRAGMENT_PARAM_PREFIX` and distinct, so a table's
+# rows can never collide with another's (nor with a sibling producer's).
+_P_NAME_ROWS = f"{GRAPH_FRAGMENT_PARAM_PREFIX}name_rows"
+_P_NODE_ROWS = f"{GRAPH_FRAGMENT_PARAM_PREFIX}node_rows"
+_P_ANSWERS_ROWS = f"{GRAPH_FRAGMENT_PARAM_PREFIX}answers_rows"
+_P_REFERS_ROWS = f"{GRAPH_FRAGMENT_PARAM_PREFIX}refers_rows"
 # Generated bound-param prefix for the module-prefix ``string::starts_with`` arm
 # of ``what_imports`` / ``_reverse_neighbours`` — one per frontier prefix, kept
 # distinct so a prefix index can never collide with a node/edge/name param.
 _PREFIX_PARAM_PREFIX = "pfx"
-
-# The maximum representable Unicode codepoint (``sys.maxunicode`` — 0x10FFFF
-# since narrow builds were dropped in Python 3.3+). The one value whose
-# module-prefix range predicate has no valid "next" codepoint to increment to
-# — see :meth:`SurrealCodeGraph._prefix_upper_bound` (ledger #30).
-_MAX_UNICODE_CODEPOINT = sys.maxunicode
 
 
 class _AstroidDerivation(CodeGraph):
@@ -407,7 +403,7 @@ class SurrealCodeGraph:
             # ``watcher.py``'s identical double-checked-lock pattern).
             if self._connection is not None:
                 return self._connection  # type: ignore[unreachable]
-            connection = AsyncSurreal(self._url)
+            connection = open_surreal_connection(self._url)
             credentials = signin_credentials(
                 user=self._user, password=self._password
             )
@@ -437,6 +433,7 @@ class SurrealCodeGraph:
             )
             return connection
 
+    @ensure_ready_operation
     async def ensure_ready(self) -> None:
         """Connect and apply the code-graph schema slice — idempotent.
 
@@ -578,7 +575,7 @@ class SurrealCodeGraph:
         """
         chunk_id = row.get(_COL_CHUNK_ID)
         return GraphNode(
-            id=str(row[_COL_ID]),
+            id=record_text(row[_COL_ID]),
             kind=str(row[_COL_KIND]),
             qualified_name=str(row[_COL_QUALIFIED_NAME]),
             file_path=str(row[_COL_FILE_PATH]),
@@ -619,56 +616,18 @@ class SurrealCodeGraph:
         return self._decode_nodes(result)
 
     @staticmethod
-    def _prefix_upper_bound(prefix: str) -> str | None:
-        """The EXCLUSIVE upper bound of the half-open range equivalent to
-        ``string::starts_with(value, prefix)`` (ledger #30's index-pushed rewrite).
-
-        Built by incrementing ``prefix``'s LAST codepoint by one. For any two
-        strings that agree on every character up to that final position, the
-        incremented character sorts strictly above whatever character (if any)
-        the original string continues with there — including the highest
-        representable codepoint, an empty continuation (a name EQUAL to
-        ``prefix``), or any ordinary suffix — because lexicographic comparison
-        resolves at the FIRST differing position, which is always this one.
-        SurrealDB compares strings as UTF-8 bytes, which preserves Unicode
-        codepoint order for valid UTF-8, so this holds for non-ASCII prefixes
-        too (live-verified: ``"pkg.café."`` isolates ``"pkg.café.widget"`` from
-        the unrelated sibling ``"pkg.cafés.other"``).
-
-        Returns:
-            The incremented bound, or ``None`` when ``prefix`` is empty or its
-            last character IS the maximum codepoint
-            (:data:`_MAX_UNICODE_CODEPOINT`) — no valid "next" character
-            exists, so the caller falls back to an unbounded ``value >=
-            prefix`` scan. Every REAL caller's prefix is trailing-dot-anchored
-            (``f"{module}."`` — see :meth:`_names_with_value_prefix`), so this
-            edge is theoretical in production; it is handled (rather than left
-            to raise ``ValueError`` out of ``chr()``) because this is a
-            general-purpose range builder, not a single-caller inline.
-        """
-        if not prefix:
-            return None
-        last = prefix[-1]
-        if ord(last) >= _MAX_UNICODE_CODEPOINT:
-            return None
-        return f"{prefix[:-1]}{chr(ord(last) + 1)}"
-
-    @staticmethod
     def _prefix_range_query(prefixes: Sequence[str]) -> tuple[str, dict[str, Any]]:
-        """Build the ``SELECT VALUE id FROM name WHERE <range>`` statement + bound
-        params matching ANY of ``prefixes`` (ledger #30's index-pushed rewrite).
+        """Build the ``SELECT VALUE id FROM name WHERE string::starts_with(value, $p…)`` statement +
+        bound params matching ANY of ``prefixes``.
 
-        Rewritten from ``string::starts_with`` — probe-verified live against
-        3.1.5: its ``EXPLAIN`` plan is a full ``TableScan``
-        (``pre_decode_filter: no (unsupported predicate)``), so the
-        ``name_value`` index was never consulted. The equivalent half-open
-        range predicate ``value >= $lo AND value < $hi``
-        (:meth:`_prefix_upper_bound` builds ``$hi``) IS pushed through
-        ``name_value`` as an ``IndexScan``, with an IDENTICAL result set for
-        every prefix tried — ordinary, exact-match, max-codepoint, and
-        multi-byte-unicode (see ``TestNamesWithValuePrefixRangeRewrite`` for
-        the live-verified corpus). Every value stays a BOUND parameter (no
-        interpolation).
+        The engine's NATIVE prefix match (operator ruling R7 F9, drop list #10). On 3.1.5 it was a
+        full ``TableScan``, so ledger #30 rewrote it as a half-open range ``value >= $lo AND value < $hi``;
+        on 3.3.5 ``string::starts_with(value, $p)`` is served by the ``name_value`` index (an
+        ``IndexScan``, and ``BitmapOr > BitmapIndexScan`` for several prefixes OR'd — measured,
+        ``probe_f9_starts_with.py``, packet doc §R3.4), so the workaround is retired. The range also
+        carried an OLD BUG the native form fixes: a prefix ending in the maximum codepoint had no upper
+        bound and fell back to an unbounded ``value >= $lo`` (inventory X11). Every value stays a BOUND
+        parameter (no interpolation).
 
         Extracted as its own pure function (rather than inlined in
         :meth:`_names_with_value_prefix`) so a test can append ``EXPLAIN`` to
@@ -685,15 +644,9 @@ class SurrealCodeGraph:
         conditions: list[str] = []
         params: dict[str, Any] = {}
         for index, prefix in enumerate(prefixes):
-            lo_key = f"{_PREFIX_PARAM_PREFIX}{index}_lo"
-            params[lo_key] = prefix
-            upper = SurrealCodeGraph._prefix_upper_bound(prefix)
-            if upper is None:
-                conditions.append(f"{_COL_VALUE} >= ${lo_key}")
-            else:
-                hi_key = f"{_PREFIX_PARAM_PREFIX}{index}_hi"
-                params[hi_key] = upper
-                conditions.append(f"({_COL_VALUE} >= ${lo_key} AND {_COL_VALUE} < ${hi_key})")
+            key = f"{_PREFIX_PARAM_PREFIX}{index}"
+            params[key] = prefix
+            conditions.append(f"string::starts_with({_COL_VALUE}, ${key})")
         clause = " OR ".join(conditions)
         statement = f"SELECT VALUE {_COL_ID} FROM {NAME_TABLE} WHERE {clause}"
         return statement, params
@@ -830,12 +783,14 @@ class SurrealCodeGraph:
         touch. Every value — record ids, kinds, names — is a BOUND parameter (no
         interpolation), each namespaced under :data:`GRAPH_FRAGMENT_PARAM_PREFIX`
         so it never collides with a sibling producer's params in the merged
-        transaction. The file's prior graph rows are purged first; the name records
-        are UPSERTed next (each carrying its own string as ``value`` so the
-        module-prefix reach can prefix-match it), so an edge to a not-yet-defined
-        name never dangles (order-independence); each node then ``answers_to`` its
-        FQN-name AND bare-name (the collision fan-out) and each reference ``refers``
-        to its dst-name.
+        transaction. The file's prior graph rows are purged first; then ONE batched
+        statement per table (operator ruling R4 — the statement count no longer grows
+        with the file): the name records (each carrying its own string as ``value`` so
+        the module-prefix reach can prefix-match it; an existing name is overwritten in
+        place), so an edge to a not-yet-defined name never dangles; the nodes; each
+        node's ``answers_to`` its FQN-name AND bare-name (the collision fan-out); and
+        each reference's ``refers`` to its dst-name. The fragment declares its ROW count,
+        which ``TXN_ROW_HARD_CAP`` bounds.
 
         Args:
             tier: The source tier the file belongs to.
@@ -857,30 +812,44 @@ class SurrealCodeGraph:
         params: dict[str, Any] = {_P_TIER: tier, _P_FILE: file_path}
         statements: list[str] = [*self._purge_statements()]
 
-        # Every distinct name touched by this file (node FQNs/bares + edge dsts),
-        # UPSERTed once so the relate targets always exist.
+        # Every distinct name touched by this file (node FQNs/bares + edge dsts), written FIRST so the
+        # relate targets always exist; ``value`` mirrors the record-id string for the module-prefix reach.
         names: set[str] = set()
         for node in nodes:
             names.add(node.qualified_name)
             names.add(self._bare(node.qualified_name))
         for edge in edges:
             names.add(edge.dst)
-        for index, name in enumerate(sorted(names)):
-            id_key = f"{_NAME_PARAM_PREFIX}{index}"
-            value_key = f"{id_key}_value"
-            params[id_key] = self._name_id(name)
-            # ``value`` mirrors the record-id string so the module-prefix reach
-            # can ``string::starts_with`` on an indexed column (a RecordID id is
-            # not itself prefix-matchable on 3.1.5).
-            params[value_key] = name
-            statements.append(f"UPSERT ${id_key} SET {_COL_VALUE} = ${value_key};")
+        name_rows = [{_COL_ID: self._name_id(name), _COL_VALUE: name} for name in sorted(names)]
+        node_rows = [self._node_row(tier, file_path, node) for node in nodes]
+        answers_rows = [row for node in nodes for row in self._answers_to_rows(tier, file_path, node)]
+        refers_rows = [self._refers_row(tier, file_path, edge) for edge in edges]
 
-        for index, node in enumerate(nodes):
-            statements.extend(self._node_statements(index, tier, file_path, node, params))
-        for index, edge in enumerate(edges):
-            statements.append(self._edge_statement(index, tier, file_path, edge, params))
-
-        return TxnFragment(statements=statements, params=params)
+        # ONE batched statement per table (operator ruling R4), in endpoint order: names, then nodes,
+        # then the edges joining them (``INSERT RELATION`` validates no endpoint — store reference §4 —
+        # so the order is what guarantees none dangles; pin B4).
+        batches = (
+            (
+                _P_NAME_ROWS,
+                f"INSERT INTO {NAME_TABLE} ${_P_NAME_ROWS} "
+                f"ON DUPLICATE KEY UPDATE {_COL_VALUE} = $input.{_COL_VALUE};",
+                name_rows,
+            ),
+            (_P_NODE_ROWS, f"INSERT INTO {CODE_NODE_TABLE} ${_P_NODE_ROWS};", node_rows),
+            (
+                _P_ANSWERS_ROWS,
+                f"INSERT RELATION INTO {ANSWERS_TO_RELATION} ${_P_ANSWERS_ROWS};",
+                answers_rows,
+            ),
+            (_P_REFERS_ROWS, f"INSERT RELATION INTO {REFERS_RELATION} ${_P_REFERS_ROWS};", refers_rows),
+        )
+        rows = len(statements)
+        for param, statement, batch in batches:
+            if batch:
+                params[param] = batch
+                statements.append(statement)
+                rows += len(batch)
+        return TxnFragment(statements=statements, params=params, rows=rows)
 
     def purge_file_fragment(self, tier: str, file_path: str) -> TxnFragment:
         """Build the fragment that purges one file's whole code-graph slice.
@@ -935,73 +904,43 @@ class SurrealCodeGraph:
             f"WHERE {_COL_TIER} = ${_P_TIER} AND {_COL_FILE_PATH} = ${_P_FILE};",
         )
 
-    def _node_statements(
-        self,
-        index: int,
-        tier: str,
-        file_path: str,
-        node: _NodeSpec,
-        params: dict[str, Any],
-    ) -> list[str]:
-        """The CREATE + two ``answers_to`` RELATEs for one derived node.
+    def _node_row(self, tier: str, file_path: str, node: _NodeSpec) -> dict[str, Any]:
+        """One derived node's ``code_node`` row (its id is the composite ``[tier, file_path, qname]``).
 
-        Mutates ``params`` with this node's bound values and returns the
-        statements. The node ``answers_to`` its FQN-name AND its bare-name — the
-        mechanism that lets a bare query bridge to a resolved FQN dst.
+        ``chunk_id`` is ``option<string>``: ``None`` binds as ``NONE`` for the synthesised module node and
+        decodes back to ``None`` on read.
         """
-        bare = self._bare(node.qualified_name)
-        prefix = f"{_NODE_PARAM_PREFIX}{index}"
-        id_key, kind_key = f"{prefix}_id", f"{prefix}_kind"
-        qname_key, bare_key, chunk_key = f"{prefix}_qname", f"{prefix}_bare", f"{prefix}_chunk"
-        fqn_name_key, bare_name_key = f"{prefix}_fqn_name", f"{prefix}_bare_name"
+        return {
+            _COL_ID: self._code_node_id(tier, file_path, node.qualified_name),
+            _COL_KIND: node.kind,
+            _COL_QUALIFIED_NAME: node.qualified_name,
+            _COL_BARE_NAME: self._bare(node.qualified_name),
+            _COL_FILE_PATH: file_path,
+            _COL_TIER: tier,
+            _COL_CHUNK_ID: node.chunk_id,
+        }
 
-        params[id_key] = self._code_node_id(tier, file_path, node.qualified_name)
-        params[kind_key] = node.kind
-        params[qname_key] = node.qualified_name
-        params[bare_key] = bare
-        # ``chunk_id`` is ``option<string>``: ``None`` binds as ``NONE`` for the
-        # synthesised module node and decodes back to ``None`` on read.
-        params[chunk_key] = node.chunk_id
-        params[fqn_name_key] = self._name_id(node.qualified_name)
-        params[bare_name_key] = self._name_id(bare)
+    def _answers_to_rows(self, tier: str, file_path: str, node: _NodeSpec) -> list[dict[str, Any]]:
+        """The node's two ``answers_to`` edges: to its FQN-name AND its bare-name.
 
-        create = (
-            f"CREATE ${id_key} CONTENT {{ "
-            f"{_COL_KIND}: ${kind_key}, {_COL_QUALIFIED_NAME}: ${qname_key}, "
-            f"{_COL_BARE_NAME}: ${bare_key}, {_COL_FILE_PATH}: ${_P_FILE}, "
-            f"{_COL_TIER}: ${_P_TIER}, {_COL_CHUNK_ID}: ${chunk_key} }};"
-        )
-        answers_fqn = (
-            f"RELATE ${id_key}->{ANSWERS_TO_RELATION}->${fqn_name_key} "
-            f"SET {_COL_TIER} = ${_P_TIER}, {_COL_FILE_PATH} = ${_P_FILE};"
-        )
-        answers_bare = (
-            f"RELATE ${id_key}->{ANSWERS_TO_RELATION}->${bare_name_key} "
-            f"SET {_COL_TIER} = ${_P_TIER}, {_COL_FILE_PATH} = ${_P_FILE};"
-        )
-        return [create, answers_fqn, answers_bare]
+        The bare edge is the mechanism that lets a bare query bridge to a resolved FQN dst.
+        """
+        node_id = self._code_node_id(tier, file_path, node.qualified_name)
+        return [
+            {_EDGE_IN: node_id, _EDGE_OUT: self._name_id(target), _COL_TIER: tier, _COL_FILE_PATH: file_path}
+            for target in (node.qualified_name, self._bare(node.qualified_name))
+        ]
 
-    def _edge_statement(
-        self,
-        index: int,
-        tier: str,
-        file_path: str,
-        edge: _EdgeSpec,
-        params: dict[str, Any],
-    ) -> str:
-        """The ``refers`` RELATE for one derived reference (mutates ``params``)."""
-        prefix = f"{_EDGE_PARAM_PREFIX}{index}"
-        src_key, dst_key = f"{prefix}_src", f"{prefix}_dst"
-        kind_key, resolved_key = f"{prefix}_kind", f"{prefix}_resolved"
-        params[src_key] = self._code_node_id(tier, file_path, edge.src)
-        params[dst_key] = self._name_id(edge.dst)
-        params[kind_key] = edge.kind
-        params[resolved_key] = edge.resolved
-        return (
-            f"RELATE ${src_key}->{REFERS_RELATION}->${dst_key} SET "
-            f"{_COL_KIND} = ${kind_key}, {_COL_RESOLVED} = ${resolved_key}, "
-            f"{_COL_SRC_TIER} = ${_P_TIER}, {_COL_SRC_FILE_PATH} = ${_P_FILE};"
-        )
+    def _refers_row(self, tier: str, file_path: str, edge: _EdgeSpec) -> dict[str, Any]:
+        """One derived reference's ``refers`` edge, from its source node to its dst-name."""
+        return {
+            _EDGE_IN: self._code_node_id(tier, file_path, edge.src),
+            _EDGE_OUT: self._name_id(edge.dst),
+            _COL_KIND: edge.kind,
+            _COL_RESOLVED: edge.resolved,
+            _COL_SRC_TIER: tier,
+            _COL_SRC_FILE_PATH: file_path,
+        }
 
     # -- reconcile surface ---------------------------------------------------
 
