@@ -419,3 +419,34 @@ Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-1.md` (archive
   - **Q7:** the ~30 `_bare` clones collapse to `bare_record_key`, proven by mutation.
 Routing: everything contract-side not already in round 6 (C10 split, RS7 rider, entity-edge count pin, Q6, MP-C
 both-ways form, governed-scan control) goes to contract round 7 with R18.
+
+## R20 — design sidecar ruling 2: R18 CONFIRMED in direction, four clauses AMENDED (design-sidecar-66; recorded by the lead)
+Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-2.md` (also the R17 Leg-1/Leg-2 retrofit table for
+ruling 1's served-surface verdicts). Verified against installed tenacity 9.1.4: `wait_random_exponential` is HEAD's
+jitter law exactly, `stop_any`/`stop_all` is HEAD's predicate, `retry_error_callback` replaces the RetryError raise,
+`sleep=` is injectable, and an unslept final draw is native and harmless once nothing counts draws.
+- **A1 — no per-attempt logging hooks.** `before_sleep`/`after` logging would break X22 (exactly one exhaustion record,
+  nothing on a resolved conflict; p50 ≈ 2 attempts per mint ⇒ a log storm). The one record lives in
+  `retry_error_callback`; unused hooks are omitted. `before_sleep_log` is NOT used here.
+- **A2 — CONVERT, don't delete, the recorder's CONTROL uses.** `_record_shared_jitter` has 8 call sites (sidecar's grep;
+  R12/R18 said 9 — re-derive at round 7), several of which are premises ("an empty scout claim did NOT back off"; the
+  16-way family's "the run actually RETRIED"). Deleting them lets T2 pass vacuously on a never-retrying build (a Leg-2
+  false clear). They move to observing the SLEEP call through tenacity's `sleep=` seam (or the asyncio.sleep patch);
+  only the draw-COUNT assertions retire. MP-B becomes native: only "slept", no "drawn".
+- **A3 — add a distribution pin** (R18's window + decorrelation pins admit the adversary's `wb_r11_sleepdrift`, whose
+  `w/2 + d/2` stays in-window and decorrelated): ≥256 recorded sleeps at a fixed attempt index ⇒ min < w/8 AND max > 7w/8
+  (false-red ≈ 3e-15). Control: `wb_r11_sleepdrift` must go RED.
+- **A4 — ONE native wait FACTORY stays in `loresigil.backoff`** as the policy chokepoint once the fake-`RetryCallState`
+  shim dies: `full_jitter(base_s, cap_s) -> wait_random_exponential(...)` and `jittered_fixed(delay, width) ->
+  wait_fixed(delay) + wait_random(0, width)`. Sharing proven by mutation: factory → `wait_fixed(SENTINEL)` ⇒ every
+  site's slept value == SENTINEL. The AST perimeter scan stays; `_POW_ALLOWLIST` empties (F-r5-1).
+- **Native mechanisms, verdicts:** `sleep=` USE (the test seam); a `wait_base` subclass `wait_retry_after` combined with
+  `wait_random` for Retry-After USE in packet 68 (tenacity has no built-in Retry-After reader; `wait_chain` is not
+  it); `wait_fixed + wait_random` for the lease boot pause USE in 68; `RetryableConflictSignal(TryAgain)` optional
+  (keep the explicit `retry=`); `stop_before_delay` not HEAD's semantics; the exhaustion pin counts with the attempt
+  body's own counter, not tenacity statistics.
+- **R17 legs for R18:** Leg 1 — the exhaustion text answers "did NOT commit after N attempts", which is what the agent
+  asks; a conflict is server-answered ⇒ definite (F-b), never unknown. Leg 2 — driver × {never-retries → T1/T2
+  premise (A2); over-retries a transport-unknown → F14 zero-retry pins; correlated jitter → A3; UN-AWAITED coroutine →
+  pin that `retry_on_conflict` RETURNS THE ATTEMPT'S VALUE for a lambda-shaped caller}.
+Routing: contract round 7 implements R18 as amended here.
