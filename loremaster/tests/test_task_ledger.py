@@ -1917,17 +1917,19 @@ class TestUpdatedSince:
 
 
 class TestUpdatedSinceSameStampTies:
-    """A deliberately FORCED same-``updated_at``-stamp tie must drop neither
-    row and must not crash the ASC sort.
+    """A tie INSIDE a page survives the sort: two rows forced to one
+    ``updated_at`` stamp, both well under ``limit``, are both served and the
+    window's ``total`` is not corrupted.
 
-    Deterministic ties are only constructible against a backend whose clock
-    this test controls directly — the FAKE, built inline (bypassing
+    What this does NOT pin: a ``limit`` that CUTS a tie group. Its fixture is 2
+    tied rows under ``limit=20``, so neither the cut nor a head group wider
+    than ``limit`` is reachable by its arithmetic — the case finding #591
+    names. The cut is pinned against the LIVE store, stamps forced through
+    admin DML, by ``test_sdk3_rollup_ties_r15.py`` (RULING-15 P1-P4, all three
+    stamp-paged legs). The FAKE is built inline (bypassing
     ``task_ledger_factory``, mirroring how ``TestQueryClassifiedErrorPosture``
     above builds a ``TaskLedger`` inline for a scenario the parametrized
-    fixture can't express). The real server clock's resolution makes a true
-    tie non-deterministic to force from the client side; the exclusive-
-    boundary and ASC-order pins above already cover the real backend's
-    ordering contract.
+    fixture can't express).
     """
 
     async def test_tied_stamps_both_survive_and_the_window_is_not_corrupted(
@@ -1944,10 +1946,10 @@ class TestUpdatedSinceSameStampTies:
 
         tied_stamp = (await ledger.get_task(first_id)).claimed_at
         assert tied_stamp is not None
-        # Force an exact tie directly on the fake's stored rows (never
-        # reachable through the public API at this precision) — the point of
-        # this test is the SORT/FILTER behaviour under a tie, not how a tie
-        # might arise.
+        # Force an exact tie directly on the fake's stored rows — the point of
+        # this test is the SORT/FILTER behaviour under a tie inside one page,
+        # not how a tie might arise (RULING-15 §1: the engine's per-statement
+        # ``time::now()`` makes a natural task-leg tie unproven, not impossible).
         object.__setattr__(ledger.db.tasks[first_id], "updated_at", tied_stamp)
         object.__setattr__(ledger.db.tasks[second_id], "updated_at", tied_stamp)
 

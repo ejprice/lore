@@ -7380,8 +7380,8 @@ class TestRollupDispatch:
         )
         lines = rendered.splitlines()
         assert (
-            "tasks transitioned (showing 2 of 3 — the next cursor resumes at "
-            "the elision point; re-call rollup with it, or raise limit):"
+            "tasks transitioned (showing 2 of 3 — the next cursor resumes at the elision point, "
+            "and the other legs re-serve their rows above it; re-call rollup with it, or raise limit):"
         ) in lines
 
     async def test_next_cursor_with_no_truncation_is_the_max_served_stamp(

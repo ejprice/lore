@@ -1323,13 +1323,17 @@ class TestFiledSince:
 
 
 class TestFiledSinceSameStampTies:
-    """A deliberately FORCED same-``created_at``-stamp tie must drop neither
-    row and must not crash the ASC sort.
+    """A tie INSIDE a page survives the sort: two findings forced to one
+    ``created_at`` stamp, both well under ``limit``, are both served and the
+    window's ``total`` is not corrupted.
 
-    Mirrors ``test_task_ledger.TestUpdatedSinceSameStampTies``: deterministic
-    ties are only constructible against a backend whose clock this test
-    controls directly — the FAKE, built inline (bypassing
-    ``finding_ledger_factory``).
+    Ties ARE reachable here: ``created_at`` is a Python-microsecond stamp
+    (``FindingLedger.report``), so two ``report`` calls in one microsecond tie.
+    What this does NOT pin: a ``limit`` that CUTS a tie group — its 2 tied rows
+    sit under ``limit=20``, so the cut is unreachable by its arithmetic (finding
+    #591). The cut is pinned against the LIVE store by
+    ``test_sdk3_rollup_ties_r15.py`` (RULING-15 P1-P4). The FAKE is built inline
+    (bypassing ``finding_ledger_factory``).
     """
 
     async def test_tied_stamps_both_survive_and_the_window_is_not_corrupted(
