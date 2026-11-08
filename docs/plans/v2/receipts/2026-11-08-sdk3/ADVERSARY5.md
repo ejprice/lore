@@ -1,4 +1,5 @@
 brief-base v25 read · brief project v7 read
+**RE-GRADE (R35, F6 delta 2 = 64fcdd6) SUMMARY: CONTRACT INSUFFICIENT. 0 UNSATISFIABLE. 2 STOP-tagged: MP6-1, a wrong build that hides every red under a directory --wave, survives all 51 F6 pins; MP6-2, r10ref silences the outcome of COLLECTED ids under a directory/'./'/absolute selector (a ruling-bound question, D3). Both are satisfiable and measured. Round-5 survivors N8/N9/N12 + MP5-4 are all KILLED. See §RE-GRADE.**
 # ADVERSARY5: adversary-sdk3-r5 on the F6 gate pins (c01b114), adversary round 5 (the last in budget, R25/R32)
 
 ## SUMMARY BLOCK
@@ -316,3 +317,156 @@ for name, sel in SCENARIOS.items():
 ```
 
 DONE · (report in hand-back) · F6 delta INSUFFICIENT, 0 unsatisfiable: 17/20 wrong gates killed, all adv-4 replays + r8 ref killed; 3 survive (mixed-entry self-destruct, KEPT note on GREEN/wave_gate, cap-3) + module-skip false STALE; 2 decisions (MP5-1 STOP?, node-id wave stale)
+
+---------------------------------------------------------------------------------------------------------------
+## RE-GRADE — F6 delta 2 (`64fcdd6`), granted by R35; the last round
+- **Graded:** 64fcdd6 · HEAD-at-report: 25ef938 · DIFFERENT (1 behind: inventory docs only). The gate, F6 file and wave_gate are byte-unchanged 64fcdd6..HEAD.
+- **VERDICT: CONTRACT INSUFFICIENT. 0 UNSATISFIABLE.**
+  - **STOP:** MP6-1.
+  - **STOP-candidate (ruling-bound, D3):** MP6-2.
+  - **RESIDUAL:** MP6-3, MP6-4, MP6-5.
+  - The round-5 findings MP5-1..4 are CLOSED. My survivors N8/N9/N12 and the MP5-4 revert each die on their new pins. The reference now passes MP5-4 and the MP5-2 wave_gate leg (live).
+- **Runs used (re-grade):** 19. They were: ref control (510), HEAD (510), probe baseline (7), FIX control (517), 10 scoped wrong builds, 2 collect-only, and 3 live probe-tree drivers (D2 selectors, MP5-4 shapes, the Y2 demo).
+- Packages considered: none (no mechanism specified). Odoo-20 portability: n/a. Reuse ledger: none. Fan-out: haiku 3 · sonnet 0 · peak 2.
+
+### Provenance and satisfiability (re-measured, not relayed)
+- `scratch_copy.sh --verify-only sdk3f6r9/ref`: VERIFIED, and `loremaster.__file__` resolves inside the copy.
+- sha256 against 64fcdd6:
+  - F6 file: SAME (`b9a1d7bf…`).
+  - Gate: ref = r10ref (`074aa36e…`), the reference by design.
+  - wave_gate: differs from 64fcdd6 by exactly the 2-line `currency.detail_lines()` render (the reference's MP5-2 fix; `git diff d78baa3` in the ref).
+  - `test_backoff_seam.py` = d78baa3 (`f262be2e`): restored, which clears R5-6.
+  - `pending_contracts.yaml` in the ref = d78baa3's. The 64fcdd6 registry row (`packet-66-f6-contract`, call-arg ×1) does not apply, because the tests use tmp registries.
+- My copy is `adv5/b2` (scratch_copy of the ref), TREE=1d81b9bd… = the ref.
+- **Reference: 510 passed, EXIT=0** (`logs/ref10_control.log`), which reproduces the servicer's 510/510.
+- **HEAD 25ef938: 51 failed / 459 passed, EXIT=1** (`logs/head10_red.log`, TREE=42781257…). All 51 reds are F6 nodes (F6 collects 51), which reproduces 51 = declared. Reasons:
+  - 49 × `RegistryError` (`red_nodeids` extra key);
+  - 1 × the "neither" regex;
+  - 1 × `AttributeError` (the plumbing pin: `PytestRun` has no `selection` yet).
+  - So every red is for the right reason. ⚠ At HEAD every D2 pin dies at registry load, so RED@HEAD proves nothing about the D2 semantics. The mutations below carry that.
+
+### Round-5 survivors and the MP5-4 probe, re-run against r10ref + 64fcdd6 (declared before the run: `adv5/DECLARED2.sha256`, 08:36)
+| build | result | verdict |
+|---|---|---|
+| X1 = N8 (mixed entry exempt from pytest self-destruct) | PROOF HELD: `MIXED…self_destructs_a_PASSING_and_a_STALE…[code,symbol]` | **KILLED** (MP5-1 closed) |
+| X2 = N9 (notes only when ≠ GREEN; rebased into `detail_lines`) | PROOF HELD: the 6 `render…[*-all_skip-*]` | **KILLED** (MP5-2 closed) |
+| X3 = N12 (`red_nodeids[:3]`) | PROOF HELD: `self_destruct_reaches_EVERY_listed_id_past_the_third` | **KILLED** (MP5-3 closed) |
+| X4: MP5-4 reverted (a module testcase counts as collected) | PROOF HELD: `file_pytest_never_ENUMERATED…[collection_error, importorskip, module_skip]` | **KILLED** (MP5-4 closed) |
+| X5: wave_gate's non-scoped branch drops notes | PROOF HELD: 6 `render…[*-wave_full / adjudicated-wave_scoped]` | KILLED |
+| X6: wave_gate's scoped-GREEN branch drops notes | PROOF HELD: `render…[*-all_skip-wave_scoped]` ×2 | KILLED |
+| MP5-4 live (round-1 instrument on r10ref, `probes/live/ref10_live.out`) | S4 module skip → GREEN; S6 importorskip → GREEN; S5 → only the collection error orphaned | fixed in the reference |
+
+### D2 wrong gates (mine, beyond the servicer's five), plus probe pins with controls
+The probe pins are in `adv5/b2/scripts/test_adv5_d2_probe.py` (verbatim below).
+- **Baseline (r10ref):** exactly the 3 `still_discharges_a_COLLECTED_pass[…]` fail; the other 4 pass (`logs/ctl2_baseline.log`).
+- **FIX control** (r10ref with the scope skip limited to NON-collected ids, a one-line change): **517 passed** = 51 F6 + 7 probes + 459 gate pins (`logs/ctl2_fix.log`, restored byte-exact). So my proposed pins are satisfiable, and the fix breaks no contract pin.
+
+| build | mutation | result vs the F6 contract | verdict |
+|---|---|---|---|
+| Y1 | selection ignored (file-level scope) | red: `D2_a_CLASS_scoped…`, `D2_a_PARAM_leaf…` | **KILLED** (≈ servicer d2b). ⚠ My declaration listed the base-state probe reds, which Y1's mutation removes; that is a declaration error, recorded and not re-declared |
+| **Y2** | `partition_pytest` skips an outcome no selector covers: "an id outside the selection gets NO verdict" (RULING-12's sentence, applied to adjudication) | **0 F6 pins red**; only my 3 `never_hides_an_unlisted_red[…]` probes | **SURVIVES → MP6-1** |
+| **Y3** | `selecting_selector` without the `::`/`[` boundary (`startswith(selector)`) | **0 F6 pins red**; only my `class_selector_stops_at_the_name_boundary` | **SURVIVES → MP6-3** |
+| **Y7** | `_run_selected_gates` records only the first selector | **0 F6 pins red** (the plumbing pin passes one selector) | **SURVIVES → MP6-4** |
+| r10ref itself | the scope test runs before the outcome test, so a COLLECTED id under an unrecognised selector gets no verdict | the 3 `still_discharges…` probes red; FIX passes 517 | **→ MP6-2** |
+
+**Live receipts** (real pytest through the gate's own `_run_selected_gates`; `probes/live/drive_d2.py` → `ref10_d2.out`; `probes/y2_live_demo.py`):
+- `--wave pkg/tests`, `pkg/tests/`, `./pkg/tests/test_live_a.py` and the absolute path: r10ref serves **no** "green, delete it" for the collected-and-passing `test_green_listed`, and no stale line for 2 renamed ids. `--wave pkg/tests/test_live_a.py` serves all three. **Same run, same outcomes; the verdict differs by the selector's spelling (MP6-2).**
+- **Y2, rendered by `wave_gate._render` in `--wave` mode:**
+  - r10ref `--wave pkg/tests` → `RED_ORPHANED — 5 residual(s)`, exit 1.
+  - **Y2 `--wave pkg/tests` → `pytest SCOPED … NOT a currency clear` · `CURRENCY: PASS`, exit 0, with 5 real unowned reds in the run.**
+  - Y2 `--wave <file>` → 8 orphans, exit 1. That is why no file-shaped pin can see Y2.
+- `file::TestA` respects the boundary on r10ref: `TestAB::test_renamed_in_AB` is not judged.
+- `--wave file::TestA::` (trailing `::`) and a module-skip-only selection → pytest exit 4/5 → BrokenInstrument. Loud, which is correct.
+
+### MISSING PINS (re-grade)
+| id | tag | surviving build + receipt | the test that should exist | defect it catches |
+|---|---|---|---|---|
+| **MP6-1** | **STOP** (R17 false clear on the healthy path; satisfiable; the reference passes it as-is) | Y2: 51/51 F6 green (`logs/wb2_Y2_*.log`); live: wave exit 0 / CURRENCY PASS over 5 unowned reds | `test_D2_an_UNRECOGNISED_selector_never_hides_an_unlisted_red` (selector ∈ {dir, dir/, ./file}: an unlisted red in a collected file stays RED_ORPHANED) = my probe | Scope leaking into ADJUDICATION. RULING-12's own sentence ("neither stale nor adjudicated nor self-destructed") invites it. A directory `--wave` (wave_gate accepts "node-ids/paths") then passes with orphan reds, breaking wave_gate's own contract ("a scoped RED_ORPHANED still fails", #344). A pin on recognised selectors cannot see it, because there every collected id is in scope. |
+| **MP6-2** | **STOP-candidate, ruling-bound (D3)** | r10ref itself; probe `still_discharges_a_COLLECTED_pass` ×3 red on ref, green on FIX (517/517) | `test_D2_an_UNRECOGNISED_selector_still_judges_every_COLLECTED_id` = my probe | R31's CLASS ("only exact id × collected × outcome") is broken by the selector's spelling. A directory, `./` or absolute wave that runs a listed id green serves no self-destruct, and exits 0 where the file-spelled wave exits 1. RULING-12's bound reasons "fail-safe toward silence, never toward a false stale", and that holds only for NOT-collected ids: a collected id has no stale risk, and pytest did look at it, which is the ruling's own scope question. **Fix: scope decides only for ids NOT in `run.collected`** (one line, measured). |
+| MP6-3 | RESIDUAL | Y3: 0 F6 reds | the boundary pin (`file::TestAContractAheadPin` must not cover `…PinExtra::…`) = my probe; the reference passes | A false STALE for a prefix-sibling class (`TestFoo` vs `TestFooBar`). It is loud, and the stale text's "confirm with --collect-only" mitigates it. |
+| MP6-4 | RESIDUAL | Y7: 0 F6 reds | the plumbing pin with ≥ 2 selectors (`--wave a.py b.py`) | Multi-file waves (common) silently lose discharge and stale verdicts for every file after the first. The direction is silence; the SCOPED flag bounds it. |
+| MP6-5 | RESIDUAL, NO ROUND (the servicer's stated bound) | r10ref live S4: a module-skipped registered file renders `pytest GREEN` with no KEPT note | a KEPT note for the listed ids of a never-enumerated file | the rider's "render says so" at file granularity |
+
+**CLASS for MP6-1/2:** *the scope walk answers only "is a NOT-collected id's absence evidence?"; it never touches an id the run collected (that id's outcome adjudicates it), and never the partition.*
+- **CHOKEPOINT:** `pytest_self_destruct_findings`: `if run.selection and selector is None and node_id not in run.collected: continue`. `partition_pytest` stays scope-blind.
+- **SIBLINGS TRIED:**
+  - selection ignored; selection used for adjudication (servicer d2c, and my Y2 variant on the partition);
+  - no boundary; first-selector-only;
+  - dir, dir/, ./, absolute path, trailing `::`;
+  - a module-skip-only selection; a multi-file selection.
+- **SIBLINGS NOT TRIED:**
+  - `--wave=--deselect=…` / `--wave=-x` single-token flags. These are forwarded verbatim; any of them reads as unrecognised (silence), which is the same class as MP6-2.
+  - A `::` inside a parameter id (the ruling's named bound).
+  - Windows path separators (not this fleet).
+
+### P1b / P1c deltas
+- **P1b:** "unlisted red → ORPHANED" was ∀ in round 5. Under D2 it is now **guarded by "selector recognised"** (MP6-1). "A listed id passes → self-destruct" is **guarded by "selector recognised"** (MP6-2). Every other row is unchanged and ∀.
+- **P1c:**
+  - The rider's render now has ONE chokepoint (`GateCurrency.detail_lines`). X5 and X6 kill both wave_gate branches, so sharing is proven by mutation.
+  - The scope decision has one chokepoint (`selecting_selector`). Its effect is pinned for recognised selectors only (MP6-1/2/3).
+  - The plumbing is pinned on one selector only (MP6-4).
+  - Spelling tests: the plumbing pin reads the `PytestRun.selection` field. That is an interface the ruling names, not a source scan. No verdict needed.
+
+### Message/assert check of the 25 new nodes
+- MP5-1, MP5-3, MP5-4 and D2 (1)–(5): each assertion checks what its message promises. MP5-3 bounds the orphans to exactly 2. D2(3) compares the full run byte-for-byte.
+- The MP5-2 render pin keeps round 5's form (`kind`, `kept`, no ORPHAN on that line), now ×12.
+- No gap found.
+
+### Decisions needed (re-grade)
+- **D3 (MP6-2):** confirm that RULING-12's "unrecognised selector → not in scope" bound applies to NOT-collected ids only. My pick: yes. It is one line, measured 517/517, and it removes a selector-spelling dependence from R31's class.
+- **MP6-1 routing:** a STOP by the lead's definition. My pick: the servicer adds the one probe pin. The reference already passes it, so there is no reference change and no builder delay.
+
+### Re-grade receipts
+| run | log | EXIT | count | TREE |
+|---|---|---|---|---|
+| ref control (5 gate files) | `logs/ref10_control.log` | 0 | 510 passed | 1d81b9bd… |
+| HEAD 25ef938 (5 gate files) | `logs/head10_red.log` | 1 | 51 failed, 459 passed | 42781257… |
+| probe baseline (r10ref) | `logs/ctl2_baseline.log` | 1 | 3 failed, 4 passed | 2a9455d6… (b2 + probe file) |
+| FIX control | `logs/ctl2_fix.log` | 0 | 517 passed | 5f0e3345… (FIX applied), restored byte-exact |
+| 10 builds | `logs/wb2_*.log`, `logs/batch2_summary.txt` | 7×0, 3×4 | per row | 2a9455d6… before each; 10/10 RESTORED byte-exact (`cmp`, gate + wave_gate) |
+
+### Re-grade instrument (verbatim): `adv5/b2/scripts/test_adv5_d2_probe.py`
+```python
+"""adv5 re-grade probes (scratch only): my proposed D2 pins. An UNRECOGNISED selector (a directory, './file',
+an absolute path — all shapes wave_gate forwards and pytest accepts) must (a) never hide an unlisted red, and
+(b) never silence the OUTCOME of an id the run COLLECTED (scope is a question only about ids NOT collected);
+(c) a class selector covers its class only, on the name boundary."""
+import dataclasses
+import os
+import sys
+import pytest
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from test_pending_contract_gate_f6 import (  # noqa: E402
+    _LISTED_CLASS_NODE, _LISTED_PARAM_NODE, _NODE_FILE, _UNLISTED_NODE, JUnitReportReader, _currency, _gate, _junit)
+
+UNRECOGNISED = ["loremaster/tests", "loremaster/tests/", f"./{_NODE_FILE}"]
+
+
+def _run(cases, selection):
+    return dataclasses.replace(JUnitReportReader.read(_junit(cases)), selection=selection)
+
+
+@pytest.mark.parametrize("selector", UNRECOGNISED)
+def test_probe_an_unrecognised_selector_never_hides_an_unlisted_red(tmp_path, selector):
+    gate = _gate(tmp_path, [_LISTED_CLASS_NODE])
+    cur = _currency(tmp_path, gate, "pytest", _run([(_LISTED_CLASS_NODE, True), (_UNLISTED_NODE, True)], (selector,)))
+    assert cur.verdict == "RED_ORPHANED" and any("test_a_new_regression" in o for o in cur.orphans), (cur.verdict, cur.orphans)
+
+
+@pytest.mark.parametrize("selector", UNRECOGNISED)
+def test_probe_an_unrecognised_selector_still_discharges_a_COLLECTED_pass(tmp_path, selector):
+    gate = _gate(tmp_path, [_LISTED_CLASS_NODE, _LISTED_PARAM_NODE])
+    cur = _currency(tmp_path, gate, "pytest", _run([(_LISTED_CLASS_NODE, True), (_LISTED_PARAM_NODE, False)], (selector,)))
+    assert not cur.ok and any(_LISTED_PARAM_NODE in o and "green" in o.lower() for o in cur.orphans), (cur.verdict, cur.orphans)
+
+
+def test_probe_a_class_selector_stops_at_the_name_boundary(tmp_path):
+    extra = f"{_NODE_FILE}::TestAContractAheadPinExtra::test_gone"
+    gate = _gate(tmp_path, [_LISTED_CLASS_NODE, extra])
+    cur = _currency(tmp_path, gate, "pytest", _run([(_LISTED_CLASS_NODE, True)], (f"{_NODE_FILE}::TestAContractAheadPin",)))
+    assert cur.ok and not any("PinExtra" in o for o in cur.orphans), (cur.verdict, cur.orphans)
+```
+
+Other instruments: `adv5/mkbuilds2.py` (specs + declarations), `adv5/runwb2.sh`, `adv5/control2.sh`, `adv5/probes/live/drive_d2.py`, `adv5/probes/y2_live_demo.py`.
+
+DONE · (report in hand-back) · RE-GRADE 64fcdd6: INSUFFICIENT, 0 unsatisfiable — MP5-1..4 closed (N8/N9/N12/MP5-4 killed); STOP MP6-1 (scope leaks into partition: dir --wave passes over orphan reds, survives all 51 pins); STOP-candidate MP6-2 (r10ref silences collected ids under dir/./abs selector; one-line fix 517/517, D3); residuals MP6-3..5

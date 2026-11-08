@@ -643,3 +643,42 @@ Report: `docs/plans/v2/receipts/2026-11-08-sdk3/ADVERSARY5.md` (graded `c01b114`
 - **MP5-3:** self-destruct reaches only the first 3 ids of an entry.
 - **MP5-4:** a module skip, an importorskip or a collection error reads as "file collected", so every listed id in that file is falsely STALE.
 The operator granted the route: the servicer pins MP5-1..4, pair-proven against the reference, and the same adversary (`adversary-sdk3-r5`, context loaded) re-grades ONLY that delta (survivors N8/N9/N12 plus the MP5-4 probe). This is one extra round beyond R25, granted by the operator. The builder writes no F6 code until it is SATISFIED (`build66/OPERATOR-F6.md`). **D2** (reading (b)'s granularity under a node-id `--wave <file>::<Class>`, servicer residual 1) goes to the design sidecar.
+
+## R36 — sidecar ruling 12: the two packet-58 forks (adopted by the lead under the standing fork delegation)
+Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-12.md`.
+- **Fork 1 (16 attr-defined reads of the deleted `TXN_STATEMENT_HARD_CAP` / `_WARN_THRESHOLD` in 5 packet-58 files):** the ruling was route D, `missing_symbols` on the five existing packet-58 entries. **The servicer showed by execution that route D could not be built as ruled.** mypy emits owner-less `Module has no attribute "X"` for an aliased-module read, so the dotted form matched nothing and left 22 orphans. **§ADDENDUM D′: bare attribute names** on the five entries.
+  - **Pin it like this:** token-exact, quoted, per-file; liveness leg 4 reads bare names UNCHECKED, stated in packet 58's rationale.
+  - The matcher's blind spot is finding #587. Trigger: convert back to dotted form when it is fixed.
+  - Landed as `e4c1fa0` (typecheck: 16 RED_ADJUDICATED(packet-58), 0 orphans). Owner and trigger stay 58's. R28's correction is discharged here.
+- **Fork 2 (REQ-A, the packet-58 exhaustion-fates pins after the MP-1 helper):** option (c). Move the try/except INTO `Indexer._commit_or_isolate`, so the helper is the one catch site and the cloned except-arms cease to exist.
+  - The builder landed it as `4190c3e`, and M1 re-held.
+  - The servicer rewrote the known-bound pin in `da24469`: keyed on the one site, bound NARROWED per R4 rider 3, owner and trigger 58's.
+  - Option (b), the delegate-inherits-fate observer, was not needed.
+
+## R37 — D2: reading (b)'s granularity under a scoped `--wave` (sidecar ruling 12 §ADDENDUM D2; adopted by the lead)
+"Collected" is SELECTION-level: a listed id is STALE iff the run's selection COVERED it (node-id prefix on `::` boundaries, `[param]` as the leaf; a full run covers everything) and it was not collected.
+- An id outside the selection gets NO verdict, the same third state R31's skip/xfail rider gives skipped ids.
+- The stale line names the selector and says to confirm with `--collect-only` before deleting the entry.
+- The prefix walk decides SCOPE, never ADJUDICATION, so MP-F6-2 stands.
+- An unrecognised selector reads "not in scope", narrowed by R39 (D3) to uncollected ids only.
+- Pinned in `64fcdd6`. The interface is `PytestRun.selection`, set by `_run_selected_gates`.
+
+## R38 — REQ-E part 2: NO standing source scanner (operator, 2026-11-08)
+The servicer built a reach pin that AST-scans production for `required_datetime` / `stored_datetime` callers. **The operator declined it as a standing test.**
+- The 48 per-module behaviour pins land (`7135da4`) over a 12-module caller list, stated as a NAMED BOUND in the file's docstring (derived by grep at `2c0d5ee`; re-open trigger: a new store datetime reader).
+- The cold audit re-derives the caller set at audit time (the AST derivation is kept in scratch `build66/reqE/`) and diffs it against the 12. Sharing is proven by mutation at audit, not by a standing test (global law; R34 rider).
+- The pins surfaced production defect F1: `keeps` / `principal_keys` / `member_of` hand-rolled a second missing-stamp refusal. The builder fixed it in `2c0d5ee`. Served change: a corrupt keep or membership row met while resolving identity now reports a store-integrity fault naming the row, instead of "keep store unreachable"; it still fails closed.
+
+## R39 — adversary round 5 re-grade: INSUFFICIENT (0 unsatisfiable); adopt the probes plus ONE more re-grade (operator, 2026-11-08)
+The re-grade of `64fcdd6` (in `receipts/2026-11-08-sdk3/ADVERSARY5.md` §RE-GRADE) closed MP5-1..4 and found the following:
+- **MP6-1 (STOP):** a scope check leaking into the partition passes a directory `--wave` over real orphan reds (exit 0).
+- **MP6-2 (STOP candidate):** r10ref silences COLLECTED ids under a directory, `./` or absolute selector.
+- **MP6-3:** a name-boundary prefix sibling.
+- **MP6-4:** only the first selector is recorded.
+- **MP6-5:** a module-skipped file shows no KEPT note.
+
+The operator chose: adopt the adversary's measured probes as pins, plus one more adversary re-grade, and that is the LAST round.
+- **D3 = YES:** "unrecognised selector → not in scope" applies only to ids NOT in `run.collected`; a collected id is always judged (R31 CLASS).
+- Delta 3 = `6ae8338`: MP6-1..4 pins; r11ref = r10ref + D3 passes 520/520; 61 RED@HEAD = declared; the survivors Y2, unfixed r10ref, Y3 and Y7 are red as declared.
+- MP6-5 is a NAMED residual, stated in the pin block.
+- The operator also directed: *"Work autonomously. Use the sidecar to resolve forks."*
