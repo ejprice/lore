@@ -795,11 +795,16 @@ def required_datetime(value: object, *, table: str, row_id: object, column: str)
     ``datetime`` field would otherwise coerce an ISO string silently).
 
     The refusal is a SERVED surface (R17): it names the unreadable ROW (``record_text``, R7 (d)), the column
-    and what it held, and says it is a store-integrity fault scoped to that row — never a caller error.
-    STATED BOUND (lead, R36 note): the row id is the parts form ``table:key``, which equals the engine's
-    ``<string> id`` for every key lore mints and differs only for a non-word key (the engine brackets it,
-    R8 F15) — acceptable because this text DISPLAYS the faulty row and is never persisted or compared; a
-    named cold-audit check.
+    and what it held, and says it is a store-integrity fault — never a caller error. Scope, stated (R43): the
+    STORE's other rows are intact, but the RESPONSE that read this row (a listing, or a single-record read)
+    cannot be completed, so the text says both.
+    STATED BOUND (R36 note, corrected by R43 / audit-66 9a): the row id is the parts form ``table:key``. It
+    equals the engine's ``<string> id`` for lore's WORD keys (ULID, engine-minted ``[a-z0-9]``, hex,
+    composite arrays) but NOT for the hyphenated uuid keys lore also mints — ``memory``'s uuid5 ids and
+    ``floor_calibration``'s uuid4 measurement ids, which the engine backticks (``memory:`4cd6…-…```) and
+    this text does not. For those rows it is a COMPARISON form, not a hand-back form (``memory:4cd6…-…`` does
+    not parse as SurrealQL) — acceptable because the remedy this text teaches is "report it", never "hand it
+    back". See :func:`record_text` for the trigger.
 
     Args:
         value: The column's decoded value.
@@ -815,8 +820,8 @@ def required_datetime(value: object, *, table: str, row_id: object, column: str)
     held = "a naive datetime" if isinstance(value, datetime) else type(value).__name__
     raise SurrealStoreError(
         f"{table} {record_text(row_id) if row_id is not None else '(id unknown)'} is unreadable: column "
-        f"{column!r} holds {held}, a tz-aware datetime was required — a store-integrity fault (report it "
-        f"with lore_findings); other rows are unaffected"
+        f"{column!r} holds {held}, a tz-aware datetime was required — a store-integrity fault; the store's "
+        f"other rows are intact; this listing could not be completed — report it with lore_findings"
     )
 
 
