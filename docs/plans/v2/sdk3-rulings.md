@@ -707,3 +707,56 @@ The RULING-13 §ADDENDUM proposed keeping the swallow as a design guard (with a 
 - **The operator then overrode the rest**, verbatim: *"I don't want to create tests to check if a feature is removed. That's silly. Have a sonnet agent remove it, and move on. Then the auditor checks."*
 - The swallow was removed in `7d44cf1` (a Sonnet edit, verified and committed by the lead; awaiter tests 34 passed). No test for its absence. The cold audit verifies the removal, and states under R17 what an `await` caller is served if close() raises there.
 - Knock-on: REQ-H, packet-58's catch-site non-vacuity floor, re-baselined 51 → 42 as a named constant citing `6b43b65` (18) and `7d44cf1` (1), by the R36 route (`769903c`).
+
+## R43 — sidecar ruling 14: the cold audit's NO-GO on `7cc5837`, ruled (adopted by the lead)
+Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-14.md`. The audit report is archived at close-out together with its §DELTA re-check.
+- **B1, #590** (the rollup cursor re-served its own row): the cursor is served in the engine's nine-digit form and parsed with the SDK's own `parse_instant`. No precision arithmetic in lore. Builder `fda1411`.
+  - Pin `d13bcd0`: SEQUENCING SLIP — the fix landed before the pin. The red leg is therefore the sub-author's receipt at `dabc671`, B1's parent. Both declared mutations were re-anchored on the real codec and held.
+  - Dispatch re-pins `f8e2048` (REQ-I) use literal nine-digit strings, not strings computed by the code under test.
+- **B2:** `start()` serves `LoopbackPort`'s held socket; `come_up()` uses `_relisten_same_port`. Servicer `ca8a7a3`.
+  - DEVIATION, accepted by the lead (#19104, low fork): the listener scanner keys on the `start_server` verb, so `start()` carries its own evidence-backed `_EXEMPT_SITES` row. Reason: it serves the held socket via `sock=` and binds nothing itself. The row cites `ca8a7a3` (`0390bc6`).
+  - The ruling's "few ms" re-listen window measured 0.5–45 s; the row carries a labelled correction.
+  - `SO_REUSEADDR` preserved on the held socket.
+- **B3:** `dabc671` (the whitelist row with its reason; a rename was rejected).
+- **Fix-now:**
+  - R-6 `5b4c138`;
+  - R-7/R-8 prose `b411cab` + `d41aa47` (correction: the engine backticks all-digit keys too);
+  - R34 clause `f2327ef`, then re-worded to be true for BOTH listings and single-record reads, `273bb69` (lead #19110; pins over both shapes, red first, `2666ade`);
+  - R-9: every C row has a saved probe and log;
+  - W6 pinned `949a3c4`.
+- **W5:** a named residual. No registry helper exists for ids spanning two files. Trigger: that helper exists.
+- **Bounds:** R-4/T3 and R-5/T4 → INDEX Log. R-11 and R-12 → builder docstrings. R-13 → the audit's derived replay subset (4 owed builds).
+- **#25 ADDENDUM:** the KEEP basis has fallen. The builder measured a bound record-id range as `RecordIdScan` / `Union`, exact (#19096). The fate is RETIRE, owed to a follow-up packet, AFTER the cold audit independently confirms it with:
+  - both-ways set equality, including the `[max_codepoint]` upper-bound prefix;
+  - EXPLAIN checked against an operator allowlist.
+  The drop-list row reads "RETIRE (owed; pending audit confirmation)". No schema was touched.
+
+## R44 — sidecar ruling 15: #591, a rollup page never ends inside a stamp group (adopted by the lead)
+Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-15.md`.
+- **Reachability:** a bound alone (option b) is unavailable.
+  - `finding.created_at` and `message.created_at` are Python-minted to the microsecond, so a same-µs burst ties them.
+  - The task leg's "no tie" rests on the engine clock: believed time, not construction.
+- **Verdict (c):** fetch `limit+1`, then shrink the page to the last complete stamp group.
+  - A head group wider than `limit` is served up to `limit`, HOLDS the cursor, and is named with the remedy "re-call with limit ≥ N" (`limit` has no ceiling).
+  - ONE helper, `loremaster/store/stamp_paging.py`, sits under all three legs. The served cursor stays a plain exclusive instant, so the contract is unchanged.
+  - Re-open trigger for the compound cursor (a): `limit` gains a ceiling, or a write door mints ties routinely.
+- **Order kept this time:**
+  - pins first, `fb79869`: 10 red at `9f3922f`; reference 447/447; a tie-branch mutation turns 8 pins red across all three legs; a visibility-filter mutation turns the governed-width pin red;
+  - production `b2214d7`;
+  - test fallout serviced `2c6efcf` (150 test-side reds).
+- **#592** (RULING-15 §4, left as the operator's call): the lead adopted the sidecar's leans under the operator's fork delegation, and reported them to the operator for possible override.
+  - Q1 (ii): the message leg's header names that its elided rows are not covered by the next cursor.
+  - Q2: the elision header names the cross-leg re-serve.
+  - Header strings h1 / h2 / h2-held / h3 agreed in #19105. h2-held exists because h1's "cursor does not advance" is false on the message leg.
+- **#593** (SDK 3.0.0 `PreciseDatetime` `==` and `<` ignore nanoseconds; measured by the builder): R44's `stamp_key` fixes the rollup.
+  - The builder's class sweep found no other defect; its reach is name-keyed (stated).
+  - Pins `b8ae2cd` are red on the pre-R44 cursor.
+  - Filing upstream is outward-facing: ask the operator, together with #588.
+- **Lead low forks (close-out list):**
+  - R34 uses one string for both call shapes (deriving it per shape would need 32 mapper sites);
+  - `principals._parse_instant` is left alone: it parses human CLI input, not served text;
+  - the `_as_rows` cluster → #594, a later packet;
+  - the B2 exemption row (R43).
+- **Receipt:** builder exit at HEAD `3f4d20a`, TREE `3fd07c54…`, DIRTY 0: 530 failed / 11224 passed = the owned 530, node for node. Currency RED_ORPHANED 0.
+  - The lead re-ran the R44 / #593 / R34 / `TestRollupDispatch` files: 61 passed, EXIT=0, same TREE.
+  - #595 (`test_rrf_ordering_is_deterministic` failed once in a subset run; 20/20 alone) is not ruled flaky: the full suite arbitrates.

@@ -2544,3 +2544,14 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   - Named bound: the list is not attributed node by node. A node in it that is still red after the 66 build is an orphan, never 66's.
   - Trigger: F6 lands → RED_ORPHANED 0 with this line retired.
 - **2026-11-08 — packet 66 shared-venv note (operator: accept, note it):** since `9863c11`, this checkout's shared `.venv` resolves `surrealdb==3.0.0` while packet-66 code is mid-build on `feat/surreal-unification`. Anything run from this checkout (pytest, scripts) gets SDK 3. The lore-lore container bakes its own image and is unaffected. Trigger: packet 66 closes, and this line is retired by its close-out.
+- **2026-11-08 — packet 66 named bound R-4/T3 (RULING-14):** a 30 s request timeout drops the SHARED connection, so healthy sibling requests fail as OUTCOME UNKNOWN. The served text is honest ("may have landed — verify"), only over-broad.
+  - Trigger: the :18500-copy conformance run or a full suite whose grep for `TransportTimeoutError` / `SurrealOutcomeUnknownError` is non-zero.
+  - Pre-named fix: drop only on `ConnectionUnavailableError`; pin "a sibling in flight during another request's timeout succeeds".
+- **2026-11-08 — packet 66 named bound R-5/T4 (RULING-14):** store-outage latency is ~30 s (up to 2×) against the MCP client's timeout.
+  - Trigger: the first measured MCP client timeout during a store outage.
+  - Pre-named fix: a shorter reconnect-park budget via `connection.timeout` on the first request after a drop; never a global change to the 30 s default.
+- **2026-11-08 — packet 66 R-14:** owned reds = **530 at both trees** (`c503bf7` and the build). The builder's earlier "523" was a targeted-scope count, not the owned set.
+- **2026-11-08 — packet 66 R-15:** the currency gate's pytest worker count is not observable through captured stdout. Owner: the gate's owner. Trigger: the next gate wave.
+- **2026-11-08 — packet 66 targeted-scope note (R43):** the structural pin component (`structural_pins.txt`, 92 tree-scanning files) is UNSAFE as a subset run for run-scope pins.
+  - Pins such as "every SDK call site OBSERVED" need the whole run: 7 of them read as orphans in a 92-file subset run, while their 4 files run alone give 1057 passed.
+  - Run those files at file level, and judge them in the full suite.
