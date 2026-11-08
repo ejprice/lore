@@ -104,10 +104,9 @@ from loremaster.store.surreal import (
 from loremaster.store.surreal_schema import CHUNK_FILTER_KEYS, CHUNK_FULLTEXT_FIELDS
 from lorescribe.models import Chunk
 
-# SDK3 R8 F12 (round 4): the fake enforces the production ROW cap. Read from ``store._txn`` once at import;
-# until the SDK3 build lands ``TXN_ROW_HARD_CAP`` does not exist and the retired statement cap (equal, for a
-# fake that writes one row per statement) stands in — DELETE the fallback with the build.
-TXN_ROW_HARD_CAP: int = getattr(_txn, "TXN_ROW_HARD_CAP", None) or _txn.TXN_STATEMENT_HARD_CAP
+# SDK3 R8 F12 (round 4): the fake enforces the production ROW cap, read from ``store._txn`` once at import
+# (one row per fake statement). The transitional statement-cap fallback went with the build (§R4.1).
+TXN_ROW_HARD_CAP: int = _txn.TXN_ROW_HARD_CAP
 
 # The producer tags every fake fragment carries so a ported test can assert the
 # COMPOSITION of one atomic apply (e.g. "index_file composed exactly the chunk +

@@ -809,7 +809,10 @@ class _RemovableDatabaseConnection(Protocol):
     connection, without constructing a real SDK connection object.
     """
 
-    async def query(self, statement: str, /) -> Any: ...
+    def query(self, statement: str, /) -> Awaitable[Any]:
+        """SDK 3.0's ``query()`` returns an awaitable ``AsyncQueryBuilder`` (R15); a fake's ``async def``
+        fits too."""
+        ...
 
 
 async def _remove_database_with_retry(
