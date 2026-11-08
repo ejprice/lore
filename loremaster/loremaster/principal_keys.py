@@ -112,6 +112,7 @@ from loremaster.store._txn import (
     proven_no_key,
     record_key,
     record_text,
+    required_datetime,
     run_query,
     signin_credentials,
     stored_datetime,
@@ -676,15 +677,12 @@ class PrincipalKeyStore:
         (``expires_at``/``revoked_at`` — store law §2: a ``RETURN AFTER`` / ``SELECT *``
         omits a NONE ``option<>`` column, and even an explicit projection reads it back
         as ``None``). Datetimes arrive from the SDK as tz-aware UTC ``PreciseDatetime`` values and are
-        checked (never coerced) by the shared :func:`~loremaster.store._txn.stored_datetime`.
+        checked (never coerced) by the shared :func:`~loremaster.store._txn.required_datetime` /
+        :func:`~loremaster.store._txn.stored_datetime` (R34: one refusal, naming the row).
         """
-        created_at = stored_datetime(
+        created_at = required_datetime(
             row.get(_COL_CREATED_AT), table="principal_key", row_id=row.get(_COL_ID), column=_COL_CREATED_AT
         )
-        if created_at is None:
-            raise PrincipalKeyStoreError(
-                f"principal_key row column {_COL_CREATED_AT!r} is missing or not a datetime"
-            )
         return PrincipalKey(
             id=record_text(row[_COL_ID]),
             principal_id=record_text(row[_COL_PRINCIPAL]),

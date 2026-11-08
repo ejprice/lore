@@ -91,9 +91,9 @@ from loremaster.store._txn import (
     open_surreal_connection,
     record_key,
     record_text,
+    required_datetime,
     run_query,
     signin_credentials,
-    stored_datetime,
     wrap_store_rejection,
 )
 from loremaster.store.surreal_schema import (
@@ -391,13 +391,11 @@ class KeepStore:
         NONE ``option<string>`` (a nameless ``dm`` keep, store law §2, read via the
         explicit :data:`_KEEP_READ_PROJECTION`, never ``SELECT *``). ``created_at`` is a
         required self-stamped datetime, checked (never coerced) by the shared
-        :func:`~loremaster.store._txn.stored_datetime` — the SDK decodes it tz-aware UTC.
+        :func:`~loremaster.store._txn.required_datetime` — the SDK decodes it tz-aware UTC.
         """
-        created_at = stored_datetime(
+        created_at = required_datetime(
             row.get("created_at"), table="keep", row_id=row.get("id"), column="created_at"
         )
-        if created_at is None:
-            raise KeepStoreError("a keep row is missing its required created_at stamp")
         return Keep(
             id=self._served_keep_id(row),
             keeper_id=record_key(row["keeper"]),
@@ -411,11 +409,11 @@ class KeepStore:
 
         ``in``/``out`` come back as ``RecordID``s (``principal:xyz`` / ``keep:xyz``) —
         each reduced to its bare id. ``rank``/``since`` are always present (``rank``
-        DEFAULTs, ``since`` self-stamps). ``since`` coerces to tz-aware UTC.
+        DEFAULTs, ``since`` self-stamps). ``since`` is checked (never coerced) by the shared
+        :func:`~loremaster.store._txn.required_datetime` — a missing or non-datetime stamp is refused as a
+        store-integrity fault naming the row (R34).
         """
-        since = stored_datetime(row.get("since"), table="member_of", row_id=row.get("id"), column="since")
-        if since is None:
-            raise KeepStoreError("a member_of row is missing its required since stamp")
+        since = required_datetime(row.get("since"), table="member_of", row_id=row.get("id"), column="since")
         return Membership(
             keep_id=record_key(row["out"]),
             member_id=record_key(row["in"]),
