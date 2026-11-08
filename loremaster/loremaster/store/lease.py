@@ -314,14 +314,14 @@ class SurrealLeaseStore:
                 await connection.signin(credentials)
                 await bootstrap_session(connection, self._namespace, self._database, url=self._url)
             except TxnContentionExhaustedError as error:
-                await self._safe_close(connection)
+                await connection.close()
                 raise SurrealConnectionError(
                     f"could not connect to SurrealDB at {self._url!r} "
                     f"(namespace={self._namespace!r}, database={self._database!r}): "
                     f"the session bootstrap exhausted its retry budget"
                 ) from error
             except _CONNECTION_ERRORS as error:
-                await self._safe_close(connection)
+                await connection.close()
                 raise SurrealConnectionError(
                     f"could not connect to SurrealDB at {self._url!r} "
                     f"(namespace={self._namespace!r}, database={self._database!r}): {error}"
@@ -342,15 +342,8 @@ class SurrealLeaseStore:
         """
         if self._connection is connection:
             self._connection = None
-        await self._safe_close(connection)
+        await connection.close()
 
-    @staticmethod
-    async def _safe_close(connection: _SurrealConnection) -> None:
-        """Close ``connection``, swallowing an already-dead-socket failure."""
-        try:
-            await connection.close()
-        except _CONNECTION_ERRORS:
-            logger.debug("lease.close.already_closed")
 
     async def _query(self, statement: str, params: dict[str, Any] | None = None) -> Any:
         """Run a single statement on the (lazily opened) connection, self-healing.
@@ -377,7 +370,7 @@ class SurrealLeaseStore:
     async def close(self) -> None:
         """Close the live connection (if any); tolerant of never-connected."""
         if self._connection is not None:
-            await self._safe_close(self._connection)
+            await self._connection.close()
             self._connection = None
 
     @ensure_ready_operation

@@ -348,15 +348,8 @@ class CommandSubscriber:
         connection = self._connection
         self._connection = None
         if connection is not None:
-            await self._safe_close(connection)
-
-    @staticmethod
-    async def _safe_close(connection: Any) -> None:
-        """Close ``connection``, swallowing an already-dead-socket failure."""
-        try:
             await connection.close()
-        except _SDK_AWAIT_BOUNDARY_ERRORS:
-            logger.debug("command_subscriber.close.already_closed")
+
 
     # -- draining / dispatch ------------------------------------------------ #
 

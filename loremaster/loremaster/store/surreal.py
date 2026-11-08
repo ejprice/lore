@@ -506,7 +506,7 @@ class SurrealStore:
                 # disposition is uniform regardless (see the docstring above):
                 # the connection never became usable, so the caller sees the
                 # SAME typed error it would for a dead socket.
-                await self._safe_close(connection)
+                await connection.close()
                 raise SurrealConnectionError(
                     f"could not connect to SurrealDB at {self._url!r} "
                     f"(namespace={self._namespace!r}, database={self._database!r}): "
@@ -516,7 +516,7 @@ class SurrealStore:
                 # Close the half-open socket (if any) so a failed connect never
                 # leaks a dangling connection, then surface a typed connection
                 # error.
-                await self._safe_close(connection)
+                await connection.close()
                 raise SurrealConnectionError(
                     f"could not connect to SurrealDB at {self._url!r} "
                     f"(namespace={self._namespace!r}, database={self._database!r}): {error}"
@@ -573,7 +573,7 @@ class SurrealStore:
     async def close(self) -> None:
         """Close the live connection (if any); safe to call more than once."""
         if self._connection is not None:
-            await self._safe_close(self._connection)
+            await self._connection.close()
             self._connection = None
 
     async def _drop_connection(self, connection: _SurrealConnection) -> None:
@@ -593,16 +593,8 @@ class SurrealStore:
         """
         if self._connection is connection:
             self._connection = None
-        await self._safe_close(connection)
+        await connection.close()
 
-    @staticmethod
-    async def _safe_close(connection: _SurrealConnection) -> None:
-        """Close ``connection``, swallowing an already-dead-socket failure."""
-        try:
-            await connection.close()
-        except _CONNECTION_ERRORS:
-            # The socket is already gone — nothing left to release.
-            logger.debug("store.close.already_closed")
 
     async def _query(self, statement: str, params: dict[str, Any] | None = None) -> Any:
         """Run a single statement on the (lazily opened) connection.
