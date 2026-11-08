@@ -273,3 +273,7 @@ Contract round 4 committed `b655971` (packet doc §ROUND 4 R4.0–R4.13, Appendi
   deterministically (a digit-led / non-word principal key) and the builder fixes the comparison.
 - **Raised to the operator:** whether reusing the `_catch_sites` walker for D1's catch-site reach pin is a new
   source scanner (global law: a new scanner needs approval). Kept pending the answer.
+- **RS7 — `SurrealStore.upsert` (0 production callers, outside batching and the row cap) is DELETED**, not routed
+  through `compose`: a dead door with no consumer is removed (drop-list row; the builder re-confirms 0 callers).
+- **X18/X19 (nested `PrincipalStore` close in `KeepStore`/`PrincipalKeyStore`; `LocalMemoryBackend._rebuild_lock`)
+  are pinned by behaviour in round 5**, since the shared factory replaces the code that carries them.
