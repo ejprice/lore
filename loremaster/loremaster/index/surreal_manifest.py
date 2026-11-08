@@ -72,7 +72,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import SecretStr
-from surrealdb import AsyncSurreal
 
 from loremaster.index.manifest import FileRow
 from loremaster.store._txn import (
@@ -80,7 +79,9 @@ from loremaster.store._txn import (
     TxnFragment,
     bootstrap_session,
     compose,
+    ensure_ready_operation,
     execute_transaction,
+    open_surreal_connection,
     run_query,
     signin_credentials,
 )
@@ -191,7 +192,7 @@ class SurrealManifest:
             # ``watcher.py``'s identical double-checked-lock pattern).
             if self._connection is not None:
                 return self._connection  # type: ignore[unreachable]
-            connection = AsyncSurreal(self._url)
+            connection = open_surreal_connection(self._url)
             credentials = signin_credentials(
                 user=self._user, password=self._password
             )
@@ -221,6 +222,7 @@ class SurrealManifest:
             )
             return connection
 
+    @ensure_ready_operation
     async def ensure_ready(self) -> None:
         """Connect and apply the manifest's schema slice — idempotent.
 

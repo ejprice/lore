@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import SecretStr
-from surrealdb import AsyncSurreal
+from tenacity import AsyncRetrying, RetryCallState, retry_if_exception_type
 
 from loremaster.config import (
     LoreConfig,
@@ -68,6 +68,8 @@ from loremaster.store._txn import (
     RetryableConflictSignal,
     bootstrap_session,
     is_retryable_conflict_error,
+    one_statement_result,
+    open_surreal_connection,
     retry_on_conflict,
     signin_credentials,
 )
@@ -154,15 +156,21 @@ async def _scout_query_once(
     """One SDK ``query()`` call, classifying a retryable conflict into the
     shared signal. Everything else — a transport fault, a domain rejection,
     an empty CAS (a lost race, not an error) — propagates RAW and UNTOUCHED.
+
+    The SDK's per-statement answer is reduced to the one statement's result by THE shared selection rule
+    (:func:`~loremaster.store._txn.one_statement_result`, operator rulings R2 / R8 F13): a lost CAS reads
+    as ``[]`` (lost), never as SDK 3.0's truthy ``[[]]``.
     """
     try:
         if params is None:
-            return await connection.query(statement)
-        return await connection.query(statement, params)
+            results = await connection.query(statement)
+        else:
+            results = await connection.query(statement, params)
     except _SDK_AWAIT_BOUNDARY_ERRORS as error:
         if is_retryable_conflict_error(error):
             raise RetryableConflictSignal() from error
         raise
+    return one_statement_result(results)
 
 
 async def _scout_query(
@@ -227,7 +235,7 @@ async def _open_command_connection(
     SAME exception object, unmodified, so this cleanup can never become a
     second, accidental wrap.
     """
-    connection = AsyncSurreal(url)
+    connection = open_surreal_connection(url)
     credentials = signin_credentials(user=user, password=password)
     try:
         await connection.signin(credentials)
@@ -478,21 +486,35 @@ class CommandSubscriber:
         and kill the subscriber where it used to recover.
         """
         self._running = True
-        attempt = 0
+        # The failure that opened the current outage when it was a mid-serve drop: re-raised as the outage's
+        # FIRST failed attempt, so the ladder backs it off before reconnecting (removed-behaviour
+        # preservation, §R7.1 ladder pin) — the real error, never a synthetic type.
+        outage_opened_by: BaseException | None = None
         try:
             while self._running:
+                # ONE native tenacity ladder per outage (operator rulings R11/R18): tenacity's
+                # ``AsyncRetrying`` IS the loop around the connect attempt, sleeping the ONE wait factory's
+                # full jitter through the injected ``sleep``. A fresh ladder per outage is the reset after a
+                # live connection. ``stop`` ends it the moment :meth:`stop` flips ``_running``.
                 try:
-                    connection = await self._ensure_connection()
+                    async for connect_attempt in AsyncRetrying(
+                        retry=retry_if_exception_type(_SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION),
+                        wait=backoff.full_jitter(self._backoff_base_s, self._max_backoff_s),
+                        sleep=self._sleep,
+                        stop=self._stopped,
+                        before_sleep=self._log_failed_connect,
+                        reraise=True,
+                    ):
+                        with connect_attempt:
+                            if outage_opened_by is not None:
+                                opened_by, outage_opened_by = outage_opened_by, None
+                                raise opened_by
+                            connection = await self._ensure_connection()
                 except _SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION:
-                    # The connect itself failed — back off (bounded) and retry.
-                    logger.debug("command_subscriber.connect_failed", exc_info=True)
-                    await self._backoff(attempt)
-                    attempt += 1
-                    continue
-                attempt = 0  # a live connection resets the backoff ladder
+                    break  # stopped while the store was unreachable
                 try:
                     await self._serve(connection)
-                except _SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION:
+                except _SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION as error:
                     # The socket dropped mid-serve, OR sustained contention on a
                     # command claim exhausted the shared seam's retry budget —
                     # reconnect + poll-reconcile the gap (a command inserted
@@ -500,21 +522,25 @@ class CommandSubscriber:
                     # of pending on the new socket).
                     logger.debug("command_subscriber.socket_dropped", exc_info=True)
                     await self._drop_connection()
-                    # ``stop()`` flips ``self._running`` from ANOTHER coroutine —
-                    # mypy narrows the attribute to ``True`` from the loop guard and
-                    # cannot model that cross-coroutine mutation, so it flags this
-                    # shutdown-during-drop break as unreachable. It IS reachable at
-                    # runtime; keep the guard so a stop mid-reconnect exits at once
-                    # rather than sleeping out a backoff first.
-                    if not self._running:
-                        break  # type: ignore[unreachable]
-                    await self._backoff(attempt)
-                    attempt += 1
+                    outage_opened_by = error
                     continue
                 # ``_serve`` returned because ``_running`` went False → shut down.
                 break
         finally:
             await self._drop_connection()
+
+    def _stopped(self, _retry_state: RetryCallState) -> bool:
+        """The reconnect ladder's tenacity ``stop``: give up only once :meth:`stop` has been called."""
+        return not self._running
+
+    @staticmethod
+    def _log_failed_connect(retry_state: RetryCallState) -> None:
+        """The reconnect ladder's ``before_sleep``: the DEBUG record of the failure about to be backed off."""
+        outcome = retry_state.outcome
+        logger.debug(
+            "command_subscriber.connect_failed",
+            exc_info=outcome.exception() if outcome is not None else None,
+        )
 
     async def _serve(self, connection: Any) -> None:
         """Establish LIVE (best-effort) + run the REQUIRED poll backstop loop.
@@ -611,19 +637,6 @@ class CommandSubscriber:
             await retry_on_conflict(_attempt, label="command_subscriber.kill.rejected")
         except _SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION:
             logger.debug("command_subscriber.kill.already_closed")
-
-    async def _backoff(self, attempt: int) -> None:
-        """Sleep a bounded, full-jittered backoff before the next reconnect attempt.
-
-        Drawn from the shared policy (:func:`loresigil.backoff.jittered_backoff_delay`,
-        finding #207) rather than computed here. A store outage drops EVERY subscriber's
-        connection at once; an un-jittered ladder would reconnect all of them in the
-        same instant, which is the reconnect storm the backoff exists to prevent.
-        """
-        delay = backoff.jittered_backoff_delay(
-            attempt, base_s=self._backoff_base_s, cap_s=self._max_backoff_s
-        )
-        await self._sleep(delay)
 
     async def stop(self) -> None:
         """Stop the run loop and close the cached connection (idempotent)."""

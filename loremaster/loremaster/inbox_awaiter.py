@@ -48,6 +48,7 @@ from loremaster.store._txn import (
     _SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION,
     RetryableConflictSignal,
     is_retryable_conflict_error,
+    one_statement_result,
     retry_on_conflict,
 )
 from loremaster.store.surreal_schema import TO_RELATION
@@ -209,15 +210,18 @@ class InboxAwaiter:
         from ``store._txn``): a retryable conflict retries transparently, a genuine
         transport fault propagates RAW so the caller's boundary catch handles it. The
         ``connection.<method>`` receiver is lexically inside the driver's attempt body so the
-        runtime SDK guard (test_retry_seam) SEES it seamed."""
+        runtime SDK guard (test_retry_seam) SEES it seamed. The SDK's per-statement answer is reduced to
+        the one statement's result by THE shared selection rule (``one_statement_result``, rulings R2 /
+        R8 F13), so a ``LIVE SELECT`` yields its bare id."""
 
         async def _attempt() -> Any:
             try:
-                return await connection.query(statement)
+                results = await connection.query(statement)
             except _SDK_AWAIT_BOUNDARY_ERRORS as error:
                 if is_retryable_conflict_error(error):
                     raise RetryableConflictSignal() from error
                 raise
+            return one_statement_result(results)
 
         return await retry_on_conflict(_attempt, label="inbox_awaiter.live.query")
 

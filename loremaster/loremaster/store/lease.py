@@ -50,7 +50,6 @@ from typing import Any
 from kubernetes.leaderelection import electionconfig
 from kubernetes.leaderelection.leaderelectionrecord import LeaderElectionRecord
 from pydantic import SecretStr
-from surrealdb import AsyncSurreal
 
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
@@ -59,7 +58,9 @@ from loremaster.store._txn import (
     TxnContentionExhaustedError,
     _SurrealConnection,
     bootstrap_session,
+    ensure_ready_operation,
     execute_transaction,
+    open_surreal_connection,
     run_query,
     signin_credentials,
 )
@@ -307,7 +308,7 @@ class SurrealLeaseStore:
                 # A concurrent caller connected while this one waited; mypy cannot
                 # model the cross-coroutine mutation across the ``await`` above.
                 return self._connection  # type: ignore[unreachable]
-            connection = AsyncSurreal(self._url)
+            connection = open_surreal_connection(self._url)
             credentials = signin_credentials(user=self._user, password=self._password)
             try:
                 await connection.signin(credentials)
@@ -379,6 +380,7 @@ class SurrealLeaseStore:
             await self._safe_close(self._connection)
             self._connection = None
 
+    @ensure_ready_operation
     async def ensure_ready(self) -> None:
         """Apply the lease schema slice — idempotent and safe to re-run.
 

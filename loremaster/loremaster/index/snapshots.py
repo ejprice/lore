@@ -52,7 +52,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import SecretStr
-from surrealdb import AsyncSurreal, InvalidRecordIdError, RecordID
+from surrealdb import InvalidRecordIdError, RecordID
 
 from loremaster.index.surreal_manifest import STATE_INDEXED, SurrealManifest
 from loremaster.store._txn import (
@@ -61,7 +61,9 @@ from loremaster.store._txn import (
     TxnFragment,
     bootstrap_session,
     compose,
+    ensure_ready_operation,
     execute_transaction,
+    open_surreal_connection,
     run_query,
     signin_credentials,
 )
@@ -265,7 +267,7 @@ class SnapshotStamper:
         async with self._connect_lock:
             if self._connection is not None:
                 return self._connection  # type: ignore[unreachable]
-            connection = AsyncSurreal(self._url)
+            connection = open_surreal_connection(self._url)
             credentials = signin_credentials(
                 user=self._user, password=self._password
             )
@@ -292,6 +294,7 @@ class SnapshotStamper:
             )
             return connection
 
+    @ensure_ready_operation
     async def ensure_ready(self) -> None:
         """Connect this stamper's OWN connection — idempotent.
 
