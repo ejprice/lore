@@ -136,6 +136,7 @@ from render_injection_scaffold import (
     RenderCase,
     assert_render_injection_safe,
 )
+from surrealdb.data.types.datetime import parse_instant
 from test_comms_wiring import _backdate_heartbeat, _open_context
 
 # CORPSE-A / removed-behaviour-1 (packet 63a): the governed memory retrofit makes the
@@ -7123,7 +7124,9 @@ class TestTasksTool:
 #       by SUBSTRING, not exact equality, pending confirmation.
 # =========================================================================== #
 
-_PKT06_ROLLUP_EPOCH_ISO = datetime(1970, 1, 1, tzinfo=UTC).isoformat()
+# Packet 66 R43 B1 (#590, sidecar RULING-14): the rollup serves every instant in the ENGINE's nine-digit UTC
+# form (the SDK's own ns codec), so a served cursor round-trips without re-serving its own row.
+_PKT06_ROLLUP_EPOCH_ISO = "1970-01-01T00:00:00.000000000Z"
 
 
 @pytest_asyncio.fixture()
@@ -7139,6 +7142,20 @@ async def rollup_ctx(cutover_ctx: AppContext) -> AppContext:
     setattr(cutover_ctx, "task_ledger", FakeTaskLedger(db=FakeTaskDatabase()))
     setattr(cutover_ctx, "finding_ledger", FakeFindingLedger(db=FakeFindingDatabase()))
     return cutover_ctx
+
+
+def _assert_cursor_line_is(line: str, expected: datetime) -> None:
+    """A served ``next cursor:`` line names ``expected`` EXACTLY, in the engine's nine-digit UTC form
+    (R43 B1): checked through the SDK's own parser (``parse_instant``) — sub-microsecond tail included —
+    never by re-deriving the format here."""
+    prefix = "next cursor: "
+    assert line.startswith(prefix), line
+    text = line[len(prefix) :]
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{9}Z", text), text
+    parsed = parse_instant(text)
+    assert parsed == expected and getattr(parsed, "nanosecond", 0) == getattr(expected, "nanosecond", 0), (
+        f"served cursor {text!r} names {parsed!r}, not the expected stamp {expected!r}"
+    )
 
 
 class TestRollupDispatch:
@@ -7176,9 +7193,9 @@ class TestRollupDispatch:
         )
         # packet 63b-ii-b (§9.4): the TOKENLESS message-leg identity bound (DUAL).
         assert rendered == (
-            "no ledger activity since 2026-01-01T00:00:00+00:00\n"
+            "no ledger activity since 2026-01-01T00:00:00.000000000Z\n"
             "messages: identity required — pass capability=\n"
-            "next cursor: 2026-01-01T00:00:00+00:00"
+            "next cursor: 2026-01-01T00:00:00.000000000Z"
         )
 
     async def test_naive_since_is_a_teaching_value_error(
@@ -7380,7 +7397,7 @@ class TestRollupDispatch:
         expected_cursor = max(claimed.task.updated_at, finding.created_at)
 
         rendered = _render_text(await getattr(rollup_ctx, "tasks")(action="rollup"))
-        assert rendered.splitlines()[-1] == f"next cursor: {expected_cursor.isoformat()}"
+        _assert_cursor_line_is(rendered.splitlines()[-1], expected_cursor)
 
     async def test_next_cursor_when_a_leg_is_truncated_is_min_of_truncated_legs(
         self, rollup_ctx: AppContext
@@ -7401,9 +7418,7 @@ class TestRollupDispatch:
         rendered = _render_text(
             await getattr(rollup_ctx, "tasks")(action="rollup", limit=1)
         )
-        assert rendered.splitlines()[-1] == (
-            f"next cursor: {first_claim.task.updated_at.isoformat()}"
-        )
+        _assert_cursor_line_is(rendered.splitlines()[-1], first_claim.task.updated_at)
 
     async def test_next_cursor_on_zero_rows_echoes_since_unchanged(
         self, rollup_ctx: AppContext
@@ -7412,7 +7427,8 @@ class TestRollupDispatch:
         rendered = _render_text(
             await getattr(rollup_ctx, "tasks")(action="rollup", since=cursor)
         )
-        assert rendered.splitlines()[-1] == f"next cursor: {cursor}"
+        # The SAME instant, echoed in the engine's nine-digit form (R43 B1: one served codec).
+        assert rendered.splitlines()[-1] == "next cursor: 2026-07-11T18:02:11.123456000Z"
 
     async def test_hostile_subject_stays_single_line_and_forges_no_row(
         self, rollup_ctx: AppContext

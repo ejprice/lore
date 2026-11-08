@@ -552,7 +552,8 @@ def _d4_refusal(*, row_text: str, column: str, held: str) -> str:
     """The ONE served refusal text (R34 / sidecar RULING-11 rider 3), spelled out here as the spec."""
     return (
         f"{_D4_TABLE} {row_text} is unreadable: column {column!r} holds {held}, a tz-aware datetime was "
-        f"required — a store-integrity fault (report it with lore_findings); other rows are unaffected"
+        f"required — a store-integrity fault; the store's other rows are intact; this listing could not be "
+        f"completed — report it with lore_findings"
     )
 
 
