@@ -227,6 +227,7 @@ from loremaster.store.candidate import Candidate
 
 # The bound on every caller-controlled string the trace seam writes. Imported,
 # never re-declared: the store ASSERT and the writer's truncation must agree.
+from loremaster.store.stamp_paging import HeldStampGroup, stamp_key
 from loremaster.store.surreal_schema import TRACE_IDENTITY_MAX_CHARS
 from loremaster.store_read import StoreFileSpan
 from loremaster.symbols import (
@@ -5056,7 +5057,9 @@ class AppContext:
             ]
             lines = [f"rollup since {since_iso}"]
             lines.append(
-                cls._rollup_leg_header("tasks transitioned", len(task_rows), task_window.total)
+                cls._rollup_leg_header(
+                    "tasks transitioned", len(task_rows), task_window.total, task_window.held_group
+                )
             )
             for task in task_rows:
                 lines.append(
@@ -5064,7 +5067,9 @@ class AppContext:
                     f"(id {task.id}, owner {render_attributed(task.owner)})"
                 )
             lines.append(
-                cls._rollup_leg_header("findings filed", len(finding_rows), finding_window.total)
+                cls._rollup_leg_header(
+                    "findings filed", len(finding_rows), finding_window.total, finding_window.held_group
+                )
             )
             for finding in finding_rows:
                 lines.append(
@@ -5167,10 +5172,26 @@ class AppContext:
         """
         rows = message_window.rows if message_window is not None else []
         total = message_window.total if message_window is not None else 0
+        held_group = message_window.held_group if message_window is not None else None
         shown = len(rows)
-        if total > shown:
+        # R44 / #592 Q1(ii): the next cursor never reads this leg, so an elided message is NOT reached by
+        # paging — the header says so and names the remedy on THIS call (h2); a head group wider than the
+        # page names its size (h2-held), never claiming a cursor hold that does not happen here.
+        if held_group is not None:
             header = render_line(
-                "messages activity (showing {shown} of {total} — raise limit for more):",
+                "messages activity (showing {shown} of {total} — {n} messages share the stamp {stamp}; "
+                "limit {limit} cannot page past them, and the next cursor does not cover them — raise limit "
+                "to ≥ {n} on THIS call):",
+                shown=shown,
+                total=total,
+                n=held_group.rows,
+                stamp=sanitise_line(served_instant_text(held_group.stamp)),
+                limit=shown,
+            )
+        elif total > shown:
+            header = render_line(
+                "messages activity (showing {shown} of {total} — the elided messages are not covered by the "
+                "next cursor; raise limit on THIS call to see them):",
                 shown=shown,
                 total=total,
             )
@@ -5192,12 +5213,24 @@ class AppContext:
         return lines
 
     @staticmethod
-    def _rollup_leg_header(label: str, shown: int, total: int) -> str:
-        """One rollup leg's header — counted elision, never silent truncation."""
+    def _rollup_leg_header(label: str, shown: int, total: int, held_group: HeldStampGroup | None) -> str:
+        """One cursor-paged rollup leg's header — counted elision, never silent truncation (R44).
+
+        h1 — a head stamp group wider than the page: the cursor HOLDS, and the header names the group and
+        the remedy (``limit`` equals ``shown`` in this case by construction). h3 — a truncated leg: the
+        cursor resumes at the elision point, and the OTHER legs re-serve their rows above it
+        (at-least-once, #592 Q2).
+        """
+        if held_group is not None:
+            return (
+                f"{label} (showing {shown} of {total} — {held_group.rows} rows share the stamp "
+                f"{served_instant_text(held_group.stamp)}; limit {shown} cannot page past them, so this "
+                f"cursor does not advance — re-call with limit ≥ {held_group.rows}):"
+            )
         if total > shown:
             return (
-                f"{label} (showing {shown} of {total} — the next cursor resumes at "
-                f"the elision point; re-call rollup with it, or raise limit):"
+                f"{label} (showing {shown} of {total} — the next cursor resumes at the elision point, "
+                f"and the other legs re-serve their rows above it; re-call rollup with it, or raise limit):"
             )
         return f"{label} ({shown}):"
 
@@ -5210,31 +5243,23 @@ class AppContext:
         """Compute the rollup's ``next cursor`` (design §1, computed in PYTHON
         over served rows — never a store aggregate).
 
-        Zero rows served (both legs empty) echoes ``effective_since`` unchanged
-        (an idle poll never advances the cursor); ANY leg truncated takes the
-        MIN over truncated legs' last-served stamp (rows in other legs beyond
-        that stamp are RE-SERVED next call — at-least-once, never lost); no leg
-        truncated takes the MAX stamp across every served row (both legs).
+        Reads each leg's ``resume_at`` (R44: the leg's exact resume stamp, never ``rows[-1]``'s — a page
+        never ends inside a stamp group, and a held group's leg resumes at the cursor itself). Zero rows
+        served (both legs empty) echoes ``effective_since`` unchanged (an idle poll never advances the
+        cursor); ANY leg truncated takes the MIN over truncated legs' ``resume_at`` (rows in other legs
+        beyond it are RE-SERVED next call — at-least-once, never lost; a held leg contributes the cursor
+        itself, so the whole cursor holds); no leg truncated takes the MAX ``resume_at`` over the legs that
+        served rows. MIN/MAX order by :func:`~loremaster.store.stamp_paging.stamp_key` — the engine's
+        nanosecond order, which ``PreciseDatetime``'s own ``<`` ignores. The message leg is NOT read here
+        (#592 Q1(ii)); its header says so.
         """
-        if not task_window.rows and not finding_window.rows:
+        legs = (task_window, finding_window)
+        if not any(window.rows for window in legs):
             return effective_since
-        task_truncated = task_window.total > len(task_window.rows)
-        finding_truncated = finding_window.total > len(finding_window.rows)
-        if task_truncated or finding_truncated:
-            truncated_stamps: list[datetime] = []
-            if task_truncated:
-                last_task_stamp = task_window.rows[-1].updated_at
-                if last_task_stamp is not None:
-                    truncated_stamps.append(last_task_stamp)
-            if finding_truncated:
-                truncated_stamps.append(finding_window.rows[-1].created_at)
-            if truncated_stamps:
-                return min(truncated_stamps)
-        all_stamps: list[datetime] = [
-            task.updated_at for task in task_window.rows if task.updated_at is not None
-        ]
-        all_stamps += [finding.created_at for finding in finding_window.rows]
-        return max(all_stamps)
+        truncated = [window.resume_at for window in legs if window.total > len(window.rows)]
+        if truncated:
+            return min(truncated, key=stamp_key)
+        return max((window.resume_at for window in legs if window.rows), key=stamp_key)
 
     async def _create_many(  # noqa: PLR0912 - sequential client-side validation steps in the design's own pinned order; splitting would scatter one coherent pipeline with no clearer seam
         self, *, items: list[dict[str, Any]], created_by: str
@@ -12092,7 +12117,8 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 description=(
                     "For 'rollup' and 'query' ONLY (rejected for every other action; "
                     "must be a positive int). On 'rollup' it is the per-leg row cap "
-                    f"(default {_DEFAULT_ROLLUP_LEG_LIMIT} when omitted). On 'query' it "
+                    f"(default {_DEFAULT_ROLLUP_LEG_LIMIT} when omitted; a page may stop short of the cap "
+                    "to avoid splitting rows that share a stamp). On 'query' it "
                     "caps the rows SERVED, and a listing that hit the cap says so — its "
                     "absence means the answer is complete."
                 )

@@ -105,6 +105,7 @@ from loremaster.store._txn import (
     signin_credentials,
     stored_datetime,
 )
+from loremaster.store.stamp_paging import HeldStampGroup, read_stamp_page
 from loremaster.store.surreal_schema import (
     _MESSAGE_GRADE_DIRECTIVE,
     _MESSAGE_GRADE_SIGNAL,
@@ -422,16 +423,23 @@ class MessageActivityWindow(BaseModel):
     an exhaustive one — mirrors :class:`~loremaster.tasks.TaskActivityWindow`.
 
     Attributes:
-        rows: The matching messages, oldest-first by ``created_at``, capped at the
-            caller's ``limit``.
+        rows: The matching messages, oldest-first by ``created_at``,
+            at most ``limit``, never ending inside a stamp group (a head group wider than ``limit`` holds
+            the cursor and is named — R44).
         total: The honest count of messages matching the window (``>= len(rows)``;
             exceeds it when ``limit`` truncated the result).
+        resume_at: The leg's exact resume stamp: the last served stamp, or the cursor itself when the
+            leg served nothing or holds a group (:func:`~loremaster.store.stamp_paging.cut_stamp_page`).
+        held_group: A head stamp group wider than ``limit`` — the cursor holds and the rollup names it —
+            else ``None``.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     rows: list[StoredMessage] = Field(default_factory=list)
     total: int
+    resume_at: datetime
+    held_group: HeldStampGroup | None
 
 
 # --- errors ------------------------------------------------------------------
@@ -1730,8 +1738,11 @@ class MessageLedger:
         self, since: datetime, *, limit: int, subject: Subject | None = None
     ) -> MessageActivityWindow:
         """The rollup's messages-activity leg — messages CREATED strictly after
-        ``since`` the caller may READ, oldest-first by ``created_at``, capped at
-        ``limit``, with an honest ``total`` (packet 05a-iii).
+        ``since`` the caller may READ, oldest-first by ``created_at``,
+        at most ``limit``, never ending inside a stamp group (a head group wider than ``limit`` holds the
+        cursor and is named — R44), with an honest ``total`` (packet 05a-iii). ``created_at`` is a PYTHON
+        microsecond stamp, so a same-µs burst of ``send`` calls ties — paged by THE stamp-group rule,
+        :func:`~loremaster.store.stamp_paging.read_stamp_page` (#591).
 
         Cursor-bounded by ``created_at`` exactly like the task/finding legs
         (``NONE > $since`` is falsy, so a legacy row is excluded by the WHERE itself),
@@ -1756,35 +1767,40 @@ class MessageLedger:
                 (rows AND total). ``None`` (a legacy / internal call) is unfiltered.
 
         Returns:
-            The window: ``rows`` (ASC by ``created_at``, capped at ``limit``) and the
-            honest ``total`` (``>= len(rows)``), both over the visible set.
+            The window: ``rows`` (ASC by ``created_at``, at most ``limit``, whole stamp groups),
+            the honest ``total`` (``>= len(rows)``), ``resume_at`` and ``held_group``, all over the
+            visible set (the held group's size counts visible rows only).
 
         Raises:
             ValueError: ``limit`` is not a positive integer.
         """
         if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
             raise ValueError(f"limit must be a positive integer, got {limit!r}")
-        # ``LIMIT`` rides a BOUND param (never string-interpolated) — the validated
-        # positive int can never be NONE (the ``LIMIT $k = NONE ⇒ 0 rows`` gotcha),
-        # and this keeps NO caller-adjacent value in query TEXT.
-        params: dict[str, Any] = {"since": since, "activity_limit": limit}
-        filter_clause = ""
-        if subject is not None:
-            read_fragment, read_params = governed.read_filter(subject, MESSAGE_TABLE)
-            filter_clause = f" AND ({read_fragment})"
-            params.update(read_params)
-        rows_result = await self._query(
-            f"SELECT seq, grade, body, refs, thread, question, task_id, "
-            f"sender.name AS sender_name, created_at FROM {MESSAGE_TABLE} "
-            f"WHERE created_at > $since{filter_clause} ORDER BY created_at ASC LIMIT $activity_limit",
-            params,
+        # ``LIMIT`` rides a BOUND param inside the helper (never string-interpolated) — the validated
+        # positive int can never be NONE (the ``LIMIT $k = NONE ⇒ 0 rows`` gotcha).
+        read_fragment, read_params = (
+            governed.read_filter(subject, MESSAGE_TABLE) if subject is not None else ("", {})
         )
-        rows = [self._row_to_stored_message(row) for row in self._as_rows(rows_result)]
-        count_result = await self._query(
-            f"SELECT count() FROM {MESSAGE_TABLE} WHERE created_at > $since{filter_clause} GROUP ALL",
-            params,
+        page = await read_stamp_page(
+            self._query,
+            as_rows=self._as_rows,
+            group_count=self._extract_group_count,
+            table=MESSAGE_TABLE,
+            column="created_at",
+            projection=(
+                "seq, grade, body, refs, thread, question, task_id, sender.name AS sender_name, created_at"
+            ),
+            since=since,
+            limit=limit,
+            filter_fragment=read_fragment,
+            filter_params=read_params,
         )
-        return MessageActivityWindow(rows=rows, total=self._extract_group_count(count_result))
+        return MessageActivityWindow(
+            rows=[self._row_to_stored_message(row) for row in page.rows],
+            total=page.total,
+            resume_at=page.resume_at,
+            held_group=page.held_group,
+        )
 
     @staticmethod
     def _extract_group_count(result: Any) -> int:

@@ -116,6 +116,7 @@ from loremaster.store._txn import (
     signin_credentials,
     stored_datetime,
 )
+from loremaster.store.stamp_paging import HeldStampGroup, read_stamp_page
 from loremaster.store.surreal_schema import BLOCKS_RELATION, TASK_TABLE, generate_task_ddl
 
 logger = logging.getLogger(__name__)
@@ -273,7 +274,6 @@ _ROW_ID_PARAM = "id"
 # ``SELECT count() … GROUP ALL`` result carries the total under (mirrors
 # ``diff.py``'s / ``store/surreal.py``'s own ``_COUNT_KEY`` idiom for the same
 # shape).
-_UPDATED_SINCE_PARAM = "upd_since"
 _COUNT_KEY = "count"
 
 # PKT-06 §2 (L2a): the ``create_many`` batch's ALL-OR-NOTHING per-item
@@ -420,16 +420,23 @@ class TaskActivityWindow(BaseModel):
     """The rollup's leg-1 read: tasks with fleet-visible activity since a cursor.
 
     Attributes:
-        rows: The matching tasks, ordered by ``updated_at`` ascending, capped
-            at the caller's ``limit``.
+        rows: The matching tasks, ordered by ``updated_at`` ascending,
+            at most ``limit``, never ending inside a stamp group (a head group wider than ``limit`` holds
+            the cursor and is named — R44).
         total: The HONEST total count of tasks matching the window (may exceed
             ``len(rows)`` when ``limit`` truncated the result).
+        resume_at: The leg's exact resume stamp: the last served stamp, or the cursor itself when the
+            leg served nothing or holds a group (:func:`~loremaster.store.stamp_paging.cut_stamp_page`).
+        held_group: A head stamp group wider than ``limit`` — the cursor holds and the rollup names it —
+            else ``None``.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     rows: list[Task]
     total: int
+    resume_at: datetime
+    held_group: HeldStampGroup | None
 
 
 class TaskSpec(BaseModel):
@@ -2077,10 +2084,12 @@ class TaskLedger:
         :meth:`supersede_task` (of the OLD row) — NEVER at :meth:`create_task`,
         so a never-mutated task never appears. ``NONE > $since`` is falsy in
         SurrealDB, so a legacy (never-mutated) row is excluded by the WHERE
-        clause itself. Ordered ``updated_at`` ASC, capped at ``limit``, with an
+        clause itself. Ordered ``updated_at`` ASC, at most ``limit``, never ending inside a stamp group (a
+        head group wider than ``limit`` holds the cursor and is named — R44), with an
         HONEST ``total`` (a second bounded ``SELECT count() … GROUP ALL`` —
         never a second unbounded scan) so a caller can tell a truncated window
-        from an exhaustive one.
+        from an exhaustive one. Paged by THE stamp-group rule,
+        :func:`~loremaster.store.stamp_paging.read_stamp_page` (#591).
 
         Args:
             since: The EXCLUSIVE lower bound — only tasks updated STRICTLY
@@ -2088,27 +2097,30 @@ class TaskLedger:
             limit: The maximum number of rows to return (must be a positive int).
 
         Returns:
-            The matching window: ``rows`` (ASC by ``updated_at``, capped at
-            ``limit``) and the honest ``total`` (``>= len(rows)``).
+            The matching window: ``rows`` (ASC by ``updated_at``, at most ``limit``, whole stamp
+            groups), the honest ``total`` (``>= len(rows)``), ``resume_at`` and ``held_group``.
 
         Raises:
             ValueError: ``limit`` is not a positive integer.
         """
         if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
             raise ValueError(f"limit must be a positive integer, got {limit!r}")
-        params: dict[str, Any] = {_UPDATED_SINCE_PARAM: since}
-        rows_result = await self._query(
-            f"SELECT * FROM {TASK_TABLE} WHERE {_COL_UPDATED_AT} > ${_UPDATED_SINCE_PARAM} "
-            f"ORDER BY {_COL_UPDATED_AT} ASC LIMIT {limit}",
-            params,
+        page = await read_stamp_page(
+            self._query,
+            as_rows=self._as_rows,
+            group_count=self._extract_group_count,
+            table=TASK_TABLE,
+            column=_COL_UPDATED_AT,
+            projection="*",
+            since=since,
+            limit=limit,
         )
-        rows = [self._row_to_task(row) for row in self._as_rows(rows_result)]
-        count_result = await self._query(
-            f"SELECT count() FROM {TASK_TABLE} WHERE {_COL_UPDATED_AT} > "
-            f"${_UPDATED_SINCE_PARAM} GROUP ALL",
-            params,
+        return TaskActivityWindow(
+            rows=[self._row_to_task(row) for row in page.rows],
+            total=page.total,
+            resume_at=page.resume_at,
+            held_group=page.held_group,
         )
-        return TaskActivityWindow(rows=rows, total=self._extract_group_count(count_result))
 
     async def create_many(
         self,

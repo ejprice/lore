@@ -107,6 +107,7 @@ from loremaster.store._txn import (
     run_query,
     signin_credentials,
 )
+from loremaster.store.stamp_paging import HeldStampGroup, read_stamp_page
 from loremaster.store.surreal_schema import (
     FINDING_COUNTER_SINGLETON_ID,
     FINDING_COUNTER_TABLE,
@@ -241,7 +242,6 @@ _ROW_NUMBER_PARAM = "number"
 # PKT-06 §1: ``filed_since``'s bound-parameter name and the field a
 # ``SELECT count() … GROUP ALL`` result carries the total under (mirrors
 # ``loremaster.tasks``'s / ``diff.py``'s own ``_COUNT_KEY`` idiom).
-_FILED_SINCE_PARAM = "fs_since"
 _COUNT_KEY = "count"
 
 # The bounded number of supersedes-chain hops :meth:`FindingLedger.chain_head` will
@@ -293,15 +293,22 @@ class FindingActivityWindow(BaseModel):
 
     Attributes:
         rows: The matching findings, ordered by ``created_at`` ascending,
-            capped at the caller's ``limit``.
+            at most ``limit``, never ending inside a stamp group (a head group wider than ``limit`` holds
+            the cursor and is named — R44).
         total: The HONEST total count of findings matching the window (may
             exceed ``len(rows)`` when ``limit`` truncated the result).
+        resume_at: The leg's exact resume stamp: the last served stamp, or the cursor itself when the
+            leg served nothing or holds a group (:func:`~loremaster.store.stamp_paging.cut_stamp_page`).
+        held_group: A head stamp group wider than ``limit`` — the cursor holds and the rollup names it —
+            else ``None``.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     rows: list[Finding]
     total: int
+    resume_at: datetime
+    held_group: HeldStampGroup | None
 
 
 class ReportResult(BaseModel):
@@ -807,10 +814,13 @@ class FindingLedger:
 
         Unlike the task ledger's ``updated_at`` (which starts ``None``), every
         finding always carries a ``created_at`` — filed-since has no
-        "never appears" case. Ordered ``created_at`` ASC, capped at ``limit``,
+        "never appears" case. Ordered ``created_at`` ASC, at most ``limit``, never ending inside a stamp
+        group (a head group wider than ``limit`` holds the cursor and is named — R44),
         with an HONEST ``total`` (a second bounded ``SELECT count() … GROUP
         ALL`` — never a second unbounded scan) so a caller can tell a
-        truncated window from an exhaustive one.
+        truncated window from an exhaustive one. ``created_at`` is a PYTHON microsecond stamp, so a
+        same-µs burst of ``report`` calls ties — paged by THE stamp-group rule,
+        :func:`~loremaster.store.stamp_paging.read_stamp_page` (#591).
 
         Args:
             since: The EXCLUSIVE lower bound — only findings filed STRICTLY
@@ -818,27 +828,30 @@ class FindingLedger:
             limit: The maximum number of rows to return (must be a positive int).
 
         Returns:
-            The matching window: ``rows`` (ASC by ``created_at``, capped at
-            ``limit``) and the honest ``total`` (``>= len(rows)``).
+            The matching window: ``rows`` (ASC by ``created_at``, at most ``limit``, whole stamp
+            groups), the honest ``total`` (``>= len(rows)``), ``resume_at`` and ``held_group``.
 
         Raises:
             ValueError: ``limit`` is not a positive integer.
         """
         if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
             raise ValueError(f"limit must be a positive integer, got {limit!r}")
-        params: dict[str, Any] = {_FILED_SINCE_PARAM: since}
-        rows_result = await self._query(
-            f"SELECT * FROM {FINDING_TABLE} WHERE {_COL_CREATED_AT} > ${_FILED_SINCE_PARAM} "
-            f"ORDER BY {_COL_CREATED_AT} ASC LIMIT {limit}",
-            params,
+        page = await read_stamp_page(
+            self._query,
+            as_rows=self._as_rows,
+            group_count=self._extract_group_count,
+            table=FINDING_TABLE,
+            column=_COL_CREATED_AT,
+            projection="*",
+            since=since,
+            limit=limit,
         )
-        rows = [self._row_to_finding(row) for row in self._as_rows(rows_result)]
-        count_result = await self._query(
-            f"SELECT count() FROM {FINDING_TABLE} WHERE {_COL_CREATED_AT} > "
-            f"${_FILED_SINCE_PARAM} GROUP ALL",
-            params,
+        return FindingActivityWindow(
+            rows=[self._row_to_finding(row) for row in page.rows],
+            total=page.total,
+            resume_at=page.resume_at,
+            held_group=page.held_group,
         )
-        return FindingActivityWindow(rows=rows, total=self._extract_group_count(count_result))
 
     async def chain_head(self, id_or_number: int | str) -> ChainHead:
         """Follow the supersedes chain FORWARD to its head, surfacing any fork.
