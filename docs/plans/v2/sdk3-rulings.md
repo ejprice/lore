@@ -578,3 +578,17 @@ Full report: `docs/plans/v2/receipts/2026-11-08-sdk3/ADVERSARY3.md` (graded 150b
 - **Residual R18 → round 8:** B-2 lacks a letter-led leg, so R26-3's rider is unmet.
 - **Landmine 1, "tenacity in name only" (R18's operator concern), is BEHAVIOURALLY INVISIBLE:** a hand-rolled loop with the same laws passes 738/738. The adversary proved a one-line runtime instrument (narrow `_driver_sleeps.DRIVER_SLEEP_CALLER_MODULES` to `{"tenacity.asyncio"}`) and a fallback named cold-audit diff check. Neither reaches scout's ladder except the audit check. Round 8 STAGES the narrowing as a patch and writes the audit check. **Whether the narrowing lands is the OPERATOR's decision**; the sidecar is asked to classify it (ruling request 7).
 - **Residuals R1–R17:** builder notes, recorded by round 8 in the packet doc; none reopens a round. The four packet-58 files reading `TXN_STATEMENT_HARD_CAP` are registered under packet-58's contract (lead-checked).
+
+## R29 — design sidecar ruling 7: the landmine-1 instrument is NOT reserved; ADOPT it with riders (design-sidecar-66; recorded by the lead; the operator may overturn)
+Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-7.md`.
+- **Classification.** Narrowing `_driver_sleeps.DRIVER_SLEEP_CALLER_MODULES` to `{"tenacity.asyncio"}` is a one-constant refinement of an EXISTING per-test runtime instrument. It reads no source and is not run-wide, so it is outside the operator-reserved class (source scanners; run-wide recorders and meta-suites).
+  - It pins a mechanism the OPERATOR ruled: R11 *"if our retry is hand rolled use tenacity"*, and R18, from the operator's own question.
+  - Of the three instruments that could pin it, runtime attribution is the one the instrument lesson prescribes. Pair-proven: 26 red on the hand loop, 0 over-fire.
+- **ADOPT A**, landing WITH the build as a staged servicing patch. Riders:
+  1. the threat model goes in the module docstring (honest developer; defeated by private `_portable_async_sleep`; reach = tenacity's default sleep);
+  2. HEAD's reddened pins go into the F6 red_nodeids entry;
+  3. REWRITE `NO_DRIVER_SLEEP_HINT` so it teaches "port it, never widen this set";
+  4. close the scout sibling the same way, by attributing scout's injected `sleep=` caller to `tenacity.asyncio`, pair-proven.
+- **Keep B,** the cold audit's named diff check, beside A. B alone would be "documented ≠ dealt with".
+- **MP-1 routing CONFIRMED:** a round-8 pin over both sweep arms, plus the builder's ONE helper behind the two cloned except-arms. The same parametrisation covers the embed-failure arm. The B-2 letter-led leg goes into round 8.
+- **Operator flag:** recorded for the operator's wake as OVERTURNABLE, never blocking. Routed into round 8 via WORKORDER-r8 Amendment 1.
