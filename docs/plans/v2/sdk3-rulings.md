@@ -450,3 +450,18 @@ jitter law exactly, `stop_any`/`stop_all` is HEAD's predicate, `retry_error_call
   premise (A2); over-retries a transport-unknown → F14 zero-retry pins; correlated jitter → A3; UN-AWAITED coroutine →
   pin that `retry_on_conflict` RETURNS THE ATTEMPT'S VALUE for a lambda-shaped caller}.
 Routing: contract round 7 implements R18 as amended here.
+
+## R21 — SDK-2.0 tests may be updated, modernized or removed (operator, 2026-11-08)
+Operator, verbatim: *"Updating, modernizing or removing tests for SDK 2.0 is authorized."* Consequences:
+- **Contract authors (round 6/7)** may rewrite or delete any test that encodes SDK-2.0 behaviour or shapes (list-shaped
+  results, KeyError-as-transport, per-module `AsyncSurreal` patching, `str(RecordID)` text oracles, the statement cap,
+  `_RETRYABLE_CONFLICT_KIND`, draw-count implementation pins). **F-a simplifies:** fakes answer SDK-3 shapes only — no
+  version-aware interim branch; the RED-at-HEAD set grows accordingly and is DECLARED from `--collect-only`.
+- **The builder** may also update/modernize/remove a test whose failure on the SDK-3 build is caused by an SDK-2.0
+  shape or behaviour. This relaxes the implementer→test-author boundary for THAT class only. And pin it like this:
+  every such edit is listed in the build report (file::test, old SDK-2.0 behaviour → new form, or REMOVED + reason);
+  no edit may weaken a pin of an SDK-3 ruling (R1–R20) or a consumer-facing behaviour (R17); the cold audit's
+  contract-blind diff pass adjudicates each listed edit, and an unlisted test edit is a NO-GO.
+- **MP-C's property amended:** every targeted node green at HEAD is green on the SDK-3 reference, OR it encodes SDK-2.0
+  behaviour and is rewritten/removed with a named verdict. An SDK-2.0-only test that no correct SDK-3 build can pass
+  therefore no longer stops a builder (R16's one remaining blocker narrows to pins of SDK-3 rulings).
