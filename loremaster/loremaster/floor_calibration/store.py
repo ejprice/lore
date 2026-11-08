@@ -31,7 +31,6 @@ from typing import Any
 from uuid import uuid4
 
 from pydantic import SecretStr
-from surrealdb import AsyncSurreal, RecordID
 
 from loremaster.floor_calibration import domain as floor_domain
 from loremaster.store._txn import (
@@ -43,7 +42,10 @@ from loremaster.store._txn import (
     _SurrealConnection,
     bootstrap_session,
     compose,
+    ensure_ready_operation,
     execute_transaction,
+    open_surreal_connection,
+    record_key_or_none,
     run_query,
     signin_credentials,
 )
@@ -210,7 +212,7 @@ class FloorCalibrationStore:
                 # A concurrent caller connected while this one waited; mypy cannot
                 # model the cross-coroutine mutation across the ``await`` above.
                 return self._connection  # type: ignore[unreachable]
-            connection = AsyncSurreal(self._url)
+            connection = open_surreal_connection(self._url)
             credentials = signin_credentials(user=self._user, password=self._password)
             try:
                 await connection.signin(credentials)
@@ -289,6 +291,7 @@ class FloorCalibrationStore:
             await self._safe_close(self._connection)
             self._connection = None
 
+    @ensure_ready_operation
     async def ensure_ready(self) -> None:
         """Apply the floor-calibration schema slice — idempotent, re-runnable.
 
@@ -473,7 +476,7 @@ class FloorCalibrationStore:
         if not rows:
             return None
         row = rows[0]
-        measurement_id = _bare_record_id(row.get(FLOOR_HEAD_MEASUREMENT_COLUMN))
+        measurement_id = record_key_or_none(row.get(FLOOR_HEAD_MEASUREMENT_COLUMN))
         if measurement_id is None:
             return None
         adopted_at = row.get(FLOOR_HEAD_ADOPTED_AT_COLUMN)
@@ -787,15 +790,3 @@ def _as_rows(result: Any) -> list[dict[str, Any]]:
     return [row for row in result if isinstance(row, dict)]
 
 
-def _bare_record_id(value: Any) -> str | None:
-    """The BARE id of a projected record link — ``None`` when the link is unset.
-
-    Deliberately client-side rather than a ``record::id()`` projection: probed
-    2026-07-26 on the 3.2.1 test store, ``record::id(NONE)`` RAISES
-    (*"Argument 1 was the wrong type. Expected `record` but found `NONE`"*), so
-    projecting it would turn an un-adopted head — a legitimate state — into an
-    engine error.
-    """
-    if isinstance(value, RecordID):
-        return str(value.id)
-    return None

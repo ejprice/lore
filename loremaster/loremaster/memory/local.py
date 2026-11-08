@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Any
 
 from loresigil.base import Embedder
 from pydantic import SecretStr, ValidationError
-from surrealdb import AsyncSurreal, RecordID
+from surrealdb import RecordID
 
 from loremaster import governed
 from loremaster.audit import AuditStore
@@ -70,7 +70,11 @@ from loremaster.store._txn import (
     _SurrealConnection,
     bootstrap_session,
     compose,
+    ensure_ready_operation,
     execute_transaction,
+    open_surreal_connection,
+    record_key,
+    record_key_or_none,
     run_query,
     signin_credentials,
 )
@@ -185,10 +189,9 @@ _META_SOURCE = "source"
 _META_EXPIRES_AT = "expires_at"
 _META_SUPERSEDES = "supersedes"
 
-# SDK-added result keys and the record-id table separator.
+# SDK-added result keys.
 _ID_KEY = "id"
 _RRF_SCORE_KEY = "rrf_score"
-_TABLE_SEPARATOR = ":"
 
 # Hybrid-retrieval tuning — mirrors ``store.surreal``'s HNSW/RRF constants so the
 # memory arm behaves like the chunk arm. Filtered KNN under-returns, so each arm
@@ -377,7 +380,7 @@ class LocalMemoryBackend:
                 # A concurrent caller connected while this one waited; mypy can't
                 # model the cross-coroutine mutation across the ``await`` above.
                 return self._connection  # type: ignore[unreachable]
-            connection = AsyncSurreal(self._url)
+            connection = open_surreal_connection(self._url)
             credentials = signin_credentials(
                 user=self._user, password=self._password
             )
@@ -406,6 +409,7 @@ class LocalMemoryBackend:
             )
             return connection
 
+    @ensure_ready_operation
     async def ensure_ready(self) -> None:
         """Connect and apply the memory schema slice — idempotent and safe to re-run.
 
@@ -844,7 +848,7 @@ class LocalMemoryBackend:
                 "— a governed write cannot default its scope to the fleet's shared keep; run "
                 "`lore-adm migrate-governed` at the cutover (it mints the project keep)"
             )
-        return pdp.keep_scope(self._bare_id(rows[0].get(_ID_KEY)))
+        return pdp.keep_scope(record_key(rows[0].get(_ID_KEY)))
 
     # -- reads --------------------------------------------------------------
 
@@ -1102,7 +1106,7 @@ class LocalMemoryBackend:
         # ``search::rrf`` leaves equal-scored rows in arbitrary order; impose a
         # stable best-first sort (score desc, then bare id) so ``recalled[0]`` is
         # the top hit and identical calls never shuffle.
-        rows.sort(key=lambda row: (-self._row_score(row), self._bare_id(row.get(_ID_KEY))))
+        rows.sort(key=lambda row: (-self._row_score(row), record_key(row.get(_ID_KEY))))
         return rows
 
     async def _analyze_query(self, query_text: str) -> list[str]:
@@ -1239,7 +1243,7 @@ class LocalMemoryBackend:
         stored_labels = self._stored_labels(row)
         refs, plain_labels = self._split_labels(stored_labels, existing_chunks)
         return RecalledMemory(
-            id=self._bare_id(row.get(_ID_KEY)),
+            id=record_key(row.get(_ID_KEY)),
             text=str(row.get(_COL_NOTE_TEXT, "")),
             score=self._row_score(row),
             kind=str(row.get(_COL_KIND, _DEFAULT_KIND)),
@@ -1401,16 +1405,10 @@ class LocalMemoryBackend:
             predecessor = predecessor_rows[0] if predecessor_rows else {}
             stored_owner_principal = predecessor.get(_COL_OWNER_PRINCIPAL)
             stored_owner_agent = predecessor.get(_COL_OWNER_AGENT)
-            stored_owner_principal = getattr(stored_owner_principal, "record_id", None) or (
-                str(stored_owner_principal).split(":")[-1]
-                if stored_owner_principal is not None
-                else None
-            )
-            stored_owner_agent = getattr(stored_owner_agent, "record_id", None) or (
-                str(stored_owner_agent).split(":")[-1]
-                if stored_owner_agent is not None
-                else None
-            )
+            # Compared by the record's KEY from its parts (R7; the C9 class) — never by splitting
+            # ``str(RecordID)``, which SDK 3.0 brackets for a digit-led or non-word key.
+            stored_owner_principal = record_key_or_none(stored_owner_principal)
+            stored_owner_agent = record_key_or_none(stored_owner_agent)
             if (
                 stored_owner_principal == owner_principal
                 and stored_owner_agent == owner_agent
@@ -1701,12 +1699,3 @@ class LocalMemoryBackend:
             )
         return value
 
-    @staticmethod
-    def _bare_id(raw: Any) -> str:
-        """Return the BARE memory id — no ``memory:`` record-table prefix."""
-        if isinstance(raw, RecordID):
-            return str(raw.id)
-        text = str(raw)
-        if _TABLE_SEPARATOR in text:
-            return text.split(_TABLE_SEPARATOR, 1)[1]
-        return text

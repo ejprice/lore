@@ -80,7 +80,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, SecretStr
-from surrealdb import AsyncSurreal
 
 # The shared predicates ``verify`` routes through (ONE IMPLEMENTATION — proven by the
 # mutation pins in ``test_principal_keys_store.py`` and the packet-62 seam contract,
@@ -107,8 +106,12 @@ from loremaster.store._txn import (
     TxnContentionExhaustedError,
     _SurrealConnection,
     bootstrap_session,
+    ensure_ready_operation,
     execute_transaction,
+    open_surreal_connection,
     proven_no_key,
+    record_key,
+    record_text,
     run_query,
     signin_credentials,
     wrap_store_rejection,
@@ -266,7 +269,7 @@ class PrincipalKeyStore:
                 # A concurrent caller connected while this one waited; mypy can't
                 # model the cross-coroutine mutation across the ``await`` above.
                 return self._connection  # type: ignore[unreachable]
-            connection = AsyncSurreal(self._url)
+            connection = open_surreal_connection(self._url)
             credentials = signin_credentials(user=self._user, password=self._password)
             try:
                 await connection.signin(credentials)
@@ -293,6 +296,7 @@ class PrincipalKeyStore:
             )
             return connection
 
+    @ensure_ready_operation
     async def ensure_ready(self) -> None:
         """Connect and apply the ``principal_key`` schema slice — idempotent, safe to
         re-run.
@@ -657,7 +661,7 @@ class PrincipalKeyStore:
         principal = await self._principals.get_by_email(email)
         if principal is None:
             raise PrincipalNotFoundError(f"no principal with email {email!r}")
-        return self._record_id_part(principal.id)
+        return record_key(principal.id)
 
     def _row_to_key(self, row: dict[str, Any]) -> PrincipalKey:
         """Map a raw ``principal_key`` row into a FRESH :class:`PrincipalKey`.
@@ -676,21 +680,13 @@ class PrincipalKeyStore:
                 f"principal_key row column {_COL_CREATED_AT!r} is missing or not a datetime"
             )
         return PrincipalKey(
-            id=str(row[_COL_ID]),
-            principal_id=str(row[_COL_PRINCIPAL]),
+            id=record_text(row[_COL_ID]),
+            principal_id=record_text(row[_COL_PRINCIPAL]),
             name=str(row[_COL_NAME]),
             created_at=created_at,
             expires_at=PrincipalStore._to_aware_utc(row.get(_COL_EXPIRES_AT)),
             revoked_at=PrincipalStore._to_aware_utc(row.get(_COL_REVOKED_AT)),
         )
-
-    @staticmethod
-    def _record_id_part(record_id: str) -> str:
-        """The id portion of a ``str(RecordID)`` (``principal:xyz`` → ``xyz``), for
-        binding through ``type::record('principal', $pid)`` (store law §2/§4). A bare
-        id (no ``:``) passes through unchanged."""
-        _, separator, id_part = record_id.partition(":")
-        return id_part if separator else record_id
 
     @classmethod
     def _mint_fault_note(cls, error: BaseException, *, answered: bool, email: str, name: str) -> str | None:

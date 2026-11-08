@@ -100,7 +100,7 @@ from typing import Any, Literal, cast
 from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import BaseModel, ConfigDict, SecretStr
-from surrealdb import AsyncSurreal, RecordID
+from surrealdb import RecordID
 
 from loremaster.agent_existence import UnknownAgentRowError, reject_unknown_agents
 from loremaster.agent_ref import AgentRef
@@ -108,13 +108,17 @@ from loremaster.agent_ref import AgentRefLike as AgentRefLike  # noqa: PLC0414 (
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
     SurrealConnectionError,
+    SurrealOutcomeUnknownError,
     SurrealStoreError,
     TxnContentionExhaustedError,
     TxnFragment,
     _SurrealConnection,
     bootstrap_session,
     compose,
+    ensure_ready_operation,
     execute_transaction,
+    open_surreal_connection,
+    record_key,
     run_query,
     signin_credentials,
 )
@@ -208,9 +212,8 @@ _COL_AT = "at"
 _COL_EDGE_IN = "in"
 _COL_EDGE_OUT = "out"
 
-# The record-id table separator. (The signin credential keys moved to the ONE
-# shared ``store._txn.signin_credentials`` seam — #211/#102.)
-_TABLE_SEPARATOR = ":"
+# (The signin credential keys moved to the ONE shared ``store._txn.signin_credentials`` seam — #211/#102;
+# a record id's bare key is ``store._txn.record_key`` — R8 F16.)
 _ID_KEY = "id"
 
 # Bound-parameter names for the single-row lookups/writes below.
@@ -454,7 +457,7 @@ class BriefLedger:
         async with self._connect_lock:
             if self._connection is not None:
                 return self._connection  # type: ignore[unreachable]
-            connection = AsyncSurreal(self._url)
+            connection = open_surreal_connection(self._url)
             credentials = signin_credentials(
                 user=self._user, password=self._password
             )
@@ -481,6 +484,7 @@ class BriefLedger:
             )
             return connection
 
+    @ensure_ready_operation
     async def ensure_ready(self) -> None:
         """Connect and apply the brief + briefed schema slice — idempotent.
 
@@ -664,6 +668,11 @@ class BriefLedger:
         )
         try:
             await self._apply([fragment])
+        except SurrealOutcomeUnknownError:
+            # R12 F18 / R13 F-r5-2: the CREATE was SENT and no answer came — it may have COMMITTED, so
+            # releasing the version could hand it out twice. Propagate the unknown outcome untouched; the
+            # version stays minted (a gap at worst, never a duplicate).
+            raise
         except SurrealStoreError:
             # The version was minted but the CREATE never landed — for either of
             # TWO fates this ONE handler catches, since :class:`TxnContentionExhaustedError`
@@ -951,7 +960,7 @@ class BriefLedger:
         head_version = max(int(row[_COL_VERSION]) for row in versions)
         if target is None:
             raise UnknownBriefVersionError(f"brief {name!r} has no v{version} — head is v{head_version}")
-        brief_id = self._bare_id(target[_ID_KEY])
+        brief_id = record_key(target[_ID_KEY])
         already_acked, recorded_via = await self._relate_briefed(
             agent_id=agent_id, brief_id=brief_id, via=via
         )
@@ -1046,7 +1055,7 @@ class BriefLedger:
             )
         )
         acked_brief_ids = {
-            self._bare_id(row[_COL_EDGE_OUT]) for row in edge_rows if _COL_EDGE_OUT in row
+            record_key(row[_COL_EDGE_OUT]) for row in edge_rows if _COL_EDGE_OUT in row
         }
         if not acked_brief_ids:
             return None
@@ -1059,7 +1068,7 @@ class BriefLedger:
         versions = [
             int(row[_COL_VERSION])
             for row in version_rows
-            if self._bare_id(row[_ID_KEY]) in acked_brief_ids
+            if record_key(row[_ID_KEY]) in acked_brief_ids
         ]
         return max(versions) if versions else None
 
@@ -1095,7 +1104,7 @@ class BriefLedger:
         if not versions:
             raise await self._unknown_brief_error(name)
         version_by_brief_id = {
-            self._bare_id(row[_ID_KEY]): int(row[_COL_VERSION]) for row in versions
+            record_key(row[_ID_KEY]): int(row[_COL_VERSION]) for row in versions
         }
         head_version = max(version_by_brief_id.values())
         roster = list(active_agents)
@@ -1153,7 +1162,7 @@ class BriefLedger:
         if not versions:
             return {}
         version_by_brief_id = {
-            self._bare_id(row[_ID_KEY]): int(row[_COL_VERSION]) for row in versions
+            record_key(row[_ID_KEY]): int(row[_COL_VERSION]) for row in versions
         }
         roster = [_BareAgentRef(agent_id) for agent_id in agent_ids]
         return await self._acked_versions_for_roster(
@@ -1205,7 +1214,7 @@ class BriefLedger:
             )
         )
         acked_brief_ids = {
-            self._bare_id(row[_COL_EDGE_OUT]) for row in edge_rows if _COL_EDGE_OUT in row
+            record_key(row[_COL_EDGE_OUT]) for row in edge_rows if _COL_EDGE_OUT in row
         }
         if not acked_brief_ids:
             return []
@@ -1281,10 +1290,10 @@ class BriefLedger:
         for row in edge_rows:
             if _COL_EDGE_IN not in row or _COL_EDGE_OUT not in row:
                 continue
-            brief_version = version_by_brief_id.get(self._bare_id(row[_COL_EDGE_OUT]))
+            brief_version = version_by_brief_id.get(record_key(row[_COL_EDGE_OUT]))
             if brief_version is None:
                 continue  # a briefed edge to a DIFFERENT brief name — irrelevant here
-            agent_id = self._bare_id(row[_COL_EDGE_IN])
+            agent_id = record_key(row[_COL_EDGE_IN])
             current_max = acked_version_by_agent_id.get(agent_id)
             if current_max is None or brief_version > current_max:
                 acked_version_by_agent_id[agent_id] = brief_version
@@ -1312,7 +1321,7 @@ class BriefLedger:
     def _row_to_brief(self, row: dict[str, Any]) -> Brief:
         """Map a raw ``brief`` row into a FRESH :class:`Brief` value object."""
         return Brief(
-            id=self._bare_id(row.get(_ID_KEY)),
+            id=record_key(row.get(_ID_KEY)),
             name=str(row.get(_COL_NAME, "")),
             version=int(row.get(_COL_VERSION, 0)),
             body=str(row.get(_COL_BODY, "")),
@@ -1351,12 +1360,3 @@ class BriefLedger:
         aware = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
         return aware.astimezone(UTC)
 
-    @staticmethod
-    def _bare_id(raw: Any) -> str:
-        """Return the BARE brief id — no ``brief:`` record-table prefix."""
-        if isinstance(raw, RecordID):
-            return str(raw.id)
-        text = str(raw)
-        if _TABLE_SEPARATOR in text:
-            return text.split(_TABLE_SEPARATOR, 1)[1]
-        return text

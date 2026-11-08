@@ -73,7 +73,7 @@ from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, SecretStr
-from surrealdb import AsyncSurreal, RecordID
+from surrealdb import RecordID
 from ulid import ULID
 
 from loremaster.principals import PrincipalStore
@@ -86,7 +86,11 @@ from loremaster.store._txn import (
     _SurrealConnection,
     bootstrap_session,
     compose,
+    ensure_ready_operation,
     execute_transaction,
+    open_surreal_connection,
+    record_key,
+    record_text,
     run_query,
     signin_credentials,
     wrap_store_rejection,
@@ -106,7 +110,7 @@ logger = logging.getLogger(__name__)
 # make that a 100%-broken read). ``keep`` carries ``name option<string>`` (NONE for a
 # ``dm`` keep); ``member_of``'s columns are all present, but an explicit projection is
 # named-in-one-place regardless.
-_KEEP_READ_PROJECTION = "id, keeper, type, name, created_at"
+_KEEP_READ_PROJECTION = "id, <string> id AS id_text, keeper, type, name, created_at"
 _MEMBER_OF_READ_PROJECTION = "in, out, rank, since"
 
 class Keep(BaseModel):
@@ -237,7 +241,7 @@ class KeepStore:
         async with self._connect_lock:
             if self._connection is not None:
                 return self._connection  # type: ignore[unreachable]
-            connection = AsyncSurreal(self._url)
+            connection = open_surreal_connection(self._url)
             credentials = signin_credentials(user=self._user, password=self._password)
             try:
                 await connection.signin(credentials)
@@ -262,6 +266,7 @@ class KeepStore:
             )
             return connection
 
+    @ensure_ready_operation
     async def ensure_ready(self) -> None:
         """Connect and apply the keep schema slice — idempotent, safe to re-run.
 
@@ -356,9 +361,7 @@ class KeepStore:
         principal = await self._principals.get_by_email(email)
         if principal is None:
             raise KeepStoreError(f"no principal with email {email!r}")
-        record_id = principal.id
-        _, separator, id_part = record_id.partition(":")
-        return id_part if separator else record_id
+        return record_key(principal.id)
 
     @staticmethod
     def _to_aware_utc(value: Any) -> datetime | None:
@@ -372,15 +375,20 @@ class KeepStore:
 
     # -- row mappers (keep-specific, mirroring PrincipalStore._row_to_principal) ---
 
+    #: The bare key of a served keep id (``keep:xyz`` / ``keep:⟨xyz⟩`` → ``xyz``), for binding through
+    #: ``type::record('keep', $id)`` (store law §2/§4); a bare id passes through. THE shared rule,
+    #: :func:`~loremaster.store._txn.record_key` (R8 F16) — kept under this name for its callers.
+    _record_id_part = staticmethod(record_key)
+
     @staticmethod
-    def _record_id_part(record_id: str) -> str:
-        """The id portion of a ``str(RecordID)`` (``keep:xyz`` → ``xyz``), for binding
-        through ``type::record('keep', $id)`` (store law §2/§4). A bare id (no ``:``)
-        passes through unchanged — mirrors ``_resolve_principal_id``'s partition and the
-        :meth:`~loremaster.principal_keys.PrincipalKeyStore._record_id_part` precedent.
+    def _served_keep_id(row: dict[str, Any]) -> str:
+        """A keep row's served id: the ENGINE's text (``<string> id``, projected as ``id_text`` by
+        :data:`_KEEP_READ_PROJECTION`) — the form persisted keep refs are compared with (R8 F15), which
+        brackets a non-word key where ``table:key`` would not. A row read without the projection falls
+        back to the parts' ``table:key``.
         """
-        _, separator, id_part = record_id.partition(":")
-        return id_part if separator else record_id
+        id_text = row.get("id_text")
+        return str(id_text) if id_text is not None else record_text(row["id"])
 
     def _row_to_keep(self, row: dict[str, Any]) -> Keep:
         """Map a raw ``keep`` row into a FRESH :class:`Keep` value object.
@@ -396,8 +404,8 @@ class KeepStore:
         if created_at is None:
             raise KeepStoreError("a keep row is missing its required created_at stamp")
         return Keep(
-            id=str(row["id"]),
-            keeper_id=self._record_id_part(str(row["keeper"])),
+            id=self._served_keep_id(row),
+            keeper_id=record_key(row["keeper"]),
             type=str(row["type"]),
             name=PrincipalStore._optional_str(row.get("name")),
             created_at=created_at,
@@ -414,8 +422,8 @@ class KeepStore:
         if since is None:
             raise KeepStoreError("a member_of row is missing its required since stamp")
         return Membership(
-            keep_id=self._record_id_part(str(row["out"])),
-            member_id=self._record_id_part(str(row["in"])),
+            keep_id=record_key(row["out"]),
+            member_id=record_key(row["in"]),
             rank=str(row["rank"]),
             since=since,
         )
@@ -1028,4 +1036,4 @@ class KeepStore:
             )
         # Pure mapping (no store call): each member_of row's ``out`` is the keep RecordID;
         # reduce it to its BARE id (Fork F — the resolver adds the ``keep:`` prefix).
-        return [self._record_id_part(str(row["out"])) for row in rows]
+        return [record_key(row["out"]) for row in rows]

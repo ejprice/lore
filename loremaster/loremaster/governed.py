@@ -51,6 +51,8 @@ from loremaster.store._txn import (
     TxnGovernedConflictError,
     compose,
     execute_read_transaction,
+    record_key,
+    record_key_or_none,
     run_query,
 )
 from lorerunes import pdp
@@ -335,7 +337,7 @@ async def resolve_subject(
 
     # THE one production Subject constructor (R-a.2 — an AST pin allowlists this single site).
     return pdp.Subject(
-        principal_id=_bare(principal.id),
+        principal_id=record_key(principal.id),
         agent_id=owner_agent,
         role=principal.role,
         visible_keep_ids=frozenset(visible_keep_ids),
@@ -589,8 +591,8 @@ async def authorize_guarded(
         pre_read_row = row
         resource = pdp.Resource(
             table=table,
-            owner_principal=_bare_or_none(row.get("owner_principal")),
-            owner_agent=_bare_or_none(row.get("owner_agent")),
+            owner_principal=record_key_or_none(row.get("owner_principal")),
+            owner_agent=record_key_or_none(row.get("owner_agent")),
             scope=row.get("scope"),
         )
         decision = pdp.authorize(subject, action, resource)
@@ -684,17 +686,6 @@ async def guarded_write(
     # The in-store THROW fires on a zero-match, so reaching here means the single addressed record
     # was matched (0-or-1 by construction of ``type::record``): a successful guarded write is one row.
     return GuardedWriteResult(row_count=1, audited=plan.requires_audit)
-
-
-def _bare(record_id: Any) -> str:
-    """The bare id of a ``table:id`` record id string / RecordID (its ``id`` component)."""
-    text = str(record_id)
-    return text.split(":", 1)[-1] if ":" in text else text
-
-
-def _bare_or_none(value: Any) -> str | None:
-    """The bare id of an owner link, or ``None`` for a NONE (option<>) column (store-ref §2)."""
-    return None if value is None else _bare(value)
 
 
 #: The field a ``SELECT count() … GROUP ALL`` answer carries its total under (store-ref §5.1).

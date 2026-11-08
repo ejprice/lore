@@ -68,6 +68,7 @@ from loremaster.calibration.counting import (
     AsyncSleep,
     TerminalCountError,
 )
+from loremaster.store._txn import SurrealOutcomeUnknownError
 from loresigil import backoff
 
 logger = logging.getLogger(__name__)
@@ -549,6 +550,14 @@ class CalibrationEngine:
         try:
             await self._report_drift(live_total, baseline_total, ratio_shift, served)
             return None
+        except SurrealOutcomeUnknownError as exc:
+            # R12 F18: the filing was SENT and no answer came — the finding may already exist, so the note
+            # must never say "failed" (which invites a manual re-file); it names the outcome and says verify.
+            logger.error("calibration drift finding outcome unknown", exc_info=True)
+            return (
+                f"drift finding outcome unknown (the filing was sent; no answer came) — verify with "
+                f"lore_findings before re-filing: {exc}"
+            )
         except Exception as exc:  # noqa: BLE001 — filing is best-effort; never crash the probe
             logger.error("calibration drift finding could not be filed", exc_info=True)
             return f"drift finding filing failed: {exc}"

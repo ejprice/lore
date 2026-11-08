@@ -37,7 +37,7 @@ import logging
 from typing import Any
 
 from pydantic import SecretStr
-from surrealdb import AsyncSurreal, RecordID
+from surrealdb import RecordID
 from ulid import ULID
 
 from loremaster.store._txn import (
@@ -48,7 +48,10 @@ from loremaster.store._txn import (
     _SurrealConnection,
     bootstrap_session,
     compose,
+    ensure_ready_operation,
     execute_transaction,
+    open_surreal_connection,
+    record_text,
     signin_credentials,
     wrap_store_rejection,
 )
@@ -148,7 +151,7 @@ class AuditStore:
         async with self._connect_lock:
             if self._connection is not None:
                 return self._connection  # type: ignore[unreachable]
-            connection = AsyncSurreal(self._url)
+            connection = open_surreal_connection(self._url)
             credentials = signin_credentials(user=self._user, password=self._password)
             try:
                 await connection.signin(credentials)
@@ -173,6 +176,7 @@ class AuditStore:
             )
             return connection
 
+    @ensure_ready_operation
     async def ensure_ready(self) -> None:
         """Connect and apply the audit schema slice — idempotent, safe to re-run.
 
@@ -387,4 +391,4 @@ class AuditStore:
                 drop=self._drop_connection,
                 url=self._url,
             )
-        return str(RecordID(AUDIT_TABLE, record_id))
+        return record_text(RecordID(AUDIT_TABLE, record_id))

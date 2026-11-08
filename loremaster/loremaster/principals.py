@@ -94,7 +94,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, SecretStr
-from surrealdb import AsyncSurreal
 
 from loremaster.config import (
     LoreConfig,
@@ -113,7 +112,11 @@ from loremaster.store._txn import (
     TxnContentionExhaustedError,
     _SurrealConnection,
     bootstrap_session,
+    ensure_ready_operation,
     execute_transaction,
+    open_surreal_connection,
+    record_key,
+    record_text,
     run_query,
     signin_credentials,
     wrap_store_rejection,
@@ -350,7 +353,7 @@ class PrincipalStore:
                 # A concurrent caller connected while this one waited; mypy can't
                 # model the cross-coroutine mutation across the ``await`` above.
                 return self._connection  # type: ignore[unreachable]
-            connection = AsyncSurreal(self._url)
+            connection = open_surreal_connection(self._url)
             credentials = signin_credentials(user=self._user, password=self._password)
             try:
                 await connection.signin(credentials)
@@ -377,6 +380,7 @@ class PrincipalStore:
             )
             return connection
 
+    @ensure_ready_operation
     async def ensure_ready(self) -> None:
         """Connect and apply the principal schema slice — idempotent, safe to re-run.
 
@@ -800,7 +804,7 @@ class PrincipalStore:
             principal = await self.get_by_email(email)
             if principal is None:
                 raise PrincipalNotFoundError(f"no principal with email {email!r}")
-            principal_id_part = principal.id.partition(":")[2] or principal.id
+            principal_id_part = record_key(principal.id)
             # ⚠ §FR-4 REFUSE-WHILE-KEEPING (BEFORE any DELETE, so a refusal removes NOTHING).
             # A keeper cannot be hard-deleted while they keep — a ``keep.keeper`` FIELD LINK
             # does NOT auto-clean (store law §2), so the delete would dangle it. Read the
@@ -817,7 +821,7 @@ class PrincipalStore:
                 noun="kept-keep lookup before a principal delete",
             )
             if kept_keep_rows:
-                kept_keep_ids = [str(row[_COL_ID]) for row in kept_keep_rows]
+                kept_keep_ids = [record_text(row[_COL_ID]) for row in kept_keep_rows]
                 raise PrincipalHasKeepsError(
                     f"cannot delete principal {email!r}: they keep {len(kept_keep_ids)} "
                     f"keep(s) ({', '.join(kept_keep_ids)}) — reassign the keeper "
@@ -900,7 +904,7 @@ class PrincipalStore:
         tz-aware UTC (the fleet-comparable anchor).
         """
         return Principal(
-            id=str(row[_COL_ID]),
+            id=record_text(row[_COL_ID]),
             email=str(row[_COL_EMAIL]),
             subject=self._optional_str(row.get(_COL_SUBJECT)),
             display_name=self._optional_str(row.get(_COL_DISPLAY_NAME)),
@@ -1252,7 +1256,7 @@ async def _measured_counts(
 
     agent = preconditions.agent_facts_read
     message = preconditions.message_facts_read
-    owners = {str(owner) for _row_id, owner in preconditions.owned_unscoped}
+    owners = {record_text(owner) for _row_id, owner in preconditions.owned_unscoped}
     classification: OwnerClassification | None = "empty" if agent else None
     total_principals: int | None = None
     admin_principals: int | None = None
@@ -1524,7 +1528,7 @@ async def _migrate_memory_scope(
     project_keep = await keep_store.get_or_create_keyed(
         key=PROJECT_KEEP_KEY, type="project", keeper_email=operator.email, name="lore"
     )
-    project_scope = keep_scope(project_keep.id.partition(":")[2] or project_keep.id)
+    project_scope = keep_scope(record_key(project_keep.id))
 
     unmigrated = await _scope_count(store, MEMORY_TABLE, none=True)
     already = await _scope_count(store, MEMORY_TABLE, none=False)
@@ -1805,7 +1809,7 @@ def _id_sample(ids: tuple[Any, ...] | list[Any]) -> str:
     STORED id through THE shared :func:`~loremaster.sanitise.sanitise_line` (CA-1 / #484: a stored id is
     free text — no newline or control character reaches the served line), and the number stated is the
     number ACTUALLY shown."""
-    shown = [sanitise_line(str(value)) for value in ids[:_REFUSAL_ID_SAMPLE_SIZE]]
+    shown = [sanitise_line(record_key(value)) for value in ids[:_REFUSAL_ID_SAMPLE_SIZE]]
     return f"First {len(shown)} of {len(ids)} ids shown: {', '.join(shown)}."
 
 
@@ -1823,8 +1827,14 @@ def _owned_unscoped_part(
             f"BE the operator. {sample}"
         )
     operator_id = operator.id if operator is not None else None
-    others = sorted({str(owner) for _row_id, owner in owned_unscoped if str(owner) != operator_id})
-    named = [sanitise_line(owner) for owner in others[:_REFUSAL_ID_SAMPLE_SIZE]]
+    # Compared through ONE text form (record_text, the form ``Principal.id`` carries — the C9 class: one
+    # record compared through two text forms), SERVED as the bare key (B-2: the sentence names the table).
+    bare_by_text = {
+        record_text(owner): record_key(owner)
+        for _row_id, owner in owned_unscoped
+        if record_text(owner) != operator_id
+    }
+    named = [sanitise_line(bare_by_text[text]) for text in sorted(bare_by_text)[:_REFUSAL_ID_SAMPLE_SIZE]]
     if classification == "operator":
         owner_sentence = (
             "They are owned by the operator — registered by a pkt-62–63b image; see amendment-1 E3."
@@ -1895,7 +1905,7 @@ def _message_problem_parts(
     if counts.dangling_sender_messages:
         dangling = preconditions.dangling_senders
         shown = [
-            f"{sanitise_line(str(message_id))} (sender {sanitise_line(str(sender))})"
+            f"{sanitise_line(record_text(message_id))} (sender {sanitise_line(record_text(sender))})"
             for message_id, sender in dangling[:_REFUSAL_ID_SAMPLE_SIZE]
         ]
         parts.append(
@@ -2193,8 +2203,8 @@ async def _migrate_agent_owner(
     project_keep = await keep_store.get_or_create_keyed(
         key=PROJECT_KEEP_KEY, type="project", keeper_email=operator.email, name="lore"
     )
-    project_scope = keep_scope(project_keep.id.partition(":")[2] or project_keep.id)
-    operator_id = operator.id.partition(":")[2] or operator.id
+    project_scope = keep_scope(record_key(project_keep.id))
+    operator_id = record_key(operator.id)
     # ONE statement, three columns, scope-keyed (ruling §6) — built at the top of this leg (above).
     with governed_exempt("migrate-governed", statement=backfill_statement):
         stamped = await run_query(
@@ -2289,7 +2299,7 @@ async def _migrate_message_owner(  # noqa: PLR0913 - the verb's ONE derived answ
     project_keep = await keep_store.get_or_create_keyed(
         key=PROJECT_KEEP_KEY, type="project", keeper_email=operator.email, name="lore"
     )
-    project_scope = keep_scope(project_keep.id.partition(":")[2] or project_keep.id)
+    project_scope = keep_scope(record_key(project_keep.id))
 
     unmigrated = await _scope_count(store, MESSAGE_TABLE, none=True)
     already = await _scope_count(store, MESSAGE_TABLE, none=False)

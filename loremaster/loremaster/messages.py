@@ -74,7 +74,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
-from surrealdb import AsyncSurreal, RecordID
+from surrealdb import RecordID
 from ulid import ULID
 
 from loremaster import governed
@@ -97,7 +97,10 @@ from loremaster.store._txn import (
     _SurrealConnection,
     bootstrap_session,
     compose,
+    ensure_ready_operation,
     execute_transaction,
+    open_surreal_connection,
+    record_key,
     run_query,
     signin_credentials,
 )
@@ -161,9 +164,8 @@ _ACK_OUTCOME_NOT_ADDRESSED: AckOutcome = "not_addressed"
 # ordinary touch, so ``question`` is keyed on the VALUE, never on presence.
 _STATUS_INPUT_REQUIRED = "input_required"
 
-# The record-id table separator. (The signin credential keys moved to the ONE
-# shared ``store._txn.signin_credentials`` seam — #211/#102.)
-_TABLE_SEPARATOR = ":"
+# (The signin credential keys moved to the ONE shared ``store._txn.signin_credentials`` seam — #211/#102;
+# a record id's bare key is ``store._txn.record_key`` — R8 F16.)
 _ID_KEY = "id"
 
 
@@ -555,7 +557,7 @@ class MessageLedger:
         async with self._connect_lock:
             if self._connection is not None:
                 return self._connection  # type: ignore[unreachable]
-            connection = AsyncSurreal(self._url)
+            connection = open_surreal_connection(self._url)
             credentials = signin_credentials(
                 user=self._user, password=self._password
             )
@@ -582,6 +584,7 @@ class MessageLedger:
             )
             return connection
 
+    @ensure_ready_operation
     async def ensure_ready(self) -> None:
         """Connect and apply the message + to + message_seq schema slice — idempotent.
 
@@ -1185,7 +1188,7 @@ class MessageLedger:
         stamped_seqs: list[int] = []
         if not peek and window:
             seq_by_message: dict[str, int] = {
-                self._bare_id(row["message_id"]): int(row["seq"]) for row in window
+                record_key(row["message_id"]): int(row["seq"]) for row in window
             }
             window_records = [RecordID(MESSAGE_TABLE, mid) for mid in seq_by_message]
             # stamped_seqs = the ACTUAL stamp (DD-4 Q5): read the edges this UPDATE's
@@ -1204,9 +1207,9 @@ class MessageLedger:
                 )
             )
             stamped_seqs = sorted(
-                seq_by_message[self._bare_id(edge.get("in"))]
+                seq_by_message[record_key(edge.get("in"))]
                 for edge in stamped_edges
-                if self._bare_id(edge.get("in")) in seq_by_message
+                if record_key(edge.get("in")) in seq_by_message
             )
         return MessageDrainResult(
             entries=entries,
@@ -1265,7 +1268,7 @@ class MessageLedger:
         """Map a raw drain row into a FRESH :class:`InboxEntry` value object."""
         return InboxEntry(
             seq=int(row["seq"]),
-            message_id=self._bare_id(row.get("message_id")),
+            message_id=record_key(row.get("message_id")),
             grade=cast(MessageGrade, row.get("grade")),
             sender_name=str(row.get("sender_name") or ""),
             thread=str(row.get("thread") or ""),
@@ -1299,7 +1302,7 @@ class MessageLedger:
         if subject is None or not rows:
             return rows
         window_records = [
-            RecordID(MESSAGE_TABLE, self._bare_id(row.get("message_id"))) for row in rows
+            RecordID(MESSAGE_TABLE, record_key(row.get("message_id"))) for row in rows
         ]
         read_fragment, read_params = governed.read_filter(subject, MESSAGE_TABLE)
         visible_rows = self._as_rows(
@@ -1310,9 +1313,9 @@ class MessageLedger:
             )
         )
         visible = {
-            self._bare_id(row[_ID_KEY]) for row in visible_rows if row.get(_ID_KEY) is not None
+            record_key(row[_ID_KEY]) for row in visible_rows if row.get(_ID_KEY) is not None
         }
-        return [row for row in rows if self._bare_id(row.get("message_id")) in visible]
+        return [row for row in rows if record_key(row.get("message_id")) in visible]
 
     # -- ack / awaiting_answer (packet 03a-2 — the CONSUME path) ------------
 
@@ -1465,7 +1468,7 @@ class MessageLedger:
             )
         )
         return {
-            int(row["seq"]): self._bare_id(row[_ID_KEY])
+            int(row["seq"]): record_key(row[_ID_KEY])
             for row in rows
             if row.get("seq") is not None and row.get(_ID_KEY) is not None
         }
@@ -1490,7 +1493,7 @@ class MessageLedger:
             if row.get(id_key) is None:
                 continue
             stamp = row.get("acked_at")
-            indexed[self._bare_id(row[id_key])] = (
+            indexed[record_key(row[id_key])] = (
                 self._require_aware_utc(stamp) if require_stamp else self._to_aware_utc(stamp)
             )
         return indexed
@@ -1839,12 +1842,3 @@ class MessageLedger:
         aware = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
         return aware.astimezone(UTC)
 
-    @staticmethod
-    def _bare_id(raw: Any) -> str:
-        """Return the BARE id — no table prefix — from a ``RecordID`` or string."""
-        if isinstance(raw, RecordID):
-            return str(raw.id)
-        text = str(raw)
-        if _TABLE_SEPARATOR in text:
-            return text.split(_TABLE_SEPARATOR, 1)[1]
-        return text

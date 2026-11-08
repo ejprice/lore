@@ -89,7 +89,7 @@ from uuid import uuid4
 
 import networkx
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
-from surrealdb import AsyncSurreal, RecordID
+from surrealdb import RecordID
 
 from loremaster.agent_existence import (
     UnknownRowError,
@@ -106,8 +106,11 @@ from loremaster.store._txn import (
     _SurrealConnection,
     bootstrap_session,
     compose,
+    ensure_ready_operation,
     execute_read_transaction,
     execute_transaction,
+    open_surreal_connection,
+    record_key,
     run_query,
     signin_credentials,
 )
@@ -199,9 +202,8 @@ _PROV_SUCCESSOR = "successor"
 _ACTION_TRANSITION = "transition"
 _ACTION_SUPERSEDE = "supersede"
 
-# The record-id table separator. (The signin credential keys moved to the ONE
-# shared ``store._txn.signin_credentials`` seam — #211/#102.)
-_TABLE_SEPARATOR = ":"
+# (The signin credential keys moved to the ONE shared ``store._txn.signin_credentials`` seam — #211/#102;
+# a record id's bare key is ``store._txn.record_key`` — R8 F16.)
 _ID_KEY = "id"
 
 # The atomic-claim transaction's bound-parameter names (the ``clm_`` prefix
@@ -832,7 +834,7 @@ class TaskLedger:
                 # A concurrent caller connected while this one waited; mypy can't
                 # model the cross-coroutine mutation across the ``await`` above.
                 return self._connection  # type: ignore[unreachable]
-            connection = AsyncSurreal(self._url)
+            connection = open_surreal_connection(self._url)
             credentials = signin_credentials(
                 user=self._user, password=self._password
             )
@@ -861,6 +863,7 @@ class TaskLedger:
             )
             return connection
 
+    @ensure_ready_operation
     async def ensure_ready(self) -> None:
         """Connect and apply the task schema slice — idempotent and safe to re-run.
 
@@ -1324,7 +1327,7 @@ class TaskLedger:
         if blocked is None:
             return candidates
         status_by_id = {
-            self._bare_id(row.get(_ID_KEY)): str(row.get(_COL_STATUS))
+            record_key(row.get(_ID_KEY)): str(row.get(_COL_STATUS))
             for row in self._as_rows(payloads[1] if len(payloads) > 1 else [])
         }
         selected = [
@@ -2602,7 +2605,7 @@ class TaskLedger:
         decode back to ``None``.
         """
         return Task(
-            id=self._bare_id(row.get(_ID_KEY)),
+            id=record_key(row.get(_ID_KEY)),
             subject=str(row.get(_COL_SUBJECT, "")),
             description=str(row.get(_COL_DESCRIPTION, "")),
             status=cast(TaskStatus, row.get(_COL_STATUS)),
@@ -2728,17 +2731,3 @@ class TaskLedger:
             return None
         return aware + timedelta(microseconds=1)
 
-    @staticmethod
-    def _bare_id(raw: Any) -> str:
-        """Return the BARE task id — no ``task:`` record-table prefix.
-
-        The API speaks bare ``str`` everywhere because the SDK's ``RecordID`` is
-        unhashable (it must work as a dict key / set member); this reduces a
-        ``RecordID`` (or a ``table:id`` string) to just its opaque id component.
-        """
-        if isinstance(raw, RecordID):
-            return str(raw.id)
-        text = str(raw)
-        if _TABLE_SEPARATOR in text:
-            return text.split(_TABLE_SEPARATOR, 1)[1]
-        return text

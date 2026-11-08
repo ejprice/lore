@@ -78,7 +78,7 @@ from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, SecretStr
-from surrealdb import AsyncSurreal, InvalidRecordIdError, RecordID
+from surrealdb import InvalidRecordIdError, RecordID
 
 from loremaster.index.surreal_manifest import STATE_INDEXED, SurrealManifest
 
@@ -95,6 +95,9 @@ from loremaster.store._txn import (
     _CONNECTION_ERRORS,
     TxnContentionExhaustedError,
     bootstrap_session,
+    ensure_ready_operation,
+    open_surreal_connection,
+    record_text,
     run_query,
     signin_credentials,
 )
@@ -533,7 +536,7 @@ class DiffEngine:
         async with self._connect_lock:
             if self._connection is not None:
                 return self._connection  # type: ignore[unreachable]
-            connection = AsyncSurreal(self._url)
+            connection = open_surreal_connection(self._url)
             credentials = signin_credentials(
                 user=self._user, password=self._password
             )
@@ -560,6 +563,7 @@ class DiffEngine:
             )
             return connection
 
+    @ensure_ready_operation
     async def ensure_ready(self) -> None:
         """Connect this engine's OWN connection — idempotent.
 
@@ -692,7 +696,7 @@ class DiffEngine:
         """
         created_at = row["created_at"]
         return SnapshotSummary(
-            id=str(row["id"]),
+            id=record_text(row["id"]),
             created_at=(
                 created_at.isoformat() if isinstance(created_at, datetime) else str(created_at)
             ),

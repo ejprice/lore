@@ -87,7 +87,6 @@ from typing import Any, Literal, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
-from surrealdb import AsyncSurreal, RecordID
 
 from loremaster.render import render_attributed
 from loremaster.store._txn import (
@@ -99,7 +98,11 @@ from loremaster.store._txn import (
     _SurrealConnection,
     bootstrap_session,
     compose,
+    ensure_ready_operation,
     execute_transaction,
+    open_surreal_connection,
+    record_key,
+    record_key_or_none,
     run_query,
     signin_credentials,
 )
@@ -192,9 +195,7 @@ _ACTION_TRANSITION = "transition"
 # ``-> status`` arrow from it (the #104 served-English-contradicts-data class).
 _ACTION_ANNOTATE = "annotate"
 
-# The record-id table separator and the
-# row id key.
-_TABLE_SEPARATOR = ":"
+# The row id key (a record id's bare key is ``store._txn.record_key`` — R8 F16).
 _ID_KEY = "id"
 
 # The report transaction's bound-parameter names (the ``rep_`` prefix namespaces the
@@ -449,7 +450,7 @@ class FindingLedger:
                 # A concurrent caller connected while this one waited; mypy can't
                 # model the cross-coroutine mutation across the ``await`` above.
                 return self._connection  # type: ignore[unreachable]
-            connection = AsyncSurreal(self._url)
+            connection = open_surreal_connection(self._url)
             credentials = signin_credentials(
                 user=self._user, password=self._password
             )
@@ -478,6 +479,7 @@ class FindingLedger:
             )
             return connection
 
+    @ensure_ready_operation
     async def ensure_ready(self) -> None:
         """Connect and apply the finding schema slice — idempotent and safe to re-run.
 
@@ -642,7 +644,7 @@ class FindingLedger:
         supersedes_id: str | None = None
         if supersedes is not None:
             target = await self._resolve_or_raise(supersedes)
-            supersedes_id = self._bare_id(target.get(_ID_KEY))
+            supersedes_id = record_key(target.get(_ID_KEY))
 
         finding_id = uuid4().hex  # OPAQUE, non-sequential; never content-derived.
         now = datetime.now(UTC)
@@ -873,7 +875,7 @@ class FindingLedger:
             FindingChainCycleError: The supersedes chain contains a cycle.
         """
         row = await self._resolve_or_raise(id_or_number)
-        current_id = self._bare_id(row.get(_ID_KEY))
+        current_id = record_key(row.get(_ID_KEY))
         visited = {current_id}
         # The numbers of every sibling successor the deterministic walk skipped —
         # a set (de-duped) surfaced sorted on the returned ChainHead.
@@ -891,7 +893,7 @@ class FindingLedger:
             walked = successors[0]
             for sibling in successors[1:]:
                 fork_successor_numbers.add(int(sibling[_COL_NUMBER]))
-            successor_id = self._bare_id(walked.get(_ID_KEY))
+            successor_id = record_key(walked.get(_ID_KEY))
             if successor_id in visited:
                 raise FindingChainCycleError(
                     f"supersedes chain from finding {current_id!r} contains a cycle "
@@ -901,7 +903,7 @@ class FindingLedger:
             row = walked
             current_id = successor_id
         raise FindingChainCycleError(
-            f"supersedes chain from finding {self._bare_id(row.get(_ID_KEY))!r} exceeded "
+            f"supersedes chain from finding {record_key(row.get(_ID_KEY))!r} exceeded "
             f"{_MAX_CHAIN_HOPS} hops without a head — the finding data is corrupt"
         )
 
@@ -1010,7 +1012,7 @@ class FindingLedger:
                 f"got {note!r}"
             )
         row = await self._resolve_or_raise(id_or_number)
-        finding_id = self._bare_id(row.get(_ID_KEY))
+        finding_id = record_key(row.get(_ID_KEY))
         now = datetime.now(UTC)
         event: dict[str, Any] = {
             _PROV_ACTOR: actor,
@@ -1061,7 +1063,7 @@ class FindingLedger:
         the same target).
         """
         row = await self._resolve_or_raise(id_or_number)
-        finding_id = self._bare_id(row.get(_ID_KEY))
+        finding_id = record_key(row.get(_ID_KEY))
         current = str(row.get(_COL_STATUS))
         self._validate_transition(finding_id, current, target)
 
@@ -1285,7 +1287,7 @@ class FindingLedger:
         fleet-comparable anchor).
         """
         return Finding(
-            id=self._bare_id(row.get(_ID_KEY)),
+            id=record_key(row.get(_ID_KEY)),
             number=int(row.get(_COL_NUMBER, 0)),
             kind=str(row.get(_COL_KIND, "")),
             status=cast(FindingStatus, row.get(_COL_STATUS)),
@@ -1295,7 +1297,7 @@ class FindingLedger:
             category=str(row.get(_COL_CATEGORY, "")),
             created_by=str(row.get(_COL_CREATED_BY, "")),
             created_at=self._require_aware_utc(row.get(_COL_CREATED_AT)),
-            supersedes=self._bare_id_or_none(row.get(_COL_SUPERSEDES)),
+            supersedes=record_key_or_none(row.get(_COL_SUPERSEDES)),
             provenance=dict(row.get(_COL_PROVENANCE) or {}),
         )
 
@@ -1361,28 +1363,4 @@ class FindingLedger:
         aware = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
         return aware.astimezone(UTC)
 
-    @classmethod
-    def _bare_id_or_none(cls, raw: Any) -> str | None:
-        """Reduce a ``supersedes`` record link to its bare opaque id, or ``None``.
 
-        An unset ``option<record<finding>>`` column decodes to ``None`` (no link); a
-        present link decodes to its bare id component.
-        """
-        if raw is None:
-            return None
-        return cls._bare_id(raw)
-
-    @staticmethod
-    def _bare_id(raw: Any) -> str:
-        """Return the BARE finding id — no ``finding:`` record-table prefix.
-
-        The API speaks bare ``str`` everywhere because the SDK's ``RecordID`` is
-        unhashable (it must work as a dict key / set member); this reduces a
-        ``RecordID`` (or a ``table:id`` string) to just its opaque id component.
-        """
-        if isinstance(raw, RecordID):
-            return str(raw.id)
-        text = str(raw)
-        if _TABLE_SEPARATOR in text:
-            return text.split(_TABLE_SEPARATOR, 1)[1]
-        return text

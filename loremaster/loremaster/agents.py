@@ -83,7 +83,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from fastmcp.server.auth import AccessToken
 from pydantic import BaseModel, ConfigDict, SecretStr
-from surrealdb import AsyncSurreal, RecordID
+from surrealdb import RecordID
 
 from loremaster.index.records import sha512_hex
 from loremaster.principals import _SECRET_ENTROPY_BYTES
@@ -96,7 +96,10 @@ from loremaster.store._txn import (
     TxnUniqueViolationError,
     _SurrealConnection,
     bootstrap_session,
+    ensure_ready_operation,
     execute_transaction,
+    open_surreal_connection,
+    record_key,
     run_query,
     signin_credentials,
 )
@@ -235,9 +238,8 @@ _COL_CAPABILITY_EXPIRES_AT = "capability_expires_at"
 _COL_OWNER_AGENT = "owner_agent"
 _COL_SCOPE = "scope"
 
-# The record-id table separator. (The signin credential keys moved to the ONE
-# shared ``store._txn.signin_credentials`` seam — #211/#102.)
-_TABLE_SEPARATOR = ":"
+# (The signin credential keys moved to the ONE shared ``store._txn.signin_credentials`` seam — #211/#102;
+# a record id's bare key is ``store._txn.record_key`` — R8 F16.)
 _ID_KEY = "id"
 
 # Bound-parameter names for the single-row lookups/writes below.
@@ -517,7 +519,7 @@ class AgentRegistry:
                 # can't model the cross-coroutine mutation across the
                 # ``await`` above.
                 return self._connection  # type: ignore[unreachable]
-            connection = AsyncSurreal(self._url)
+            connection = open_surreal_connection(self._url)
             credentials = signin_credentials(
                 user=self._user, password=self._password
             )
@@ -544,6 +546,7 @@ class AgentRegistry:
             )
             return connection
 
+    @ensure_ready_operation
     async def ensure_ready(self) -> None:
         """Connect and apply the agent schema slice — idempotent and safe to re-run.
 
@@ -1132,8 +1135,8 @@ class AgentRegistry:
             return None
         # The binding proved ``owner_principal`` is non-NONE (a NONE owner denies at cond. 3),
         # so the projected owner id is present — the SECOND half #425 removes the second read for.
-        owner_principal_id = self._bare_id(row.get(_OWNER_ID_ALIAS))
-        return self._bare_id(row.get(_ID_KEY)), owner_principal_id
+        owner_principal_id = record_key(row.get(_OWNER_ID_ALIAS))
+        return record_key(row.get(_ID_KEY)), owner_principal_id
 
     async def verify_capability(self, presented: str, access_token: AccessToken) -> str | None:
         """Verify a presented ``<name>:<secret>`` capability under a transport token.
@@ -1441,7 +1444,7 @@ class AgentRegistry:
         UTC, and the option columns decode back to ``None``.
         """
         return Agent(
-            id=self._bare_id(row.get(_ID_KEY)),
+            id=record_key(row.get(_ID_KEY)),
             name=str(row.get(_COL_NAME, "")),
             session=str(row.get(_COL_SESSION, "")),
             role=str(row.get(_COL_ROLE, "")),
@@ -1500,16 +1503,3 @@ class AgentRegistry:
         aware = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
         return aware.astimezone(UTC)
 
-    @staticmethod
-    def _bare_id(raw: Any) -> str:
-        """Return the BARE agent id — no ``agent:`` record-table prefix.
-
-        Mirrors :meth:`~loremaster.tasks.TaskLedger._bare_id`: the API speaks
-        bare ``str`` everywhere because the SDK's ``RecordID`` is unhashable.
-        """
-        if isinstance(raw, RecordID):
-            return str(raw.id)
-        text = str(raw)
-        if _TABLE_SEPARATOR in text:
-            return text.split(_TABLE_SEPARATOR, 1)[1]
-        return text
