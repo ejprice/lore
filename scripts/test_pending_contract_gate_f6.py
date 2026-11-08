@@ -874,3 +874,84 @@ def test_D2_the_wave_selector_reaches_the_run_as_its_SELECTION() -> None:
     full = _run_selected_gates(_JunitRunner(), manifest, ["pytest"], [])  # type: ignore[arg-type]
     assert scoped["pytest"].selection == (_CLASS_ID,), scoped["pytest"]  # type: ignore[union-attr]
     assert full["pytest"].selection == (), full["pytest"]  # type: ignore[union-attr]
+
+
+# ========================================================================================================
+# F6 delta 3 (R39, operator-granted): adversary round 5's RE-GRADE probes, transcribed (adversary-sdk3-r5,
+# docs/plans/v2/receipts/2026-11-08-sdk3/ADVERSARY5.md §RE-GRADE; probe file
+# adv5/b2/scripts/test_adv5_d2_probe.py). CLASS: the scope walk answers ONE question — is a NOT-collected id's
+# absence evidence? It never touches an id the run COLLECTED (that id's outcome adjudicates it — R31's class)
+# and never the partition (D3, ruled YES). STATED BOUND (MP6-5, a named residual, no pin): a registered file
+# pytest skipped at MODULE level renders the pytest leg GREEN with no KEPT note for its listed ids — the
+# rider's "the render says so" at file granularity.
+# ========================================================================================================
+
+#: Selector shapes ``wave_gate`` forwards and pytest accepts but the prefix walk does not recognise.
+_UNRECOGNISED_SELECTORS = {
+    "directory": "loremaster/tests",
+    "directory_slash": "loremaster/tests/",
+    "dot_slash_file": f"./{_NODE_FILE}",
+    "absolute_file": f"/abs/checkout/{_NODE_FILE}",
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_UNRECOGNISED_SELECTORS))
+def test_D2_an_UNRECOGNISED_selector_never_hides_an_unlisted_red(tmp_path: Path, shape: str) -> None:
+    """MP6-1 (adversary 5 Y2, a STOP): scope never touches the PARTITION — a directory ``--wave`` whose run
+    carries an unlisted red stays RED_ORPHANED (``wave_gate``: "a scoped RED_ORPHANED still fails", #344)."""
+    gate = _gate(tmp_path, [_LISTED_CLASS_NODE])
+    currency = _scoped_currency(
+        tmp_path,
+        gate,
+        [(_LISTED_CLASS_NODE, True), (_UNLISTED_NODE, True)],
+        selection=(_UNRECOGNISED_SELECTORS[shape],),
+    )
+    assert currency.verdict == "RED_ORPHANED" and any(
+        "test_a_new_regression" in orphan for orphan in currency.orphans
+    ), (
+        f"[{shape}] an unlisted red was hidden by the selector's spelling: {currency.verdict} "
+        f"{currency.orphans}"
+    )
+
+
+@pytest.mark.parametrize("shape", sorted(_UNRECOGNISED_SELECTORS))
+def test_D2_an_UNRECOGNISED_selector_still_judges_every_COLLECTED_id(tmp_path: Path, shape: str) -> None:
+    """MP6-2 (adversary 5, D3 ruled YES): a COLLECTED listed id that passed is discharged whatever the
+    selector's spelling — "not in scope" applies only to ids the run did NOT collect."""
+    gate = _gate(tmp_path, [_LISTED_CLASS_NODE, _LISTED_PARAM_NODE])
+    currency = _scoped_currency(
+        tmp_path,
+        gate,
+        [(_LISTED_CLASS_NODE, True), (_LISTED_PARAM_NODE, False)],
+        selection=(_UNRECOGNISED_SELECTORS[shape],),
+    )
+    assert not currency.ok and any(
+        _LISTED_PARAM_NODE in orphan and "green" in orphan.lower() for orphan in currency.orphans
+    ), f"[{shape}] a collected, passing listed id got no verdict: {currency.verdict} {currency.orphans}"
+
+
+def test_D2_a_class_selector_stops_at_the_name_boundary(tmp_path: Path) -> None:
+    """MP6-3 (adversary 5 Y3): ``file::TestAContractAheadPin`` does not cover ``…PinExtra::…`` — the walk
+    matches on ``::`` / ``[`` boundaries, never a bare prefix (``TestFoo`` vs ``TestFooBar``)."""
+    extra = f"{_NODE_FILE}::TestAContractAheadPinExtra::test_gone"
+    gate = _gate(tmp_path, [_LISTED_CLASS_NODE, extra])
+    currency = _scoped_currency(tmp_path, gate, [(_LISTED_CLASS_NODE, True)], selection=(_CLASS_ID,))
+    assert currency.ok and not any("PinExtra" in orphan for orphan in currency.orphans), (
+        f"a class selector judged a prefix-sibling class: {currency.verdict} {currency.orphans}"
+    )
+
+
+def test_D2_EVERY_wave_selector_reaches_the_run_as_its_SELECTION() -> None:
+    """MP6-4 (adversary 5 Y7): ``--wave a.py b.py`` records BOTH selectors — a multi-file wave never loses the
+    verdicts for every file after the first."""
+
+    class _JunitRunner:
+        def run(self, spec: Any) -> RawGateResult:
+            return RawGateResult(spec=spec, text=_junit([(_LISTED_CLASS_NODE, True)]), exit_code=1)
+
+    manifest_path = Path(tempfile.mkdtemp()) / "gates.yaml"
+    manifest_path.write_text(_MANIFEST_YAML)
+    manifest = GateManifest.load(manifest_path)
+    selectors = [_NODE_FILE, _OTHER_FILE_NODE.split("::", 1)[0]]
+    run = _run_selected_gates(_JunitRunner(), manifest, ["pytest"], selectors)["pytest"]  # type: ignore[arg-type]
+    assert run.selection == tuple(selectors), run  # type: ignore[union-attr]
