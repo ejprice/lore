@@ -108,15 +108,11 @@ REGISTERED_FATES: dict[str, tuple[Fate, ...]] = {
             catches="SurrealStoreError",
         ),
     ),
-    "index/indexer.py::_commit_batch_file": (
-        Fate(
-            _RECORDED,
-            "indexer",
-            ("logs>=warning", "logs-exc_info", "marks-failed"),
-            catches="SurrealStoreError",
-        ),
-    ),
-    "index/indexer.py::_index_chunks": (
+    # Packet 66 R36 (sidecar RULING-12 fork 2, option (c)): the ONE per-file store catch site — the batch
+    # (``_commit_batch_file``) and realtime (``_index_chunks``) sweeps both commit through it, so their two
+    # former rows are this one; its handler body still logs >= WARNING with exc_info and marks the file
+    # failed.
+    "index/indexer.py::_commit_or_isolate": (
         Fate(
             _RECORDED,
             "indexer",

@@ -165,11 +165,7 @@ class TestEveryCatchSiteThatNamesTheTransportErrorIsAdjudicated:
 # whose site is gone is stale and RED.
 _FAMILY_ADJUDICATION: dict[str, tuple[str, str]] = {
     "briefs.py::publish": ("pin", "test_sdk3_outcome_reach::TestAnUnknownPublishNeverReleasesItsVersion"),
-    "index/indexer.py::_index_chunks": (
-        "pin",
-        "test_sdk3_outcome_reach::TestAnUnknownIndexCommitIsNotServedAsFailed",
-    ),
-    "index/indexer.py::_commit_batch_file": (
+    "index/indexer.py::_commit_or_isolate": (  # R36: the ONE per-file store catch site (both sweep shapes)
         "pin",
         "test_sdk3_outcome_reach::TestAnUnknownIndexCommitIsNotServedAsFailed",
     ),

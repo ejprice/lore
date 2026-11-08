@@ -575,14 +575,18 @@ class TestTheClassifierDiscriminates:
 
 class TestTheIndexerStoreFailureReasonIsOneReasonForTwoCauses:
     """KNOWN BOUND (packet 58 amendment 10 §3, the indexer SIBLING): ``index/indexer.py``'s per-file store
-    handlers catch the BROAD ``SurrealStoreError`` and record ONE reason, ``_FAILED_STORE_REASON``, for both a
-    RETRYABLE exhausted contention and a PERMANENT statement-cap overflow.  Not a defect today (the file is
-    recorded ``failed`` and the sweep continues) — it becomes one the day a retry policy branches on the
-    reason.
-    RE-OPEN TRIGGER: *"the day the reconcile retry policy reads ``reason``"*.  This pin goes RED when either
-    half moves: if you split the reason (closed the bound) or started reading it elsewhere (armed the
-    trigger),
-    delete or re-rule this pin DELIBERATELY and say so."""
+    catch site catches the BROAD ``SurrealStoreError`` and records ONE reason, ``_FAILED_STORE_REASON``, for a
+    RETRYABLE exhausted contention and for every other non-row-cap store failure. Not a defect today (the
+    file is recorded ``failed`` and the sweep continues) — it becomes one the day a retry policy branches
+    on the reason.
+    RE-RULED 2026-11-08 under packet 66 R4 rider 3 / MP-1 (R36, sidecar RULING-12 fork 2): the bound NARROWED
+    — a row-cap refusal (``TxnRowCapExceededError``, the old statement-cap overflow's successor) now
+    records a reason that names its bound — and the two per-file handlers became ONE site,
+    ``Indexer._commit_or_isolate``, which both sweep shapes commit through. Owner and trigger unchanged
+    (packet 58).
+    RE-OPEN TRIGGER: *"the day the reconcile retry policy reads ``reason``"*. This pin goes RED when either
+    half moves: if you split the reason further (closed the bound) or started reading it elsewhere (armed
+    the trigger), delete or re-rule this pin DELIBERATELY and say so."""
 
     def test_both_store_handlers_record_the_ONE_reason_for_both_causes(self) -> None:
         sites = [
@@ -594,10 +598,16 @@ class TestTheIndexerStoreFailureReasonIsOneReasonForTwoCauses:
             and any(cls.__name__ == "SurrealStoreError" for cls in site.caught)
             and "_FAILED_STORE_REASON" in ast.unparse(ast.Module(body=site.handler.body, type_ignores=[]))
         ]
-        assert sorted(site.key for site in sites) == [
-            "index/indexer.py::_commit_batch_file",
-            "index/indexer.py::_index_chunks",
-        ], "KNOWN BOUND (am-10 §3 sibling) moved — the per-file store handlers changed; re-rule deliberately"
+        assert sorted(site.key for site in sites) == ["index/indexer.py::_commit_or_isolate"], (
+            "KNOWN BOUND (am-10 §3 sibling, re-ruled under packet 66 R36) moved — the ONE per-file store "
+            "catch site changed; re-rule deliberately"
+        )
+        (handler,) = [site.handler for site in sites]
+        body = ast.unparse(ast.Module(body=handler.body, type_ignores=[]))
+        assert "TxnRowCapExceededError" in body, (
+            "the narrowing moved: the one site no longer gives a row-cap refusal its own bound-naming reason "
+            "(R4 rider 3) — re-rule deliberately"
+        )
 
     def test_nothing_outside_the_indexer_reads_the_reason(self) -> None:
         """The trigger's proxy: the constant's NAME and VALUE occur in no production module but the indexer (a
