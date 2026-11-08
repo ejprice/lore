@@ -233,3 +233,17 @@ Operator, verbatim: *"Evaluate it for replacement but keep it if it works better
   fewer lost/failed transactions first, then lower max wall time; ties go to tenacity.
 - **Who:** contract round 4 reports whether tenacity's API can express (1)–(3); the builder runs (4) and reports the
   row's measurement and fate like every other C row (R8); the cold audit verifies that receipt.
+
+## R11 — every hand-rolled retry goes onto tenacity; SUPERSEDES R10 (operator, 2026-11-07)
+Operator, verbatim: *"If our retry is hand rolled use tenacity."* R10's measured keep-if-better conditional is
+withdrawn, and so is #202's "deliberately NOT churned" fence on `_txn.retry_on_conflict`.
+- **In this packet (66):** drop row #22 is fated **R**. `retry_on_conflict` becomes a tenacity `AsyncRetrying`
+  (stop = the existing attempt budget / `deadline_seconds`; wait = `wait_random_exponential`, i.e. full jitter, via
+  `loresigil.backoff`'s shared policy; `retry=` = the seam's own `is_retryable_conflict_error` / root-cause selector)
+  and `_txn_conflict_backoff_seconds`'s private `uniform` draw is deleted. `scout._backoff`'s hand loop converts the
+  same way. **And pin it like this:** T1, T2 (16-way, both paths), RP3 and `test_retry_seam.py` stay green UNCHANGED;
+  a mutation of the seam's conflict classifier reddens the retry path (sharing by mutation, as M-W6); a `retry=`
+  that matches error text locally is ROUTING-NOT-SHARING and fails audit. Removed-behaviour inventory covers the
+  deadline, the rollback log per attempt, and the attempt-count/exhaustion fate.
+- **Outside this packet:** the five loops that already use tenacity's wait but loop by hand go to packet **68**
+  (INDEX row), after 66 and before 65-cut.
