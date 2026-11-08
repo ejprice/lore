@@ -80,6 +80,7 @@ import pytest
 import pytest_asyncio
 from _finding_fakes import FakeFindingDatabase, FakeFindingLedger
 from _governed_contract import _bare, access_token, session_keep_id_for
+from _stamp_page_fakes import fake_stamp_page
 from _surreal_harness import (
     PRODUCTION_DIM,
     connect_admin,
@@ -8262,47 +8263,74 @@ def _injection_finding(**overrides: Any) -> Finding:
     return Finding(**fields)
 
 
+def _injection_task_window(*tasks: Task) -> TaskActivityWindow:
+    """A rollup task leg over ``tasks`` with HONEST R44 fields: production's stamp-group cut gives
+    ``resume_at`` (the last served stamp, or the cursor when empty); no group is held."""
+    page = fake_stamp_page(
+        tasks,
+        limit=max(len(tasks), 1),
+        since=_INJECTION_FIXTURE_SINCE,
+        stamp_of=lambda task: cast("datetime", task.updated_at),
+    )
+    return TaskActivityWindow(
+        rows=page.rows, total=page.total, resume_at=page.resume_at, held_group=page.held_group
+    )
+
+
+def _injection_finding_window(*findings: Finding) -> FindingActivityWindow:
+    """The finding-leg twin of :func:`_injection_task_window` (stamp = ``created_at``)."""
+    page = fake_stamp_page(
+        findings,
+        limit=max(len(findings), 1),
+        since=_INJECTION_FIXTURE_SINCE,
+        stamp_of=lambda finding: finding.created_at,
+    )
+    return FindingActivityWindow(
+        rows=page.rows, total=page.total, resume_at=page.resume_at, held_group=page.held_group
+    )
+
+
 async def _render_rollup_owner(value: str, _ctx: AppContext) -> str:
     task = _injection_task(owner=value)
-    window = TaskActivityWindow(rows=[task], total=1)
-    empty_findings = FindingActivityWindow(rows=[], total=0)
+    window = _injection_task_window(task)
+    empty_findings = _injection_finding_window()
     return AppContext._render_rollup(_INJECTION_FIXTURE_SINCE, window, empty_findings)
 
 
 async def _render_rollup_created_by(value: str, _ctx: AppContext) -> str:
     finding = _injection_finding(created_by=value)
-    window = FindingActivityWindow(rows=[finding], total=1)
-    empty_tasks = TaskActivityWindow(rows=[], total=0)
+    window = _injection_finding_window(finding)
+    empty_tasks = _injection_task_window()
     return AppContext._render_rollup(_INJECTION_FIXTURE_SINCE, empty_tasks, window)
 
 
 async def _render_rollup_kind(value: str, _ctx: AppContext) -> str:
     finding = _injection_finding(kind=value)
-    window = FindingActivityWindow(rows=[finding], total=1)
-    empty_tasks = TaskActivityWindow(rows=[], total=0)
+    window = _injection_finding_window(finding)
+    empty_tasks = _injection_task_window()
     return AppContext._render_rollup(_INJECTION_FIXTURE_SINCE, empty_tasks, window)
 
 
 async def _render_rollup_report_path(value: str, _ctx: AppContext) -> str:
     task = _injection_task(status="done", summary="shipped it", report_path=value)
-    window = TaskActivityWindow(rows=[task], total=1)
-    empty_findings = FindingActivityWindow(rows=[], total=0)
+    window = _injection_task_window(task)
+    empty_findings = _injection_finding_window()
     return AppContext._render_rollup(_INJECTION_FIXTURE_SINCE, window, empty_findings)
 
 
 async def _render_rollup_subject(value: str, _ctx: AppContext) -> str:
     """Regression guard: ``subject`` was ALREADY sanitised pre-fix — must stay green."""
     task = _injection_task(subject=value)
-    window = TaskActivityWindow(rows=[task], total=1)
-    empty_findings = FindingActivityWindow(rows=[], total=0)
+    window = _injection_task_window(task)
+    empty_findings = _injection_finding_window()
     return AppContext._render_rollup(_INJECTION_FIXTURE_SINCE, window, empty_findings)
 
 
 async def _render_rollup_summary(value: str, _ctx: AppContext) -> str:
     """Regression guard: ``summary`` was ALREADY sanitised pre-fix — must stay green."""
     task = _injection_task(status="done", summary=value)
-    window = TaskActivityWindow(rows=[task], total=1)
-    empty_findings = FindingActivityWindow(rows=[], total=0)
+    window = _injection_task_window(task)
+    empty_findings = _injection_finding_window()
     return AppContext._render_rollup(_INJECTION_FIXTURE_SINCE, window, empty_findings)
 
 

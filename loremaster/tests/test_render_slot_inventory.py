@@ -169,6 +169,18 @@ _SERVED_SAFE_FIELDS: dict[str, tuple[str, str]] = {
         "recall path, not the caller-authored `refs[]` door which is a different field name)",
         "`ref` begins carrying caller free text (distinct from the `refs` door)",
     ),
+    # R44 (#591): `grade` joins the str-ish universe because the rollup message leg's row model
+    # (StoredMessage, now in link5's manifest) types it `str`; Message/InboxEntry type it
+    # `MessageGrade` (a Literal, so it was never str-ish before).
+    "grade": (
+        "closed two-value vocabulary (Message/InboxEntry .grade are `MessageGrade = "
+        "Literal['signal', 'directive']`; StoredMessage.grade is `str` on the READ model but the "
+        "store ASSERTs `$value IN ['signal', 'directive']` — surreal_schema.py "
+        "`_MESSAGE_GRADE_ALLOWED`, 'the ONE store ASSERT KEPT' — so a stored grade cannot carry "
+        "a forgery)",
+        "the message.grade store ASSERT is dropped or widened, or `grade` stops being a closed "
+        "vocabulary on any rendered model",
+    ),
 }
 
 

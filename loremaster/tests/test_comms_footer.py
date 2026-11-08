@@ -3072,7 +3072,9 @@ class TestNoCommsIdentityReachesQueryTEXT:
             ("loremaster/loremaster/store/lease.py", "', '.join(_OBSERVATION_COLUMNS)"),
             ("loremaster/loremaster/store/surreal.py", "_calibration_pool_projection()"),
             ("loremaster/loremaster/findings.py", "limit"),
-            ("loremaster/loremaster/tasks.py", "limit"),
+            # (R44, #591: the tasks.py "limit" row is RETIRED — `updated_since`'s `LIMIT {limit}`
+            # was its only site, and the leg now pages through store/stamp_paging.py, whose
+            # LIMIT rides a BOUND param. A stale row would silently pre-approve the next one.)
             ("loremaster/loremaster/store/_txn.py", "namespace"),
             ("loremaster/loremaster/store/_txn.py", "database"),
             # packet 05a-i (builder-05ai-1): the drain reshape's HARDCODED query text —
@@ -3128,6 +3130,30 @@ class TestNoCommsIdentityReachesQueryTEXT:
             # false and the CODE (the PDP emitter) must change (bind it), never this door.
             ("loremaster/loremaster/messages.py", "read_fragment"),
             ("loremaster/loremaster/messages.py", "filter_clause"),
+            # R44 (#591, RULING-15) — THE stamp-paged leg read, `store/stamp_paging.py::
+            # read_stamp_page`, which the three rollup legs now call. Adjudicated INDIVIDUALLY,
+            # VERIFIED against its ONLY three callers (tasks.py::TaskLedger.updated_since,
+            # findings.py::FindingLedger.filed_since, messages.py::MessageLedger.
+            # message_activity_since) — every interpolated value is a CALLER-SIDE CODE CONSTANT,
+            # never a comms identity and never caller text:
+            #   * `table` — TASK_TABLE / FINDING_TABLE / MESSAGE_TABLE (module constants; a table
+            #     NAME cannot be a bound param — store ref §2/§4, same reason as `entity_table`).
+            #   * `column` — _COL_UPDATED_AT / _COL_CREATED_AT / the literal "created_at" (a column
+            #     NAME, same reason).
+            #   * `projection` — the literal "*" (tasks, findings) or the message leg's fixed literal
+            #     column list.
+            #   * `where_extra` — the fixed ` AND ({filter_fragment})` wrapper, where
+            #     `filter_fragment` is "" or messages.py's `governed.read_filter(...)` fragment —
+            #     the SAME PARAMETERIZED PDP fragment adjudicated as `read_fragment` above.
+            #   `since` / `limit + 1` / the held stamp ride BOUND params (`$stamp_page_*`, module
+            #   constants, so the scanner never flags them).
+            # RE-OPEN TRIGGER: a NEW caller of read_stamp_page that passes a non-constant
+            # table/column/projection, or a filter_fragment that is not a PDP-emitted fragment —
+            # then the CODE must bind or constrain it, never these rows.
+            ("loremaster/loremaster/store/stamp_paging.py", "table"),
+            ("loremaster/loremaster/store/stamp_paging.py", "column"),
+            ("loremaster/loremaster/store/stamp_paging.py", "projection"),
+            ("loremaster/loremaster/store/stamp_paging.py", "where_extra"),
         }
     )
 

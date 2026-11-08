@@ -41,6 +41,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
+from _stamp_page_fakes import fake_stamp_page
 from loremaster.agent_existence import format_unknown_agent_refusal
 from loremaster.briefs import AgentRefLike
 from loremaster.messages import (
@@ -642,9 +643,15 @@ class FakeMessageLedger:
             and message.created_at > since
         ]
         matching.sort(key=lambda message: message.created_at)
+        # R44 (#591): the page never ends inside a stamp group — production's rule, not a copy of it.
+        page = fake_stamp_page(
+            matching, limit=limit, since=since, stamp_of=lambda message: message.created_at
+        )
         return MessageActivityWindow(
-            rows=[self._to_stored_message(message) for message in matching[:limit]],
-            total=len(matching),
+            rows=[self._to_stored_message(message) for message in page.rows],
+            total=page.total,
+            resume_at=page.resume_at,
+            held_group=page.held_group,
         )
 
     @staticmethod

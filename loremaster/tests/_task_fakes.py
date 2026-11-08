@@ -75,7 +75,9 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import uuid4
 
+from _stamp_page_fakes import fake_stamp_page
 from loremaster.render import render_attributed
+from loremaster.store.stamp_paging import HeldStampGroup
 from loremaster.tasks import (
     ENGINE_RECURSION_CEILING,
     TASK_BLOCKER_MAX_DEPTH,
@@ -144,11 +146,15 @@ class _FakeTaskActivityWindow:
     production class (it does not exist yet); a contract test asserts on
     these two attributes, which is exactly what the real pydantic model will
     also expose, so the fake and the real return value are
-    attribute-compatible without a shared base.
+    attribute-compatible without a shared base. R44 (#591): plus the window's
+    REQUIRED ``resume_at`` / ``held_group``, cut by production's stamp-group rule
+    (:func:`_stamp_page_fakes.fake_stamp_page`).
     """
 
     rows: list[Task]
     total: int
+    resume_at: datetime
+    held_group: HeldStampGroup | None
 
 
 def _validate_done_extras(
@@ -568,10 +574,17 @@ class FakeTaskLedger:
             for task in scrambled
             if task.updated_at is not None and task.updated_at > since
         ]
-        total = len(matching)
         matching.sort(key=lambda task: task.updated_at or datetime.min.replace(tzinfo=UTC))
-        rows = [task.model_copy(deep=True) for task in matching[:limit]]
-        return _FakeTaskActivityWindow(rows=rows, total=total)
+        # R44 (#591): the page never ends inside a stamp group — production's rule, not a copy of it.
+        page = fake_stamp_page(
+            matching, limit=limit, since=since, stamp_of=lambda task: cast("datetime", task.updated_at)
+        )
+        return _FakeTaskActivityWindow(
+            rows=[task.model_copy(deep=True) for task in page.rows],
+            total=page.total,
+            resume_at=page.resume_at,
+            held_group=page.held_group,
+        )
 
     async def create_many(
         self,

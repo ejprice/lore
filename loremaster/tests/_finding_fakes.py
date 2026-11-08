@@ -66,6 +66,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import uuid4
 
+from _stamp_page_fakes import fake_stamp_page
 from loremaster.findings import (
     ChainHead,
     Finding,
@@ -75,6 +76,7 @@ from loremaster.findings import (
     IllegalTransitionError,
     ReportResult,
 )
+from loremaster.store.stamp_paging import HeldStampGroup
 
 # --- the domain's status vocabulary + legal-transition matrix ---------------
 # A DELIBERATE local copy of the same vocabulary/matrix ``test_findings.py`` pins
@@ -113,11 +115,15 @@ class _FakeFindingActivityWindow:
     """Duck-typed stand-in for the not-yet-built ``loremaster.findings.
     FindingActivityWindow`` — ``rows``/``total``, nothing more (mirrors
     ``_task_fakes._FakeTaskActivityWindow``; never imports the production
-    class, which does not exist yet).
+    class, which does not exist yet). R44 (#591): plus the window's REQUIRED
+    ``resume_at`` / ``held_group``, cut by production's stamp-group rule
+    (:func:`_stamp_page_fakes.fake_stamp_page`).
     """
 
     rows: list[Finding]
     total: int
+    resume_at: datetime
+    held_group: HeldStampGroup | None
 
 
 @dataclass
@@ -423,7 +429,14 @@ class FakeFindingLedger:
             raise ValueError(f"limit must be a positive integer, got {limit!r}")
         scrambled = list(reversed(list(self.db.findings.values())))
         matching = [finding for finding in scrambled if finding.created_at > since]
-        total = len(matching)
         matching.sort(key=lambda finding: finding.created_at)
-        rows = [finding.model_copy(deep=True) for finding in matching[:limit]]
-        return _FakeFindingActivityWindow(rows=rows, total=total)
+        # R44 (#591): the page never ends inside a stamp group — production's rule, not a copy of it.
+        page = fake_stamp_page(
+            matching, limit=limit, since=since, stamp_of=lambda finding: finding.created_at
+        )
+        return _FakeFindingActivityWindow(
+            rows=[finding.model_copy(deep=True) for finding in page.rows],
+            total=page.total,
+            resume_at=page.resume_at,
+            held_group=page.held_group,
+        )

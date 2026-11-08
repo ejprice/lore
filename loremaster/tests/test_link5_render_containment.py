@@ -34,7 +34,7 @@ import asyncio
 import pathlib
 import re
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -105,6 +105,7 @@ HOSTILE_MULTILINE = (
 )
 
 _NOW = datetime(2026, 8, 5, tzinfo=UTC)
+_SECOND = timedelta(seconds=1)
 
 
 # ---------------------------------------------------------------------------- #
@@ -525,8 +526,8 @@ async def _drive_rollup(value: str) -> str:
     ``report_path`` are the forgery — both rendered via bare ``sanitise_line`` at HEAD
     (``server.py::_render_rollup``, the "reports registered" leg)."""
     done_task = _task(status="done", summary=value, report_path=value, owner=BENIGN)
-    task_window = _TaskActivityWindow().model_construct(rows=[done_task], total=1)
-    finding_window = _FindingActivityWindow().model_construct(rows=[], total=0)
+    task_window = _paged_window("loremaster.tasks", "TaskActivityWindow", [done_task], stamp="updated_at")
+    finding_window = _paged_window("loremaster.findings", "FindingActivityWindow", [], stamp="created_at")
     return str(_app()._render_rollup(_NOW, task_window, finding_window))
 
 
@@ -573,16 +574,26 @@ async def _drive_comms_drain_row(value: str) -> str:
     return str(_app()._render_comms_drain_row(entry, session="s"))
 
 
-def _TaskActivityWindow() -> Any:
-    from loremaster.tasks import TaskActivityWindow  # noqa: PLC0415
+def _paged_window(
+    module: str, name: str, matching: list[Any], *, stamp: str, limit: int | None = None
+) -> Any:
+    """A rollup leg's ``*ActivityWindow`` (``module.name``) over ``matching`` (every row after the
+    cursor ``_NOW``, stamp-ascending) with HONEST R44 fields (#591): the page, ``total``,
+    ``resume_at`` and ``held_group`` come from production's stamp-group cut via
+    :func:`_stamp_page_fakes.fake_stamp_page` — never hand-picked. ``limit`` defaults to the whole
+    set (an un-truncated leg). Built with ``model_construct`` so a forged row rides past validation.
+    """
+    from _stamp_page_fakes import fake_stamp_page  # noqa: PLC0415 - lazy: model import order neutral
 
-    return TaskActivityWindow
-
-
-def _FindingActivityWindow() -> Any:
-    from loremaster.findings import FindingActivityWindow  # noqa: PLC0415
-
-    return FindingActivityWindow
+    page = fake_stamp_page(
+        matching,
+        limit=limit if limit is not None else max(len(matching), 1),
+        since=_NOW,
+        stamp_of=lambda row: cast("datetime", getattr(row, stamp)),
+    )
+    return _model(module, name).model_construct(
+        rows=page.rows, total=page.total, resume_at=page.resume_at, held_group=page.held_group
+    )
 
 
 def _Message() -> Any:
@@ -1709,6 +1720,7 @@ def _manifest() -> dict[type[BaseModel], tuple[frozenset[str], frozenset[str]]]:
     MessageAckResult = _model("loremaster.messages", "MessageAckResult")
     MessageAckEntry = _model("loremaster.messages", "MessageAckEntry")
     PendingTraffic = _model("loremaster.messages", "PendingTraffic")
+    StoredMessage = _model("loremaster.messages", "StoredMessage")
     RecalledMemory = _model("loremaster.memory.backend", "RecalledMemory")
     RecalledRef = _model("loremaster.memory.backend", "RecalledRef")
     MemorySource = _model("loremaster.memory.backend", "MemorySource")
@@ -1799,6 +1811,15 @@ def _manifest() -> dict[type[BaseModel], tuple[frozenset[str], frozenset[str]]]:
             entry(MessageAckResult, door=set(), safe=set()),
             entry(MessageAckEntry, door=set(), safe=set()),  # outcome = Literal
             entry(PendingTraffic, door=set(), safe=set()),
+            # R44 (#591): the rollup message leg's row (`_rollup_message_activity_lines`, now driven).
+            # thread/body/refs/task_id are caller free text (send stores them length-bounded only);
+            # sender_name is the charset-gated agent name; `grade` is `str` on this READ model but
+            # the store ASSERTs the closed two-value domain (surreal_schema.py `_MESSAGE_GRADE_ALLOWED`
+            # — "the ONE store ASSERT KEPT"), so a stored grade cannot carry a forgery (SAFE, the
+            # same verdict every other grade-serving render already carries).
+            entry(StoredMessage,
+                  door={"thread", "body", "refs", "task_id"},
+                  safe={"sender_name", "grade"}),
             # -- Memory tree: text/kind/category/labels caller free text; chunk_key opaque --
             entry(RecalledMemory,
                   door={"text", "kind", "memory_category", "labels"},
@@ -2041,19 +2062,32 @@ def _drive_holder_liveness_notice(forge: bool) -> list[str]:
 
 
 def _tasks_windows(forge: bool, *, empty: bool) -> tuple[Any, Any]:
-    TaskActivityWindow = _model("loremaster.tasks", "TaskActivityWindow")
-    FindingActivityWindow = _model("loremaster.findings", "FindingActivityWindow")
     Task = _model("loremaster.tasks", "Task")
     Finding = _model("loremaster.findings", "Finding")
-    if empty:
-        tw = TaskActivityWindow.model_construct(rows=[], total=0)
-        fw = FindingActivityWindow.model_construct(rows=[], total=0)
-    else:
-        done = _forge(Task, forge=forge, status="done",
-                      report_path=(_T("Task", "report_path") if forge else "r"))
-        tw = TaskActivityWindow.model_construct(rows=[done], total=1)
-        fw = FindingActivityWindow.model_construct(rows=[_forge(Finding, forge=forge)], total=1)
+    tasks: list[Any] = []
+    findings: list[Any] = []
+    if not empty:
+        # A served task always carries its stamp (the leg's WHERE excludes a NONE ``updated_at``).
+        tasks = [_forge(Task, forge=forge, status="done", updated_at=_NOW,
+                        report_path=(_T("Task", "report_path") if forge else "r"))]
+        findings = [_forge(Finding, forge=forge)]
+    tw = _paged_window("loremaster.tasks", "TaskActivityWindow", tasks, stamp="updated_at")
+    fw = _paged_window("loremaster.findings", "FindingActivityWindow", findings, stamp="created_at")
     return tw, fw
+
+
+def _message_window(forge: bool, stamps: list[datetime], *, limit: int) -> Any:
+    """The rollup MESSAGE leg's window over forged ``StoredMessage`` rows (one per stamp, every
+    door tokenised by the manifest when ``forge``), paged by production's stamp-group cut at
+    ``limit`` — so a held head group / a truncated leg is a DERIVED state, not a hand-set flag."""
+    StoredMessage = _model("loremaster.messages", "StoredMessage")
+    rows = [
+        _forge(StoredMessage, forge=forge, seq=index, created_at=stamp)
+        for index, stamp in enumerate(stamps, start=1)
+    ]
+    return _paged_window(
+        "loremaster.messages", "MessageActivityWindow", rows, stamp="created_at", limit=limit
+    )
 
 
 def _ack_defensive_raise_bytes() -> str:
@@ -2302,8 +2336,32 @@ def _probes() -> list[RenderProbe]:
             _served("_task_status_marker", _forge(Task, forge=g, superseded_by=None)),
         ]),
         P("_rollup_leg_header", lambda g: [
-            _served("_rollup_leg_header", "tasks", 1, 5),
-            _served("_rollup_leg_header", "tasks", 5, 5),
+            _served("_rollup_leg_header", "tasks", 1, 5, None),
+            _served("_rollup_leg_header", "tasks", 5, 5, None),
+            # R44 (#591, RULING-15) h1 — the HELD branch: a head stamp group wider than the page (the
+            # cursor holds; the header names the group's whole size). shown == limit by construction.
+            _served(
+                "_rollup_leg_header", "tasks", 5, 9,
+                _model("loremaster.store.stamp_paging", "HeldStampGroup")(stamp=_NOW, rows=7),
+            ),
+        ]),
+        # R44 (#591) — the message leg's activity lines now interpolate the held header (a P-U
+        # candidate): drive EVERY header arm (no window / complete / truncated h2 / held h2-held)
+        # and the row loop, with the StoredMessage doors forged. Truncated/held are DERIVED by the
+        # stamp-group cut over the forged rows (three distinct stamps at limit 1; four rows sharing
+        # one stamp at limit 2), never hand-set.
+        P("_rollup_message_activity_lines", lambda g: [
+            _served("_rollup_message_activity_lines", None),
+            _served("_rollup_message_activity_lines", _message_window(g, [], limit=1)),
+            _served("_rollup_message_activity_lines", _message_window(g, [_NOW + _SECOND], limit=1)),
+            _served(
+                "_rollup_message_activity_lines",
+                _message_window(g, [_NOW + _SECOND, _NOW + 2 * _SECOND, _NOW + 3 * _SECOND], limit=1),
+            ),
+            _served(
+                "_rollup_message_activity_lines",
+                _message_window(g, [_NOW + _SECOND] * 4 + [_NOW + 2 * _SECOND], limit=2),
+            ),
         ]),
         # ---- FINDING renders ----
         P("_render_finding_rows", lambda g: [
