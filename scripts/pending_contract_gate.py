@@ -142,7 +142,7 @@ import sys
 import tempfile
 from collections import Counter
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import NamedTuple
 from xml.etree import ElementTree
@@ -527,13 +527,66 @@ class PytestOutcome:
     file: str
     test_id: str
     kind: str
+    #: The failing test's pytest node id (``<file>::<classes>::<name>``) — what F6's ``red_nodeids`` match
+    #: EXACTLY (R31: set membership, never a prefix).
+    node_id: str = ""
 
 
 @dataclass(frozen=True)
 class PytestRun:
+    """What one pytest run measured, read from its junit-xml document.
+
+    The F6 fields (packet 66, rulings R30/R31/R37/R39) are what a listed red node id is adjudicated against:
+    its adjudication depends ONLY on (the exact id) x (did the run collect it) x (did it fail) — never on
+    other outcomes in the run, other claims on its registry entry, or its ancestors (R31's CLASS).
+    """
+
     total: int
     passed: int
     outcomes: tuple[PytestOutcome, ...]
+    #: Every node id the run COLLECTED as a test item (a module-level collect report is not an item, MP5-4).
+    collected: frozenset[str] = frozenset()
+    #: ``(node id, "skipped" | "xfail")`` for every collected item pytest skipped or xfailed — such an id is
+    #: adjudicated NEITHER way and its registration is KEPT (R31 rider).
+    skipped: tuple[tuple[str, str], ...] = ()
+    #: The node-id selectors the run was SCOPED to (``wave_gate --wave``); ``()`` is a full run (R37).
+    selection: tuple[str, ...] = ()
+
+
+def selecting_selector(node_id: str, selection: tuple[str, ...]) -> str | None:
+    """The selector of ``selection`` that COVERS ``node_id``, else ``None`` (ruling R37).
+
+    A selector covers a node id that it equals, or that extends it on a ``::`` boundary or with a ``[param]``
+    leaf. EVERY selector is consulted (adversary-5 W5: a ``--wave`` may name several). This decides SCOPE —
+    "did pytest look here?" — and NEVER adjudication (MP-F6-2): it is consulted only for an id the run did
+    NOT collect (R39 D3). Bound: a selector pytest expands differently (a directory, ``./`` or an absolute
+    path, ``::`` inside a parameter) covers nothing, so an uncollected id under it gets no verdict — silence,
+    never a false STALE.
+    """
+    for selector in selection:
+        if node_id == selector or node_id.startswith(f"{selector}::") or node_id.startswith(f"{selector}["):
+            return selector
+    return None
+
+
+def junit_node_id(file: str, classname: str, name: str) -> str:
+    """The pytest node id of an xunit1 testcase: ``<file>::<classes after the module>::<name>``.
+
+    xunit1 writes ``file`` plus the dotted ``classname`` (module path, then any classes) and ``name``, so the
+    classes are what ``classname`` holds past the module's own dotted path.
+    """
+    module = file[: -len(".py")].replace("/", ".") if file.endswith(".py") else file
+    classes = classname[len(module) + 1 :] if classname.startswith(f"{module}.") else ""
+    return "::".join([file, *(part for part in classes.split(".") if part), name])
+
+
+def _is_module_level_report(case: ElementTree.Element) -> bool:
+    """Whether a testcase is pytest's MODULE-level report (a module skip, ``importorskip`` or collection
+    error): no class, and its name is the module's dotted path. It is not a test item, so it neither makes
+    the file "collected" nor discharges any id (MP5-4). Stated bound (MP6-5): a module-skipped registered file
+    therefore gets no KEPT note either."""
+    file = case.get("file", "")
+    return case.get("classname", "") == "" and case.get("name", "") == file[: -len(".py")].replace("/", ".")
 
 
 class JUnitReportReader:
@@ -564,6 +617,8 @@ class JUnitReportReader:
         total = 0
         non_passing = 0
         outcomes: list[PytestOutcome] = []
+        collected: set[str] = set()
+        skipped: list[tuple[str, str]] = []
         for suite in suites:
             total += int(suite.get("tests", "0"))
             non_passing += (
@@ -572,6 +627,15 @@ class JUnitReportReader:
                 + int(suite.get("skipped", "0"))
             )
             for case in suite.iter("testcase"):
+                if case.get("file") and not _is_module_level_report(case):
+                    node_id = junit_node_id(
+                        case.get("file", ""), case.get("classname", ""), case.get("name", "")
+                    )
+                    collected.add(node_id)
+                    skip = case.find("skipped")
+                    if skip is not None:
+                        skip_kind = "xfail" if skip.get("type") == "pytest.xfail" else "skipped"
+                        skipped.append((node_id, skip_kind))
                 for kind in ("failure", "error"):
                     if case.find(kind) is None:
                         continue
@@ -591,6 +655,7 @@ class JUnitReportReader:
                             file=located,
                             test_id=f"{case.get('classname', '')}::{case.get('name', '')}",
                             kind=kind,
+                            node_id=junit_node_id(located, case.get("classname", ""), case.get("name", "")),
                         )
                     )
                     break
@@ -602,7 +667,11 @@ class JUnitReportReader:
                 "passed-COUNT, so zero collected is a BROKEN INSTRUMENT."
             )
         return PytestRun(
-            total=total, passed=total - non_passing, outcomes=tuple(outcomes)
+            total=total,
+            passed=total - non_passing,
+            outcomes=tuple(outcomes),
+            collected=frozenset(collected),
+            skipped=tuple(skipped),
         )
 
 
@@ -641,6 +710,16 @@ class PendingFile(BaseModel):
     path: str
     missing_symbols: tuple[str, ...] = ()
     unsymboled_codes: tuple[UnsymboledCodeAllowance, ...] = ()
+    #: F6 (rulings R6, R30): the pytest node ids this file is EXPECTED to fail, written from
+    #: ``pytest --collect-only -q`` (pytest's own escaping of a non-ASCII parameter), one per parameter. A
+    #: file that lists ids is adjudicated PER NODE; each listed id self-destructs when it passes or goes
+    #: stale.
+    red_nodeids: tuple[str, ...] = ()
+
+    @property
+    def claims_mypy(self) -> bool:
+        """Whether this entry claims any mypy error — only then can the typecheck leg self-destruct it."""
+        return bool(self.missing_symbols or self.unsymboled_codes)
 
     def admits(self, error: MypyError) -> bool:
         if any(error_names_symbol(error.message, s) for s in self.missing_symbols):
@@ -691,10 +770,10 @@ class PendingContractRegistry(BaseModel):
     ) -> tuple[PendingBound, ...]:
         for bound in value:
             for entry in bound.files:
-                if not entry.missing_symbols and not entry.unsymboled_codes:
+                if not entry.missing_symbols and not entry.unsymboled_codes and not entry.red_nodeids:
                     raise ValueError(
                         f"{entry.path} names neither a missing symbol nor a code "
-                        "allowance — that degenerates to file-only matching, "
+                        "allowance nor a red node id — that degenerates to file-only matching, "
                         "which waves through a genuinely NEW defect in the file"
                     )
         return value
@@ -1056,6 +1135,15 @@ class GateCurrency:
     owners: tuple[str, ...]
     orphans: tuple[str, ...]
     registered_count: int
+    #: Lines that are true of the run but fail nothing — e.g. a listed red id that was skipped (R31 rider).
+    notes: tuple[str, ...] = ()
+
+    def detail_lines(self) -> list[str]:
+        """The lines under the verdict line — every orphan, then every note — ONE render shared by every
+        renderer (``_render_currency``, ``wave_gate._render``), so they cannot diverge (MP5-2)."""
+        return [f"      ORPHAN: {orphan}" for orphan in self.orphans] + [
+            f"      NOTE: {note}" for note in self.notes
+        ]
 
     @property
     def ok(self) -> bool:
@@ -1171,14 +1259,87 @@ class PendingContractGate:
         return partition
 
     def partition_pytest(self, run: PytestRun) -> PytestPartition:
+        """Split a run's failing tests into EXPECTED (owned by a registry entry) and UNEXPECTED (orphaned).
+
+        A file whose entries list ``red_nodeids`` is adjudicated PER NODE: a failure is expected only if its
+        node id is listed (exact membership — R31), so an unlisted red in it is orphaned. A file registered by
+        mypy claims only keeps the file-level adjudication it had before F6 (packet 58 owns its pytest reds
+        that way). Scope (``run.selection``) plays NO part here (MP-F6-2, MP6-1): a listed red under any
+        selector stays adjudicated (adversary-5 W6).
+        """
         partition = PytestPartition()
-        registered = self.registry.registered_paths
         for outcome in run.outcomes:
-            if outcome.file in registered:
+            entries = [entry for _bound, entry in self.registry.entries_for(outcome.file)]
+            file_level = any(not entry.red_nodeids for entry in entries)
+            listed = any(outcome.node_id in entry.red_nodeids for entry in entries)
+            if entries and (file_level or listed):
                 partition.expected.append(outcome)
             else:
                 partition.unexpected.append(outcome)
         return partition
+
+    def pytest_self_destruct_findings(self, run: PytestRun) -> list[str]:
+        """The F6 self-destruct legs over EVERY listed red node id in the registry (R31, R37, R39 D3).
+
+        Iterates the REGISTRY, not the run's failures, so every listed id of every entry is judged — whatever
+        else the entry claims (MP5-1) and however many ids it lists (MP5-3). Per id, from (the exact id) x
+        (was it collected) x (did it fail) only:
+
+        * its FILE was not collected in this run → no verdict (reading (b), R31: a run that never looked says
+          nothing);
+        * collected and SKIPPED / XFAILED → no verdict; the render says KEPT (:meth:`pytest_kept_notes`);
+        * COLLECTED and passed → DISCHARGED ("is green — delete it with the fix"); collected and failed →
+          owned (the partition) — a collected id is ALWAYS judged, whatever the selection's spelling (R39 D3);
+        * NOT collected, its file collected → STALE (renamed or deleted) — but under a scoped run only when a
+          selector COVERED the id (R37); an uncovered uncollected id gets no verdict. A covered one's line
+          names the selector and says to confirm with ``--collect-only`` before deleting the entry.
+        """
+        failing = {outcome.node_id for outcome in run.outcomes}
+        skipped = {node_id for node_id, _kind in run.skipped}
+        collected_files = {node_id.split("::", 1)[0] for node_id in run.collected}
+        findings: list[str] = []
+        for bound in self.registry.bounds:
+            for entry in bound.files:
+                if entry.path not in collected_files:
+                    continue
+                for node_id in entry.red_nodeids:
+                    if node_id in skipped:
+                        continue
+                    if node_id in run.collected:
+                        if node_id not in failing:
+                            findings.append(
+                                f"SELF-DESTRUCT: adjudicated red {node_id} (bound {bound.id!r}) is green — "
+                                "delete it with the fix."
+                            )
+                        continue
+                    if not run.selection:
+                        findings.append(
+                            f"SELF-DESTRUCT: adjudicated red {node_id} (bound {bound.id!r}) was not "
+                            f"collected in this run's {entry.path} — renamed or deleted; update the registry "
+                            "with the change."
+                        )
+                        continue
+                    selector = selecting_selector(node_id, run.selection)
+                    if selector is not None:
+                        findings.append(
+                            f"SELF-DESTRUCT: adjudicated red {node_id} (bound {bound.id!r}) selected by "
+                            f"'{selector}' and not collected — renamed or deleted; confirm with "
+                            "--collect-only before deleting the entry."
+                        )
+        return findings
+
+    def pytest_kept_notes(self, run: PytestRun) -> list[str]:
+        """R31 rider: a listed red id the run SKIPPED or XFAILED adjudicates neither way — say so, on every
+        verdict (GREEN included, MP5-2), so a reader does not take its silence for a discharge."""
+        kinds = dict(run.skipped)
+        return [
+            f"KEPT: adjudicated red {node_id} (bound {bound.id!r}) was {kinds[node_id]} in this run — "
+            "adjudicated neither way; its registration is kept."
+            for bound in self.registry.bounds
+            for entry in bound.files
+            for node_id in entry.red_nodeids
+            if node_id in kinds
+        ]
 
     # -- self-destruction ---------------------------------------------------
 
@@ -1248,6 +1409,8 @@ class PendingContractGate:
                         f"{bound.id!r}) does not exist — DELETE its registry entry."
                     )
                 observed = errors_by_path.get(entry.path, [])
+                if not entry.claims_mypy:
+                    continue
                 if not observed:
                     findings.append(
                         f"SELF-DESTRUCT: registered file {entry.path!r} (bound "
@@ -1682,7 +1845,12 @@ def _run_selected_gates(
             spec = spec.model_copy(
                 update={"command": (*spec.command, *pytest_args)}
             )
-        results[gate_id] = read_gate(runner.run(spec))
+        result = read_gate(runner.run(spec))
+        if isinstance(result, PytestRun):
+            # R37: the run carries EVERY selector it was scoped to (adversary-5 MP6-4 / W5), so a listed id's
+            # STALE verdict can be confined to what pytest was asked to look at.
+            result = replace(result, selection=tuple(pytest_args))
+        results[gate_id] = result
     return results
 
 
@@ -1738,16 +1906,17 @@ def _currencies_for(
         gate_expired = (
             expired if spec.adjudicated_by == ADJUDICATOR_PENDING_CONTRACTS else []
         )
-        currencies.append(
-            gate_currency(
-                gate=gate,
-                gate_id=spec.id,
-                adjudicated_by=spec.adjudicated_by,
-                residuals=residuals,
-                expired=gate_expired,
-                registered_count=registered,
-            )
+        currency = gate_currency(
+            gate=gate,
+            gate_id=spec.id,
+            adjudicated_by=spec.adjudicated_by,
+            residuals=residuals,
+            expired=gate_expired,
+            registered_count=registered,
         )
+        if isinstance(result, PytestRun):
+            currency = replace(currency, notes=tuple(gate.pytest_kept_notes(result)))
+        currencies.append(currency)
     return currencies
 
 
@@ -1771,8 +1940,7 @@ def _render_currency(
 
     for currency in currencies:
         lines.append(currency.render())
-        for orphan in currency.orphans:
-            lines.append(f"      ORPHAN: {orphan}")
+        lines.extend(currency.detail_lines())
     ok = all(currency.ok for currency in currencies)
     if ok:
         lines.append("CURRENCY   : PASS — every claimed gate is GREEN or OWNED")
@@ -1811,8 +1979,9 @@ def _residuals_for(
         return list(result.violations), 0
     pytest_partition = gate.partition_pytest(result)
     residuals = [
-        f"{outcome.file} :: {outcome.test_id}" for outcome in pytest_partition.unexpected
+        outcome.node_id or f"{outcome.file} :: {outcome.test_id}" for outcome in pytest_partition.unexpected
     ]
+    residuals.extend(gate.pytest_self_destruct_findings(result))
     return residuals, len(pytest_partition.expected)
 
 

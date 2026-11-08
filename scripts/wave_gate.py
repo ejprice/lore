@@ -126,10 +126,10 @@ def _render(
             and currency.verdict == VERDICT_GREEN
         ):
             lines.append(_scoped_pytest_line(currency.gate_id, argument_render, test_count))
+            lines.extend(currency.detail_lines())
         else:
             lines.append(currency.render())
-            for orphan in currency.orphans:
-                lines.append(f"      ORPHAN: {orphan}")
+            lines.extend(currency.detail_lines())
 
     ok = all(currency.ok for currency in currencies)
     if wave:
