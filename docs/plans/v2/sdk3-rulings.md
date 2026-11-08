@@ -577,7 +577,7 @@ Full report: `docs/plans/v2/receipts/2026-11-08-sdk3/ADVERSARY3.md` (graded 150b
 - **MP-1 → contract round 8:** B3 refused-file naming (R4 rider 3 + R17) is pinned for the realtime sweep only; a batch-arm build that drops the bound passes. Fix: parametrise over the sweep shape, pair-proven per arm. A REPEAT CLASS of round-2 MP-A ("both sweep shapes"). Builder chokepoint: ONE helper for the two cloned `except SurrealStoreError` arms.
 - **Residual R18 → round 8:** B-2 lacks a letter-led leg, so R26-3's rider is unmet.
 - **Landmine 1, "tenacity in name only" (R18's operator concern), is BEHAVIOURALLY INVISIBLE:** a hand-rolled loop with the same laws passes 738/738. The adversary proved a one-line runtime instrument (narrow `_driver_sleeps.DRIVER_SLEEP_CALLER_MODULES` to `{"tenacity.asyncio"}`) and a fallback named cold-audit diff check. Neither reaches scout's ladder except the audit check. Round 8 STAGES the narrowing as a patch and writes the audit check. **Whether the narrowing lands is the OPERATOR's decision**; the sidecar is asked to classify it (ruling request 7).
-- **Residuals R1–R17:** builder notes, recorded by round 8 in the packet doc; none reopens a round. The four packet-58 files reading `TXN_STATEMENT_HARD_CAP` are registered under packet-58's contract (lead-checked).
+- **Residuals R1–R17:** builder notes, recorded by round 8 in the packet doc; none reopens a round. The four packet-58 files reading `TXN_STATEMENT_HARD_CAP` are registered under packet-58's contract (lead-checked). **CORRECTED 2026-11-08 (lead):** true for the PYTEST leg only. The registry carries no typecheck allowance for these reads, so they surfaced as 16 attr-defined RED_ORPHANED errors in 5 packet-58 files after F12 deleted the constant. Routed as a cross-packet fork to sidecar RULING-12 (servicer proposal: lore_comms #19013).
 
 ## R29 — design sidecar ruling 7: the landmine-1 instrument is NOT reserved; ADOPT it with riders (design-sidecar-66; recorded by the lead; the operator may overturn)
 Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-7.md`.
@@ -625,3 +625,21 @@ Operator, verbatim: *"You may run a contract author."* This answers R31's routin
 - The pins are declared RED@HEAD, pair-proven against a reference F6 fixed to reading (b), and committed by explicit path, separate from the build.
 - **Adversary round 5** (in budget, R25) then grades that delta. The builder writes no F6 code until both have happened; the channel is `build66/OPERATOR-F6.md`.
 - The 302-id registration still follows F6 (R31).
+
+## R33 — R29's landmine-1 narrowing is KEPT (operator, 2026-11-08)
+The operator was asked whether to overturn R29 (sidecar RULING-7) and chose **keep**. The runtime check stands as committed in `d78baa3`: `_driver_sleeps.DRIVER_SLEEP_CALLER_MODULES` is narrowed to `{"tenacity.asyncio"}`, and scout's `sleep=` caller attribution stays with it. The cold audit's diff check B ("no loop around the attempt; `AsyncRetrying` IS the loop") stays beside it, and each covers the other's blind spot.
+
+## R34 — FORK-B1: one shared required-datetime validator (sidecar ruling 11; adopted by the lead under the standing fork delegation)
+Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-11.md`.
+- **Reading B.** ONE shared validator pair in `_txn` that checks and never converts. R6 S2 forbade a seventh COERCER, not the required-column guard that the SDK's decoder cannot supply. Reading A would mint EIGHT clones, because `keeps` and `principal_keys` read stamps too.
+- **Found defect, a builder work order (lore_comms #19029):** `memory/local._row_datetime` is still a private copy and has already DIVERGED, because it has no tz-aware check. Route it through the helper. `_parse_iso` is not a sibling (it parses ledger JSON); label it so in its docstring.
+- **The refusal is a SERVED surface:** it names the ROW id in engine text, never `str(RecordID)`, and calls itself a store-integrity fault to report, with other rows unaffected. It must not read as a caller error.
+- **Pin it like this:** a servicing request for the ∀-module naive / missing / string pins, with reach derived by grep (one declared red per caller module); the shared-helper mutation is run at the cold audit; a DRY-ledger row for the helper pair. (The repo has no helper registry; the builder's DRY ledger is the record.)
+
+## R35 — adversary round 5: F6 delta INSUFFICIENT (0 unsatisfiable); pins plus a round-5 re-grade GRANTED (operator, 2026-11-08)
+Report: `docs/plans/v2/receipts/2026-11-08-sdk3/ADVERSARY5.md` (graded `c01b114`). The reference passes 488/488, and HEAD is red on exactly the 29 F6 nodes for the right reason. 17 of 20 wrong gates were killed, including all of adversary 4's builds and the round-8 reference. Survivors and gaps:
+- **MP5-1:** a mixed-claim entry is exempt from the pytest self-destruct, so a stale id renders as live. This is an R17 false clear, a repeat of R31's class ("other claims on the entry").
+- **MP5-2:** the KEPT note is missing on a GREEN verdict and in `wave_gate`'s render.
+- **MP5-3:** self-destruct reaches only the first 3 ids of an entry.
+- **MP5-4:** a module skip, an importorskip or a collection error reads as "file collected", so every listed id in that file is falsely STALE.
+The operator granted the route: the servicer pins MP5-1..4, pair-proven against the reference, and the same adversary (`adversary-sdk3-r5`, context loaded) re-grades ONLY that delta (survivors N8/N9/N12 plus the MP5-4 probe). This is one extra round beyond R25, granted by the operator. The builder writes no F6 code until it is SATISFIED (`build66/OPERATOR-F6.md`). **D2** (reading (b)'s granularity under a node-id `--wave <file>::<Class>`, servicer residual 1) goes to the design sidecar.

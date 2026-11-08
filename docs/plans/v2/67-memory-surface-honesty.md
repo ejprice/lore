@@ -80,3 +80,16 @@ is down. Keep-with-trigger for UserPromptSubmit: precision ≥ a floor and token
 - No automatic Stop-hook capture (U3).
 - Also not adopted: derived_from, traces-as-memory, HyDE, LLM extraction, confidence floats.
 - Write-time duplicate/supersession candidates (study #6) wait until after X3; they belong to 33.
+
+## Operator rulings, 2026-11-08 (on design-sidecar RULING-10: `receipts/2026-11-08-sdk3-sidecar/RULING-10.md`)
+Measured read-only on the local ledger (294 rows): 17 importance overrides, all experiential; 26 supersedes, 0 crossing trust; `created_at` on 0/294. These counts supersede the 16/281/291 above.
+- **67a U1 → (b):** drop the `lore_remember` `importance` parameter, the stored column, `IMPORTANCE_DEFAULTS_BY_KIND`/`REINFORCEMENT_STEP` and their pins, using the removed-behaviour inventory. Kinds re-home on a `MemoryKind` `Literal` in `memory/backend.py`, and the served prose is derived from it. **Pin it like this:** a legacy ledger row carrying `importance` replays and recalls byte-identically to one without; the recall render carries no `importance` token.
+- **Transition: PLAIN REMOVAL, no refusing shim** (operator: *"This is a non issue. It's not in production. You're the only agent using lore right now."*).
+- **67c A1, the combined form minus refusal** (operator: *"Can we combine them all (minus refusal, which will cause an agent to work around)?"*):
+  - A cross-trust supersede is ALLOWED, and the `lore_remember` response NAMES it.
+  - Both directions are named. Only the downgrade (authoritative ← experiential) teaches the alternative: `kind=uncertainty` naming the old note, both live.
+  - The render derives the crossing at read time from the stored chain; a missing predecessor renders as a "not found" bound.
+  - Fixture matrix as in RULING-10 §2.
+- **Response shape APPROVED:** the first line is the id, and later lines are named guidance. The "id ALONE" pin is rewritten.
+- **`source_ref` lands in 67b**, with its render: optional, rendered `authoritative (source: …)` vs `(unsourced)`, and drift-marked by the existing refs oracle.
+- **Not adopted:** a system-minted uncertainty note; "authoritative requires source_ref"; any refusal of a cross-trust supersede.

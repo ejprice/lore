@@ -2543,3 +2543,4 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   - That list = the targeted reds at TREE 29c56751 (= 150b85b) in files no registry entry names. Other packets' full-currency close-outs subtract EXACTLY that node list and cite this line.
   - Named bound: the list is not attributed node by node. A node in it that is still red after the 66 build is an orphan, never 66's.
   - Trigger: F6 lands → RED_ORPHANED 0 with this line retired.
+- **2026-11-08 — packet 66 shared-venv note (operator: accept, note it):** since `9863c11`, this checkout's shared `.venv` resolves `surrealdb==3.0.0` while packet-66 code is mid-build on `feat/surreal-unification`. Anything run from this checkout (pytest, scripts) gets SDK 3. The lore-lore container bakes its own image and is unaffected. Trigger: packet 66 closes, and this line is retired by its close-out.
