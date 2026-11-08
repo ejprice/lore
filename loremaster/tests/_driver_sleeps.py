@@ -33,8 +33,17 @@ from typing import Any
 
 import pytest
 
-#: The modules a conflict-driver backoff is issued from (the immediate caller of ``asyncio.sleep``).
-DRIVER_SLEEP_CALLER_MODULES: frozenset[str] = frozenset({"loremaster.store._txn", "tenacity.asyncio"})
+#: The module a conflict-driver backoff is issued from (the immediate caller of ``asyncio.sleep``): tenacity's
+#: own default sleep, and nothing else. R29 (sidecar ruling 7, ADOPT A; the operator may overturn): the
+#: hand-rolled HEAD driver's module ``loremaster.store._txn`` is NOT admitted — R11/R18 rule the loop is
+#: tenacity's, and adversary round 3 proved a hand loop obeying every other law passes 738/738 otherwise.
+#:
+#: THREAT MODEL (stated in the instrument): this catches the HONEST developer who re-hand-rolls the retry loop
+#: around ``attempt()``. It is NOT a boundary against a hand loop that calls tenacity's private
+#: ``_portable_async_sleep`` (that is deliberate evasion, not a defect here). REACH, stated: only sleeps
+#: issued through tenacity's DEFAULT sleep; a driver passing its own ``sleep=`` is outside it (scout's ladder
+#: is held by its injected sleep's caller attribution instead — ``test_sdk3_native_retry._RecordingSleep``).
+DRIVER_SLEEP_CALLER_MODULES: frozenset[str] = frozenset({"tenacity.asyncio"})
 
 
 @dataclass
@@ -120,9 +129,9 @@ def mutate_the_wait_factory(
 
 #: The message every "the driver never backed off" premise failure carries.
 NO_DRIVER_SLEEP_HINT = (
-    "the conflict driver slept NO backoff. Either the run never retried (a never-retrying driver serves "
-    "byte-identical results on an uncontended run — the Leg-2 false clear R20 A2 keeps this control for), "
-    f"or the driver now sleeps from a module outside "
-    f"DRIVER_SLEEP_CALLER_MODULES={sorted(DRIVER_SLEEP_CALLER_MODULES)} "
-    "(loremaster/tests/_driver_sleeps.py) — then extend that set, never delete the control."
+    "the conflict driver slept no backoff THROUGH tenacity: either the run never retried (a never-retrying "
+    "driver serves byte-identical results on an uncontended run — the Leg-2 false clear R20 A2 keeps this "
+    "control for), or the driver's loop is hand-rolled again (R11/R18 — port it to tenacity's AsyncRetrying; "
+    f"never widen DRIVER_SLEEP_CALLER_MODULES={sorted(DRIVER_SLEEP_CALLER_MODULES)} in "
+    "loremaster/tests/_driver_sleeps.py)."
 )

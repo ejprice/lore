@@ -246,7 +246,18 @@ async def run(
     """
 
     async def _statement() -> Any:
-        return await connection.query(statement, params)
+        # SDK3 contract round 7 — THE RULE (R19 C10; pinned by
+        # ``test_surreal_harness::TestRunAnswersItsFirstStatement``). SDK 3.0's ``query()`` answers ONE entry
+        # per statement and RAISES the first failing statement (measured 2026-11-08,
+        # ``scratchpad/sdk3r7/probes/multi_statement.py``: ``RETURN 1; THROW 'x'`` raises; SDK 2.0 swallowed
+        # it). ``run`` answers the FIRST statement's result: it is the one-statement read helper AND the
+        # setup helper for multi-statement generated DDL (~239 non-literal call sites), so R2's production
+        # raise-on-≠1 is NOT its rule. An answer that is not a non-empty per-statement list FAILS CLOSED —
+        # the #486 reaper reads ``INFO FOR NS`` through here and must never read "nothing" as "no leak".
+        results = await connection.query(statement, params)
+        if not isinstance(results, list) or not results:
+            raise TypeError(f"run(): the SDK answered {results!r}, not one result per statement")
+        return results[0]
 
     # A real SDK connection carries its RPC URL as ``raw_url``; a scripted fake may not,
     # and then the harness's own configured URL is the honest attribution.

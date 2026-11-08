@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from collections.abc import Callable
 from typing import Any
 
@@ -307,14 +308,28 @@ def _window_edge_wait(base_s: float, cap_s: float) -> Any:
 
 
 class _RecordingSleep:
-    """Scout's injected ``sleep``: records every value, never waits."""
+    """Scout's injected ``sleep``: records every value AND the module that called it, never waits.
+
+    R29 rider 4 (landmine 1, scout sibling): a native ladder calls the injected sleep from tenacity's
+    ``AsyncRetrying`` (``tenacity.asyncio``); a hand-rolled ladder calls it from ``loremaster.scout``."""
 
     def __init__(self) -> None:
         self.values: list[float] = []
+        self.callers: list[str] = []
 
     async def __call__(self, delay: float) -> None:
         self.values.append(delay)
+        if delay != _SCOUT_POLL_S:
+            self.callers.append(str(sys._getframe(1).f_globals.get("__name__")))
         await _REAL_SLEEP(0)
+
+    def assert_the_ladder_is_tenacitys(self) -> None:
+        stray = sorted({caller for caller in self.callers if caller != "tenacity.asyncio"})
+        assert self.callers and not stray, (
+            f"scout's reconnect backoff was slept from {stray or 'nowhere'}, not by tenacity's "
+            f"AsyncRetrying: the ladder is hand-rolled again (R11/R18 — port it to AsyncRetrying; never "
+            f"widen this attribution)"
+        )
 
     @property
     def backoffs(self) -> list[float]:
@@ -398,6 +413,7 @@ class TestTheOneWaitFactoryReachesEveryIn66Site:
 
         sleep, _connects = await _run_scout(["fail", "fail", "ok", "fail"])
 
+        sleep.assert_the_ladder_is_tenacitys()
         assert sleep.backoffs and set(sleep.backoffs) == {_SENTINEL_WAIT_S}, (
             f"with the factory mutated, scout's ladder slept {sleep.backoffs}: it builds its own wait"
         )
@@ -426,6 +442,7 @@ class TestTheSubscriberBacksOffBeforeEveryReconnect:
         sleep, connects = await _run_scout(["ok", "fail", "ok"])
 
         expected = [_SCOUT_BASE_S, 2 * _SCOUT_BASE_S, _SCOUT_BASE_S]
+        sleep.assert_the_ladder_is_tenacitys()
         assert sleep.backoffs == expected, (
             f"scout slept {sleep.backoffs} across ok/drop → fail → ok/drop → stop; expected {expected}: "
             f"a drop is backed off at the base window before reconnecting, a failed reconnect climbs one "
