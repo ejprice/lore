@@ -17,18 +17,20 @@ racer can retry almost immediately while another waits out most of the window. T
 asymmetry is what actually breaks a tie. Jitter *around a floor* (the "equal jitter"
 family: ``window + uniform(0, k)``) leaves every racer bunched just above the same
 floor, which is the behaviour finding #102 already ruled insufficient for this repo
-(see :func:`loremaster.store._txn._txn_conflict_backoff_seconds`, whose contract
-pins the same property for the transaction-conflict seam).
+(``loremaster.store._txn.retry_on_conflict`` pins the same property for the
+transaction-conflict seam).
 
 **The implementation is tenacity's, not ours.** :class:`tenacity.wait.wait_random_exponential`
 is the Full Jitter algorithm from AWS's "Exponential Backoff and Jitter" — its own
-docstring names it as such — and it ships tested. We supply only the adapter that
-turns tenacity's retry-loop-shaped interface into the delay-for-attempt-N function
-these call sites need, because their retry LOOPS are proven, guarded, and deliberately
-not being churned (#202). The package does the job; we do not re-implement it.
+docstring names it as such — and it ships tested. :func:`full_jitter` is THE one wait
+factory (operator ruling R20 A4): a native ``AsyncRetrying`` loop passes it as ``wait=``
+(the conflict driver and scout's reconnect ladder, packet 66). :func:`jittered_backoff_delay`
+is the delay-for-attempt-N adapter for the loops packet 68 has not yet ported; it builds its
+strategy through :func:`full_jitter`, so the law has one construction. The package does the
+job; we do not re-implement it.
 
 **Import this module, not the function** (``from loresigil import backoff``, then
-``backoff.jittered_backoff_delay(...)``). The late binding is load-bearing, not
+``backoff.full_jitter(...)`` / ``backoff.jittered_backoff_delay(...)``). The late binding is load-bearing, not
 style: it is what lets one ``monkeypatch`` of this module's attribute reach EVERY
 genuine caller, so a test can tell "shares the policy" from "hand-rolled one that
 looks like it". A ``from ... import jittered_backoff_delay`` binds at import time and
@@ -90,8 +92,23 @@ def jittered_backoff_delay(attempt: int, *, base_s: float, cap_s: float) -> floa
     state = RetryCallState(retry_object=_RETRY_OBJECT, fn=None, args=(), kwargs={})
     # tenacity's strategies are 1-based; our call sites are 0-based.
     state.attempt_number = attempt + 1
-    strategy = wait_random_exponential(multiplier=base_s, max=cap_s, exp_base=BACKOFF_EXP_BASE)
-    return strategy(state)
+    # The ONE wait factory builds the strategy (adversary round 3 residual R11): this function and every
+    # native retry loop share a single construction of the law, so a change to it reaches both.
+    return full_jitter(base_s, cap_s)(state)
+
+
+def full_jitter(base_s: float, cap_s: float) -> wait_random_exponential:
+    """Return tenacity's native Full Jitter wait — THE one wait factory (operator ruling R20 A4).
+
+    The POLICY a retry site must not re-decide is WHICH tenacity wait it uses and its growth base; the
+    per-site ``base_s`` / ``cap_s`` are configuration. Every native ``AsyncRetrying`` / ``Retrying`` site
+    passes ``wait=backoff.full_jitter(base_s, cap_s)`` (looked up as a module attribute at call time, so one
+    mutation of this function reaches every site), and :func:`jittered_backoff_delay` delegates here too.
+
+    The returned strategy sleeps ``uniform(0, min(cap_s, base_s * 2**(n - 1)))`` after the ``n``-th failed
+    attempt (tenacity's 1-based ``attempt_number``).
+    """
+    return wait_random_exponential(multiplier=base_s, max=cap_s, exp_base=BACKOFF_EXP_BASE)
 
 
 def additive_jitter(base_s: float, *, width_s: float = ADDITIVE_JITTER_WIDTH_S) -> float:
