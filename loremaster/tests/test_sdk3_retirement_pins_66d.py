@@ -76,6 +76,7 @@ from loremaster.store._txn import (
     stored_datetime,
 )
 from loremaster.tasks import TaskLedger
+from surrealdb import RecordID
 from surrealdb.errors import ConnectionUnavailableError, InternalError, QueryError
 from websockets.exceptions import ConnectionClosedError
 
@@ -529,38 +530,60 @@ class TestTheAwaitVerbOnTheRealSdkWithTheStoreDown:
 
 
 # The values the deleted coercers would have ACCEPTED (an ISO string parsed; a naive datetime made UTC) and
-# the ones they refused or nulled — every one is now a refusal naming row and column.
-_NOT_A_TZ_AWARE_DATETIME: dict[str, object] = {
-    "iso-string": _LEGACY_STAMP_TEXT,
-    "naive-datetime": datetime(2026, 11, 8, 0, 0, 0),  # noqa: DTZ001 - the corrupt value under test
-    "unparseable-string": "not a date",
-    "integer": 1_762_560_000,
-    "missing": None,
+# the ones they refused or nulled — every one is now a refusal naming row and column — each with what the
+# refusal must say the column HELD (R34: the type's name, or "a naive datetime").
+_NOT_A_TZ_AWARE_DATETIME: dict[str, tuple[object, str]] = {
+    "iso-string": (_LEGACY_STAMP_TEXT, "str"),
+    "naive-datetime": (datetime(2026, 11, 8, 0, 0, 0), "a naive datetime"),  # noqa: DTZ001 - the corrupt value
+    "unparseable-string": ("not a date", "str"),
+    "integer": (1_762_560_000, "int"),
+    "missing": (None, "NoneType"),
 }
+
+# D4 (R34): the row the refusal names. A DIGIT-LED key, so the SDK's ``str(RecordID)`` brackets it
+# (``widget:⟨66d…⟩``) while the R7 (d) parts form does not — a build rendering ``str(row_id)`` is RED here.
+_D4_TABLE = "widget66d"
+_D4_ROW_ID = RecordID(_D4_TABLE, "66dwidget")
+_D4_ROW_TEXT = "widget66d:66dwidget"
+
+
+def _d4_refusal(*, row_text: str, column: str, held: str) -> str:
+    """The ONE served refusal text (R34 / sidecar RULING-11 rider 3), spelled out here as the spec."""
+    return (
+        f"{_D4_TABLE} {row_text} is unreadable: column {column!r} holds {held}, a tz-aware datetime was "
+        f"required — a store-integrity fault (report it with lore_findings); other rows are unaffected"
+    )
 
 
 class TestARequiredDatetimeColumnIsCheckedNeverCoerced:
     """The surviving guard over its whole input set: a tz-aware datetime passes through as the SAME object;
-    anything else is a ``SurrealStoreError`` naming the row and the column."""
+    anything else is a ``SurrealStoreError`` whose text is the R34 served refusal — table, the row's id in
+    its parts form, the column, what it held, and the store-integrity advice — pinned EXACTLY, once, here."""
 
     @pytest.mark.parametrize("label", sorted(_NOT_A_TZ_AWARE_DATETIME))
     def test_a_non_datetime_is_refused_naming_row_and_column(self, label: str) -> None:
+        value, held = _NOT_A_TZ_AWARE_DATETIME[label]
         with pytest.raises(SurrealStoreError) as raised:
-            required_datetime(_NOT_A_TZ_AWARE_DATETIME[label], row="widget66d", column="stamped_at66d")
-        assert "widget66d" in str(raised.value)
-        assert "stamped_at66d" in str(raised.value)
+            required_datetime(value, table=_D4_TABLE, row_id=_D4_ROW_ID, column="stamped_at66d")
+        assert str(raised.value) == _d4_refusal(row_text=_D4_ROW_TEXT, column="stamped_at66d", held=held)
 
     @pytest.mark.parametrize("label", sorted(k for k in _NOT_A_TZ_AWARE_DATETIME if k != "missing"))
     def test_an_optional_column_refuses_the_same_values(self, label: str) -> None:
+        value, held = _NOT_A_TZ_AWARE_DATETIME[label]
         with pytest.raises(SurrealStoreError) as raised:
-            stored_datetime(_NOT_A_TZ_AWARE_DATETIME[label], row="widget66d", column="expires_at66d")
-        assert "expires_at66d" in str(raised.value)
+            stored_datetime(value, table=_D4_TABLE, row_id=_D4_ROW_ID, column="expires_at66d")
+        assert str(raised.value) == _d4_refusal(row_text=_D4_ROW_TEXT, column="expires_at66d", held=held)
+
+    def test_a_row_with_no_id_is_still_refused_and_says_so(self) -> None:
+        with pytest.raises(SurrealStoreError) as raised:
+            required_datetime(_LEGACY_STAMP_TEXT, table=_D4_TABLE, row_id=None, column="stamped_at66d")
+        assert str(raised.value) == _d4_refusal(row_text="(id unknown)", column="stamped_at66d", held="str")
 
     def test_control_an_aware_datetime_is_returned_unchanged_and_an_unset_option_is_none(self) -> None:
         aware = datetime(2026, 11, 8, 12, 0, 0, tzinfo=UTC)
-        assert required_datetime(aware, row="widget66d", column="stamped_at66d") is aware
-        assert stored_datetime(aware, row="widget66d", column="expires_at66d") is aware
-        assert stored_datetime(None, row="widget66d", column="expires_at66d") is None
+        assert required_datetime(aware, table=_D4_TABLE, row_id=_D4_ROW_ID, column="stamped_at66d") is aware
+        assert stored_datetime(aware, table=_D4_TABLE, row_id=_D4_ROW_ID, column="expires_at66d") is aware
+        assert stored_datetime(None, table=_D4_TABLE, row_id=_D4_ROW_ID, column="expires_at66d") is None
 
 
 async def _corrupt_created_at(env: SurrealEnv, table: str) -> None:
