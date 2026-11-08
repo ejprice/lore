@@ -517,3 +517,8 @@ Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-4.md`.
    (suffixed name) loses nothing.
 6. **Interim reds while a request is open** → accepting a request registers the node under F6 `red_nodeids` (owner:
    servicer; trigger: the ruling commit); self-destruct clears it on green.
+
+## R25 — budget +1 more of each (operator, 2026-11-08)
+Operator, verbatim: *"Because my changes missed the last round, add another round of each to the allowance."* Rulings
+R17–R24 landed after contract round 6 was briefed. Budget now: contract rounds 7 AND 8, adversary rounds 4 AND 5, each
+only if needed; then BUILD (R16) under R23/R24 (builder never edits tests; a standing contract author services them).
