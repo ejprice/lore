@@ -548,13 +548,25 @@ _D4_ROW_ID = RecordID(_D4_TABLE, "66dwidget")
 _D4_ROW_TEXT = "widget66d:66dwidget"
 
 
+#: R34's scope clause as approved for BOTH call shapes (lead 19110: a listing AND a single-record read reach
+#: the same row mapper, so the clause names the one fact true of both — this call read that row).
+_R34_TAIL = (
+    "a tz-aware datetime was required — a store-integrity fault; the store's other rows are intact, but this "
+    "call reads that row and could not be completed — report it with lore_findings"
+)
+
+
 def _d4_refusal(*, row_text: str, column: str, held: str) -> str:
     """The ONE served refusal text (R34 / sidecar RULING-11 rider 3), spelled out here as the spec."""
-    return (
-        f"{_D4_TABLE} {row_text} is unreadable: column {column!r} holds {held}, a tz-aware datetime was "
-        f"required — a store-integrity fault; the store's other rows are intact; this listing could not be "
-        f"completed — report it with lore_findings"
-    )
+    return f"{_D4_TABLE} {row_text} is unreadable: column {column!r} holds {held}, {_R34_TAIL}"
+
+
+def _assert_served_refusal(error: BaseException, *, table: str, row_key: str, column: str) -> None:
+    """A refusal met through a REAL read: the table, the row's key, the column, what it held, and the R34
+    clause exactly — whichever call shape (listing or single-record read) reached the row."""
+    text = str(error)
+    assert text.startswith(f"{table} ") and row_key in text, text
+    assert f"column {column!r} holds str, {_R34_TAIL}" in text, text
 
 
 class TestARequiredDatetimeColumnIsCheckedNeverCoerced:
@@ -628,8 +640,11 @@ class TestADirtyRowIsRefusedWhereItIsServed:
             await _corrupt_created_at(store_env, "task")
             with pytest.raises(SurrealStoreError) as raised:
                 await ledger.get_task(task_id)
-            assert "task" in str(raised.value)
-            assert "created_at" in str(raised.value)
+            _assert_served_refusal(raised.value, table="task", row_key=task_id, column="created_at")
+            # The LISTING shape reaches the same mapper and serves the same true-for-both clause (19110).
+            with pytest.raises(SurrealStoreError) as listed:
+                await ledger.query_tasks()
+            _assert_served_refusal(listed.value, table="task", row_key=task_id, column="created_at")
         finally:
             await ledger.close()
 
@@ -644,7 +659,6 @@ class TestADirtyRowIsRefusedWhereItIsServed:
             await _corrupt_created_at(store_env, "finding")
             with pytest.raises(SurrealStoreError) as raised:
                 await ledger.get(filed.number)
-            assert "finding" in str(raised.value)
-            assert "created_at" in str(raised.value)
+            _assert_served_refusal(raised.value, table="finding", row_key=filed.id, column="created_at")
         finally:
             await ledger.close()
