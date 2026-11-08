@@ -548,11 +548,12 @@ _D4_ROW_ID = RecordID(_D4_TABLE, "66dwidget")
 _D4_ROW_TEXT = "widget66d:66dwidget"
 
 
-#: R34's scope clause as approved for BOTH call shapes (lead 19110: a listing AND a single-record read reach
-#: the same row mapper, so the clause names the one fact true of both — this call read that row).
+#: R34's scope clause, true for BOTH call shapes (lead 19110: a listing AND a single-record read reach the
+#: same row mapper) and claiming nothing about rows it did not read (RULING-16 §S4: "the store's other rows
+#: are intact" was a false clear under schema drift, where every row fails).
 _R34_TAIL = (
-    "a tz-aware datetime was required — a store-integrity fault; the store's other rows are intact, but this "
-    "call reads that row and could not be completed — report it with lore_findings"
+    "a tz-aware datetime was required — a store-integrity fault on that row, not a connection failure; this "
+    "call could not be completed, and this read says nothing about other rows — report it with lore_findings"
 )
 
 
@@ -600,19 +601,20 @@ class TestARequiredDatetimeColumnIsCheckedNeverCoerced:
         assert stored_datetime(None, table=_D4_TABLE, row_id=_D4_ROW_ID, column="expires_at66d") is None
 
 
-async def _corrupt_created_at(env: SurrealEnv, table: str) -> None:
-    """Give every ``table`` row a legacy STRING ``created_at``, then restore the column's declared type: the
-    engine does not re-validate existing rows on ``DEFINE FIELD OVERWRITE`` (probed on 3.3.5), so the row
-    stays dirty under the current schema — the state a long-lived store can hold and a virgin DB cannot."""
+async def _corrupt_created_at(env: SurrealEnv, table: str, value: str | list[str]) -> None:
+    """Give every ``table`` row the non-datetime ``created_at`` ``value``, then restore the column's declared
+    type: the engine does not re-validate existing rows on ``DEFINE FIELD OVERWRITE`` (probed on 3.3.5), so
+    the row stays dirty under the current schema — the state a long-lived store can hold and a virgin DB
+    cannot. ``value`` has no default: which type the row holds decides which reads can reach it (a
+    ``stamp > $since`` page admits an array but never a string — see the rollup refusal pin in r15)."""
     admin = await connect_admin(env)
     try:
         await admin.query(f"DEFINE FIELD OVERWRITE created_at ON {table} TYPE any")
-        await admin.query(
-            f"UPDATE {table} SET created_at = $stamp RETURN NONE", {"stamp": _LEGACY_STAMP_TEXT}
-        )
+        dirty: dict[str, Any] = {"stamp": value}
+        await admin.query(f"UPDATE {table} SET created_at = $stamp RETURN NONE", dirty)
         await admin.query(f"DEFINE FIELD OVERWRITE created_at ON {table} TYPE datetime")
         raw = await admin.query(f"SELECT VALUE created_at FROM {table}")
-        assert raw == [[_LEGACY_STAMP_TEXT]], f"the dirty row was not written: {raw!r}"
+        assert raw == [[value]], f"the dirty row was not written: {raw!r}"
     finally:
         await admin.close()
 
@@ -637,7 +639,7 @@ class TestADirtyRowIsRefusedWhereItIsServed:
         try:
             task_id = await ledger.create_task(subject="s66d", description="d66d", created_by="reqd-pins-66")
             assert isinstance((await ledger.get_task(task_id)).created_at, datetime)
-            await _corrupt_created_at(store_env, "task")
+            await _corrupt_created_at(store_env, "task", _LEGACY_STAMP_TEXT)
             with pytest.raises(SurrealStoreError) as raised:
                 await ledger.get_task(task_id)
             _assert_served_refusal(raised.value, table="task", row_key=task_id, column="created_at")
@@ -656,7 +658,7 @@ class TestADirtyRowIsRefusedWhereItIsServed:
                 "s66d", "b66d", area="sdk3", category="retirement_pin", created_by="reqd-pins-66"
             )
             assert isinstance((await ledger.get(filed.number)).created_at, datetime)
-            await _corrupt_created_at(store_env, "finding")
+            await _corrupt_created_at(store_env, "finding", _LEGACY_STAMP_TEXT)
             with pytest.raises(SurrealStoreError) as raised:
                 await ledger.get(filed.number)
             _assert_served_refusal(raised.value, table="finding", row_key=filed.id, column="created_at")

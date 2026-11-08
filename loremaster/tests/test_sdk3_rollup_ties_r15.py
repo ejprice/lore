@@ -16,7 +16,8 @@ elided tail are NAMED as not covered by the next cursor (``H2_MESSAGE_HELD`` / `
 and its remedy is a larger ``limit`` on the SAME call.
 
 THE SERVED TEXT lives ONCE, in the four module constants below (``H1_HELD`` / ``H2_MESSAGE_HELD`` /
-``H2_MESSAGE_ELISION`` / ``H3_OTHER_LEGS_RESERVE``; the strings agreed with the builder 2026-11-08), so
+``H2_MESSAGE_ELISION`` / ``H3_EARLIEST_RESUME``; agreed with the builder 2026-11-08, h3 re-worded by
+RULING-16 §S1), so
 the wording is swapped in one place. ``{stamp}`` is the served nine-digit form
 (``store._txn.served_instant_text``).
 
@@ -47,14 +48,16 @@ import re
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
+import pytest
 import pytest_asyncio
 from _governed_contract import PRINCIPAL_ALICE, PRINCIPAL_BOB, member, seed_message_legacy
 from _surreal_harness import connect_admin, run, unique_database
 from loremaster.agents import Agent
-from loremaster.store._txn import parse_served_instant, served_instant_text
+from loremaster.store._txn import SurrealStoreError, parse_served_instant, served_instant_text
 from loremaster.store.surreal_schema import FINDING_TABLE, MESSAGE_TABLE, TASK_TABLE
 from surrealdb import RecordID
 from test_rollup_extension import _SESSION, _RollupCtx
+from test_sdk3_retirement_pins_66d import _corrupt_created_at
 
 # --- THE SERVED TEXT, pinned ONCE (RULING-15 §3.3; swap the agreed strings here) -------------------
 
@@ -73,10 +76,13 @@ H2_MESSAGE_ELISION = (
     "messages activity (showing {shown} of {total} — the elided messages are not covered by the next"
     " cursor; raise limit on THIS call to see them):"
 )
-#: A truncated task / finding leg's header: resume at the elision point; other legs re-serve (§4 Q2).
-H3_OTHER_LEGS_RESERVE = (
-    "{label} (showing {shown} of {total} — the next cursor resumes at the elision point, and the other"
-    " legs re-serve their rows above it; re-call rollup with it, or raise limit):"
+#: A truncated task / finding leg's header (RULING-16 §S1): ONE leg-agnostic sentence, true whichever leg
+#: renders it — the cursor is the earliest resume point of ANY leg (a held leg's is ``since``), so this
+#: leg's rows above it are served again too; the consumer dedupes by id (rollup rows render no stamp).
+H3_EARLIEST_RESUME = (
+    "{label} (showing {shown} of {total} — the next cursor is the earliest resume point of any leg, so rows"
+    " above it in any leg, this one included, are served again next call: dedupe by task id or finding"
+    " number; re-call rollup with it, or raise limit):"
 )
 
 # --- fixture constants -----------------------------------------------------------------------------
@@ -195,6 +201,18 @@ class _TieCtx(_RollupCtx):
         )
         return result.message.seq
 
+    async def message_record_key(self, seq: int) -> str:
+        """The engine-minted key of the message row ``seq``, read back through admin DML."""
+        connection = await connect_admin(self._env)
+        try:
+            ids = await run(
+                connection, f"SELECT VALUE id FROM {MESSAGE_TABLE} WHERE seq = $seq", {"seq": seq}
+            )
+        finally:
+            await connection.close()
+        assert isinstance(ids, list) and len(ids) == 1 and isinstance(ids[0], RecordID), ids
+        return str(ids[0].id)
+
     async def served_rollup(self, *, since: str, limit: int | None) -> str:
         """The rollup as the ``lore_tasks`` dispatcher calls it, WITH a capability (governed message leg)."""
         return await self.rollup(since=since, limit=limit)
@@ -247,8 +265,8 @@ class TestHeldTaskGroup:
             f"a {_TIE_WIDTH}-row task group at one stamp under limit={_HELD_LIMIT} must be NAMED "
             f"(H1_HELD); the page served instead:\n{held_page}"
         )
-        assert H3_OTHER_LEGS_RESERVE.format(label=_TASK_LABEL, shown=1, total=_TIE_WIDTH) not in held_page, (
-            f"a HELD leg must not also claim the cursor 'resumes at the elision point':\n{held_page}"
+        assert H3_EARLIEST_RESUME.format(label=_TASK_LABEL, shown=1, total=_TIE_WIDTH) not in held_page, (
+            f"a HELD leg must not also serve the truncated-leg header (H3):\n{held_page}"
         )
         assert sum(_task_hits(held_page, task_id) for task_id in tied) == _HELD_LIMIT, held_page
         assert _served_cursor(held_page) == _served(_SINCE), (
@@ -315,7 +333,7 @@ class TestShrinkAtTheCut:
             f"{served_sets!r}\n" + "\n----\n".join(pages)
         )
         assert cursors[:3] == [_served(_SHRINK_S1), _served(_SHRINK_S2), _served(_SHRINK_S3)], cursors
-        assert H3_OTHER_LEGS_RESERVE.format(label=_TASK_LABEL, shown=1, total=4) in pages[0].splitlines(), (
+        assert H3_EARLIEST_RESUME.format(label=_TASK_LABEL, shown=1, total=4) in pages[0].splitlines(), (
             f"the shrunk first page is a truncated leg and must say so (H3):\n{pages[0]}"
         )
         assert _idle_text(_SHRINK_S3) in pages[3].splitlines(), pages[3]
@@ -342,9 +360,9 @@ class TestHeldFindingGroup:
         held_page = await tie_ctx.served_rollup(since=_SINCE, limit=_HELD_LIMIT)
         held_line = _held_line(_FINDING_LABEL, 1, _TIE_WIDTH, _TIE_WIDTH, _TIE_STAMP, _HELD_LIMIT)
         assert held_line in held_page.splitlines(), held_page
-        assert (
-            H3_OTHER_LEGS_RESERVE.format(label=_FINDING_LABEL, shown=1, total=_TIE_WIDTH) not in held_page
-        ), held_page
+        assert H3_EARLIEST_RESUME.format(label=_FINDING_LABEL, shown=1, total=_TIE_WIDTH) not in held_page, (
+            held_page
+        )
         assert sum(_finding_hits(held_page, number) for number in tied) == _HELD_LIMIT, held_page
         assert _served_cursor(held_page) == _served(_SINCE), held_page
 
@@ -612,3 +630,113 @@ class TestTheCursorOrdersBelowTheMicrosecond:
             f"the finding at {_SUB_US_MID} (between the two tails) was never served — skipped forever"
         )
         assert served_tasks == {task_tail, task_beyond}, served_tasks
+
+
+# ------------------------------------------------------------------------------------------------------
+# RULING-16 (R45) §S1: h3 was derived on ONE truncated leg and served on every one. With two truncated
+# legs the cursor is the EARLIER leg's resume point, so the LATER leg's served rows lie above it and are
+# served again — the old "the other legs re-serve" was false for the leg rendering it. The fixture is the
+# audit's (``probe_h3_two_truncated.py``): task leg truncated at HIGH, finding leg at LOW.
+# ------------------------------------------------------------------------------------------------------
+
+_TWO_LEGS_LOW = "2031-05-06T07:08:09.100000001Z"
+_TWO_LEGS_MID = "2031-05-06T07:08:09.200000002Z"
+_TWO_LEGS_HIGH = "2031-05-06T07:08:09.300000003Z"
+#: P8's second finding, strictly above ``_ABOVE_TIE_STAMP`` (the finding leg's served row).
+_HELD_NEIGHBOUR_BEYOND = "2031-05-06T07:08:11.000000011Z"
+
+
+class TestTwoTruncatedLegsServeOneTrueHeader:
+    """P7: two truncated legs whose resume points differ. Both headers are ``H3_EARLIEST_RESUME``, the cursor
+    is the EARLIER resume point, and the walk MEASURES the "this one included" clause: the later leg's served
+    row is served again next call."""
+
+    async def test_the_later_truncated_legs_row_is_served_again_as_its_header_says(
+        self, tie_ctx: _TieCtx
+    ) -> None:
+        task_tail = await tie_ctx.forced_task("task page tail", _TWO_LEGS_HIGH)
+        task_beyond = await tie_ctx.forced_task("task beyond the page", _ABOVE_TIE_STAMP)
+        finding_tail = await tie_ctx.forced_finding("finding page tail", _TWO_LEGS_LOW)
+        finding_between = await tie_ctx.forced_finding("finding between the two tails", _TWO_LEGS_MID)
+
+        page = await tie_ctx.served_rollup(since=_SINCE, limit=1)
+        lines = page.splitlines()
+        assert H3_EARLIEST_RESUME.format(label=_TASK_LABEL, shown=1, total=2) in lines, (
+            f"the task leg (truncated at the LATER resume point) must serve H3_EARLIEST_RESUME:\n{page}"
+        )
+        assert H3_EARLIEST_RESUME.format(label=_FINDING_LABEL, shown=1, total=2) in lines, page
+        assert _task_hits(page, task_tail) == 1 and _task_hits(page, task_beyond) == 0, page
+        assert _finding_hits(page, finding_tail) == 1 and _finding_hits(page, finding_between) == 0, page
+        assert _served_cursor(page) == _served(_TWO_LEGS_LOW), (
+            f"two truncated legs resume at the EARLIER resume point ({_TWO_LEGS_LOW}):\n{page}"
+        )
+
+        again = await tie_ctx.served_rollup(since=_served_cursor(page), limit=1)
+        assert _task_hits(again, task_tail) == 1, (
+            f"the task leg's header says its rows above the cursor are served again ('this one included'); "
+            f"the next call must serve the task at {_TWO_LEGS_HIGH} again:\n{again}"
+        )
+        assert _finding_hits(again, finding_between) == 1, (
+            f"the finding at {_TWO_LEGS_MID} (between the two resume points) must be reached:\n{again}"
+        )
+
+
+class TestATruncatedLegBesideAHeldLeg:
+    """P8: a held task leg beside a truncated finding leg. The task header is ``H1_HELD``, the finding header
+    ``H3_EARLIEST_RESUME``; the held leg's resume point is ``since``, so the cursor is ``since`` and the
+    finding leg's served row is served again next call. Driven LIVE (RULING-16 allowed the render seam; the
+    store path is the stronger instrument and costs the same fixture)."""
+
+    async def test_the_truncated_leg_says_its_rows_are_served_again_beside_a_held_leg(
+        self, tie_ctx: _TieCtx
+    ) -> None:
+        for index in range(_TIE_WIDTH):
+            await tie_ctx.forced_task(f"tied task {index}", _TIE_STAMP)
+        served_finding = await tie_ctx.forced_finding("finding page head", _ABOVE_TIE_STAMP)
+        await tie_ctx.forced_finding("finding beyond the page", _HELD_NEIGHBOUR_BEYOND)
+
+        page = await tie_ctx.served_rollup(since=_SINCE, limit=_HELD_LIMIT)
+        lines = page.splitlines()
+        assert _held_line(_TASK_LABEL, 1, _TIE_WIDTH, _TIE_WIDTH, _TIE_STAMP, _HELD_LIMIT) in lines, page
+        assert H3_EARLIEST_RESUME.format(label=_FINDING_LABEL, shown=1, total=2) in lines, (
+            f"the truncated finding leg beside a held leg must serve H3_EARLIEST_RESUME:\n{page}"
+        )
+        assert _finding_hits(page, served_finding) == 1, page
+        assert _served_cursor(page) == _served(_SINCE), page
+
+        again = await tie_ctx.served_rollup(since=_served_cursor(page), limit=_HELD_LIMIT)
+        assert _finding_hits(again, served_finding) == 1, (
+            f"the finding leg's header says its row above the cursor is served again:\n{again}"
+        )
+
+
+# ------------------------------------------------------------------------------------------------------
+# RULING-16 (R45) §S6: the message leg's SELECT did not project ``id``, so a refused message row was named
+# "(id unknown)". The refusal must name the row it read.
+# ------------------------------------------------------------------------------------------------------
+
+
+#: The dirty ``created_at`` S6 forces. NOT a string: the page reads ``created_at > $since`` and the engine
+#: (3.3.5, probed with both datetime controls) admits an array, object, uuid or record there but never a
+#: string, number, bool, null or duration — a string-stamped row never reaches the mapper, so it cannot
+#: exercise the refusal's row id at all.
+_DIRTY_MESSAGE_STAMP = ["2026-11-08T00:00:00Z"]
+
+
+class TestARefusedMessageRowIsNamed:
+    """S6: a message whose ``created_at`` is a dirty non-datetime the page READS (the long-lived-store state)
+    makes the rollup refuse, and the refusal names ``message:<key>`` — the record text itself."""
+
+    async def test_a_message_with_a_non_datetime_created_at_is_refused_naming_its_record(
+        self, tie_ctx: _TieCtx
+    ) -> None:
+        [seq] = await tie_ctx.forced_messages([_TIE_STAMP])
+        key = await tie_ctx.message_record_key(seq)
+        await _corrupt_created_at(tie_ctx._env, MESSAGE_TABLE, _DIRTY_MESSAGE_STAMP)
+
+        with pytest.raises(SurrealStoreError) as raised:
+            await tie_ctx.served_rollup(since=_SINCE, limit=None)
+        text = str(raised.value)
+        assert text.startswith(
+            f"{MESSAGE_TABLE} {MESSAGE_TABLE}:{key} is unreadable: column 'created_at' holds list, "
+        ), text

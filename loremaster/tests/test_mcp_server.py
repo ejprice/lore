@@ -139,6 +139,7 @@ from render_injection_scaffold import (
 )
 from surrealdb.data.types.datetime import parse_instant
 from test_comms_wiring import _backdate_heartbeat, _open_context
+from test_sdk3_rollup_ties_r15 import H3_EARLIEST_RESUME
 
 # CORPSE-A / removed-behaviour-1 (packet 63a): the governed memory retrofit makes the
 # packet 63a-ii (design §10.7-Y, operator ruling A): the AppContext composition root
@@ -7380,10 +7381,8 @@ class TestRollupDispatch:
             await getattr(rollup_ctx, "tasks")(action="rollup", limit=2)
         )
         lines = rendered.splitlines()
-        assert (
-            "tasks transitioned (showing 2 of 3 — the next cursor resumes at the elision point, "
-            "and the other legs re-serve their rows above it; re-call rollup with it, or raise limit):"
-        ) in lines
+        # ONE spelling of h3 (RULING-16 §S2): the constant the r15 tie pins format, imported, never retyped.
+        assert H3_EARLIEST_RESUME.format(label="tasks transitioned", shown=2, total=3) in lines, rendered
 
     async def test_next_cursor_with_no_truncation_is_the_max_served_stamp(
         self, rollup_ctx: AppContext
