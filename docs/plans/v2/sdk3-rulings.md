@@ -347,3 +347,11 @@ All five round-1 survivors are now killed. Missing, routed to round 6:
   `long_operation` like the other 16 owners.
 Round 6 is the last contract round and adversary round 3 the last adversary round in the operator's budget; a
 contract still unsatisfiable after them goes back to the operator, not to a seventh round.
+
+## R16 — budget extended; build follows (operator, 2026-11-08)
+Operator, verbatim: *"Add one more contract and adversary to the budget if need, then go to build."* Budget now: contract
+round 7 and adversary round 4, each only if needed. After the last adversary round the packet goes to BUILD: Opus
+builder → cold audit → ONE full suite (flock, -n 12) → in-image conformance against a COPY of :18500 → close-out.
+Missing pins still open at that point travel to the builder brief and the cold audit as NAMED residuals; an
+UNSATISFIABLE pin (red on every correct build) is the one thing that still stops a builder, since a builder may not
+edit tests. Still NO prod deploy (65-cut owns it).
