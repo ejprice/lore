@@ -316,3 +316,34 @@ checks each "pinned" verdict row names an existing test is REMOVED** (a test abo
 sees only handlers that name the class (or its family); a bare `except Exception` site is adjudicated by hand
 (§R5.1's 39-row table) and is not guarded — re-open trigger: a served false "failed" traced to such a site.
 Owner of the removal: contract round 6 if the adversary sends one; otherwise a minimal contract touch before the builder.
+
+## R15 — adversary round 2: INSUFFICIENT → contract round 6, the LAST (lead, under the grant, 2026-11-07)
+Adversary round 2 graded `d90936d`. **R11 has NO contract contradiction:** a correct tenacity port passes all 26
+attributable retry/scout nodes; every one was a reference bug. Root cause, a tenacity trap the builder must know:
+`AsyncRetrying.__call__` never awaits the result of a NON-coroutine callable (`retry_on_conflict(lambda: …)` returns an
+un-awaited coroutine), and tenacity computes `wait` BEFORE `stop` (an adapter must not draw on the exhausting attempt).
+All five round-1 survivors are now killed. Missing, routed to round 6:
+- **MP-A (F-r5-3 confirmed):** an unknown-outcome commit that did NOT land raised out of `index_all` aborts the sweep.
+  Pin: one file's store fault never stops the sweep, whatever its outcome class (batch + realtime legs).
+- **MP-B:** the driver can consult the shared jitter source and sleep something else (equal jitter) with 0 new reds.
+  Pin: every slept backoff equals the drawn full-jitter value (extend the draw-count pin with `slept == drawn`); sibling:
+  scout's connect wait.
+- **MP-C — SATISFIABILITY, the property:** *every targeted node GREEN AT HEAD is GREEN on the SDK-3 reference*, measured
+  against HEAD (never against an earlier reference), with a C10 harness in the reference. 117 nodes fail it today
+  (F-a fakes not applied beyond the 3 C1 doubles; C2 `route_connections` not applied; the C9 class in the TEST tree —
+  test-side `str(RecordID)` vs engine/bare text, ~30 cloned `_bare` helpers; the StoreTraffic instrument counting at
+  `query_raw` while SDK-3 `query()` bypasses it; am-37 adjudication rows missing for `SurrealOutcomeUnknownError` and
+  `TxnRowCapExceededError`; `test_ingest_entity_seam` ×8 `links=[]` UNTRACED; a19's `_renderings`).
+- **Ownership rulings (R9 D3 extended):** the StoreTraffic instrument and the am-37 rows are CONTRACT surface (guard
+  instruments and ruling tables, not plumbing). Pre-existing spelling scans that encode RETIRED rulings — the
+  socket-owner AST scans ×2 (R5 F2b) and `test_derivation_source_unification`'s `RELATE` regex ×3 (R4) — are rewritten
+  as behaviour pins or retired with a one-line reason. The governed SDK-name scan that now false-fires on contextvar
+  `.set()/.reset()` (SDK 3 added `set`/`reset`) is narrowed to SDK receivers — it fires on correct code. The proxies
+  that a correct port PASSES (the `_ensure_connection` caller scan #127, the `last_conflict_cause` scan) stay.
+- **Also round 6:** RS7's rider (an `upsert` batch over the row cap is refused — R13 ruled routing, nothing pins it);
+  R14's removal of the "pin row names a real test" clause; stale drop-list rows #21/#22 (row #22 is R since R11; #21
+  overlaps R11); a named per-C-row receipt table for the cold audit.
+- **Builder (not contract):** C10 `_surreal_harness.run`; the `store/surreal.py` `ensure_ready` timeout routed through
+  `long_operation` like the other 16 owners.
+Round 6 is the last contract round and adversary round 3 the last adversary round in the operator's budget; a
+contract still unsatisfiable after them goes back to the operator, not to a seventh round.
