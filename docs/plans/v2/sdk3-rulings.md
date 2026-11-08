@@ -218,3 +218,18 @@ MP3 (R5's named overrides pinned on one owner only — `PrincipalStore.ensure_re
   (the adversary's TRAP list was 2/4 wrong on `test_surreal_apply`).
 Raised to the operator, NOT decided: RS9 — drop row #22 (`retry_on_conflict`, K) was kept without checking
 `tenacity` (installed, the global default for retries); changing an approved K row is the operator's call.
+
+## R10 — drop row #22 (`retry_on_conflict`) re-fated K → C: evaluate `tenacity` (operator, 2026-11-07)
+Operator, verbatim: *"Evaluate it for replacement but keep it if it works better."* (answering R9's RS9.)
+- **Fate C:** `tenacity` (installed, 9.1.4; the global default for retry/backoff) replaces the hand-rolled
+  `retry_on_conflict` **iff** a tenacity build is at least as good, measured; otherwise the hand-rolled one stays,
+  with the measurement as its keep-reason. Equal ⇒ replace (packages over hand-rolling).
+- **Gate (and pin/measure it like this):** the tenacity build must (1) pass every existing conflict-retry pin
+  unchanged — T1, T2 (16-way, both paths), RP3, `test_retry_seam.py`; (2) classify conflicts through the seam's own
+  predicate (`_is_retryable_conflict_kind` / the root-cause selector) — a tenacity `retry=` that matches text locally
+  is ROUTING-NOT-SHARING and fails the gate; (3) keep a full-jitter wait (`wait_random_exponential`, not
+  `wait_exponential_jitter`) and the same attempt budget unless the measurement says otherwise; (4) measure both
+  builds on T2's 16-way contention over 20 runs — attempts-to-success and wall time, mean and max. "Works better" =
+  fewer lost/failed transactions first, then lower max wall time; ties go to tenacity.
+- **Who:** contract round 4 reports whether tenacity's API can express (1)–(3); the builder runs (4) and reports the
+  row's measurement and fate like every other C row (R8); the cold audit verifies that receipt.
