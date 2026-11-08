@@ -602,8 +602,9 @@ class TestTheIndexerStoreFailureReasonIsOneReasonForTwoCauses:
             "KNOWN BOUND (am-10 §3 sibling, re-ruled under packet 66 R36) moved — the ONE per-file store "
             "catch site changed; re-rule deliberately"
         )
-        (handler,) = [site.handler for site in sites]
-        body = ast.unparse(ast.Module(body=handler.body, type_ignores=[]))
+        (only_site,) = sites
+        assert only_site.handler is not None  # the comprehension kept handler-bearing sites only
+        body = ast.unparse(ast.Module(body=only_site.handler.body, type_ignores=[]))
         assert "TxnRowCapExceededError" in body, (
             "the narrowing moved: the one site no longer gives a row-cap refusal its own bound-naming reason "
             "(R4 rider 3) — re-rule deliberately"
