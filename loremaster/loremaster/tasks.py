@@ -2520,18 +2520,15 @@ class TaskLedger:
 
     @staticmethod
     def _traversal_ids(row: Mapping[str, Any], key: str) -> list[str]:
-        """Decode one traversal projection's node ids.
+        """Decode one traversal projection's node ids to their bare keys.
 
-        ``str(record.id)`` for a ``RecordID`` — never ``str(record).split(":")``, which is
-        right for ``task:abc`` and WRONG for the bracketed rendering the SDK gives a
-        uuid-shaped id (store reference §7). A served id that ``get_task`` cannot resolve
-        is worse than no answer: an agent will use it, and every call it makes with it
-        fails.
+        THE id-to-key rule, :func:`~loremaster.store._txn.record_key` (R8 F16; R43 R-6 retired this
+        method's private copy): a ``RecordID`` gives its key from its parts, never by parsing
+        ``str(record)``, which SDK 3.0 brackets for a digit-led or uuid-shaped key. A served id that
+        ``get_task`` cannot resolve is worse than no answer: an agent will use it, and every call it
+        makes with it fails.
         """
-        return [
-            str(node.id) if isinstance(node, RecordID) else str(node)
-            for node in (row.get(key) or ())
-        ]
+        return [record_key(node) for node in (row.get(key) or ())]
 
     # -- write helpers ------------------------------------------------------
 

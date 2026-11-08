@@ -220,6 +220,7 @@ from loremaster.store._txn import (
     SurrealStoreError,
     TxnContentionExhaustedError,
     parse_served_instant,
+    record_key,
     served_instant_text,
 )
 from loremaster.store.candidate import Candidate
@@ -6735,7 +6736,7 @@ class AppContext:
         session_keep: Any = None
         kept_by_me = False
         principal_bare: str | None = (
-            str(principal.id).split(":", 1)[-1] if principal is not None else None
+            record_key(principal.id) if principal is not None else None
         )
         # 63c-i-a (amendment-2 A2): THE session keep's bare id — the provenance pair's second
         # half, handed to the registry on EVERY call (``None`` explicitly for a tokenless α
@@ -6768,7 +6769,7 @@ class AppContext:
             existing_keep = await keep_store.get_by_key(f"session:{session}")
             if existing_keep is not None:
                 await _sf_63_1_gate(
-                    keep_store, str(existing_keep.id).split(":", 1)[-1], principal.email
+                    keep_store, record_key(existing_keep.id), principal.email
                 )
         await self.agent_registry.preflight(
             agent,
@@ -6783,7 +6784,7 @@ class AppContext:
             session_keep = await keep_store.get_or_create_keyed(
                 key=f"session:{session}", type="session", keeper_email=principal.email, name=session
             )
-            session_keep_bare = str(session_keep.id).split(":", 1)[-1]
+            session_keep_bare = record_key(session_keep.id)
             await _sf_63_1_gate(keep_store, session_keep_bare, principal.email)
             kept_by_me = session_keep.keeper_id == principal_bare
         result = await self.agent_registry.register(
@@ -7334,7 +7335,7 @@ class AppContext:
         # §4.A / §6 — the message scope is the session keep's scope, resolved through the ONE lifted
         # grant seam with the session scope passed EXPLICITLY (never None), so _grantable runs on
         # EVERY send: a sender the keeper has removed from the household loses the room (R5).
-        session_keep_scope = keep_scope(str(session_keep.id).split(":", 1)[-1])
+        session_keep_scope = keep_scope(record_key(session_keep.id))
         message_scope = governed.resolve_write_scope(
             subject, session_keep_scope, default=session_keep_scope
         )
