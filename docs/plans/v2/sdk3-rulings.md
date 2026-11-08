@@ -602,3 +602,19 @@ Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-8.md`.
   - **Rider (servicing author, in the commit that registers `packet66_entry.yaml` after F6 lands):** `--verify-registry` refuses an id whose path prefix names a DIFFERENT file than its entry. That is one validator line and one test. No new round.
 - **FORK-R8-2:** the F6 contract in `scripts/` is GRANTED (agreed). It must stay in testpaths.
 - **Round-8 D1:** a declaration error, not a weak pin. Record it as declared 2, observed 1; cause: the declaration; the owner leg is proven by `b2_owner`. Re-running with the corrected set would transcribe the declaration from the output, which is the tautology `mutation_proof.py` forbids.
+
+## R31 — sidecar ruling 9 on adversary round 4's F6 findings; build sequencing (sidecar-66 ruling + lead sequencing)
+Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-9.md`. Adversary report: `receipts/2026-11-08-sdk3/ADVERSARY4.md`. The verdict was INSUFFICIENT, with every finding in the F6 gate contract and 0 unsatisfiable pins. The product side (retry, index, record-id) held against every build.
+- **MP-F6-4, reading (b), ruled within the sidecar's delegation:** a listed id is STALE only when its FILE was collected in this run and the id was not.
+  - Reading (a) makes every scoped `wave_gate --wave` fail fleet-wide once the 302-id entry registers.
+  - A deleted file is still caught by the typecheck leg's file-exists self-destruct, which runs full in wave mode. The residual case (file present but excluded, id renamed) is caught by the next full run, inside the one-wave orphan window currency already accepts. State this in the pin.
+  - Leg 1: the stale line says "not collected in this run's <file>".
+  - The reference implements (a) and is a REFERENCE BUG; a scope-aware variant passes 479/479.
+- **MP-F6-1..3 CONFIRMED** as false clears on a SERVED gate verdict (R17), not hygiene. **The builder's requirement is the adversary's CLASS, verbatim:** the adjudication of a listed id depends ONLY on (the exact id) × (did the run collect its file) × (did it fail). It never depends on other outcomes in the run, other claims on the entry, or the id's ancestors.
+  - Chokepoints: `pytest_self_destruct_findings` iterates the REGISTRY; matching is exact set membership in both the partition and the stale test; the typecheck self-destruct still applies to an entry's mypy claims when `red_nodeids` is present.
+  - **Rider:** a listed id that is COLLECTED but SKIPPED or xfail adjudicates NEITHER way. Its registration is kept, and the render says so.
+- **Routing (i), converting adversary 4's probes into F6 pins before the F6 code, plus adversary round 5 on that delta, is a contract round in substance. That is the OPERATOR's call under R25,** and it is flagged for the operator's wake with the sidecar's recommendation to GRANT. Route (ii), named residuals (R16), is in-grant.
+- **Lead sequencing, until the operator rules:** BUILD starts now (operator: *"then go to build"*), with the F6 gate CODE moved to the END of the build order instead of step 0, so that no F6 code is written before its pins exist if (i) is granted.
+  - **The 302-id entry does not register until the F6 pins exist or the operator rules (ii).** Registration is the step that touches the fleet.
+  - The interim INDEX bound (2026-11-08) stays in force until then.
+  - The builder brief carries (b), the class and the skip rider as NAMED requirements, and the probe file (`ADVERSARY4.md` §INSTRUMENTS) as the cold audit's instrument.
