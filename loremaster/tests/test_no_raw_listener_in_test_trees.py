@@ -211,6 +211,27 @@ _EXEMPT_SITES: dict[tuple[str, str], str] = {
         "(EADDRINUSE while the LoopbackPort is open). Re-open trigger: never — this is the one place "
         "a raw bind is the instrument, not the defect."
     ),
+    # R43 / RULING-14 B2 (fixb2-proxy-66): the SDK3 bounce proxy, split so each listener has its own row.
+    ("loremaster/tests/_sdk3_proxy.py", "StoreBounceProxy._relisten_same_port"): (
+        "a bounce proxy must come back on the address its clients hold; the window is the few ms between "
+        "`go_down` and `come_up`, inside one test, on a port this test chose; collision = `EADDRINUSE` "
+        "raised LOUDLY by `start_server` (never a silent wrong-port), re-open trigger: one `EADDRINUSE` in "
+        "`come_up` in any run. MEASURED CORRECTION (R43, at dabc671): the window is NOT a few ms in every "
+        "consumer — `bounce(down_seconds=0.5)` (test_sdk3_lifecycle, test_sdk3_workaround_retirement), "
+        "several seconds in test_sdk3_retirement_pins_66d (a parked teardown kill), and 45 s for "
+        "test_sdk3_lifecycle's `_LONG_OUTAGE_SECONDS`; the loud-collision property and the trigger are "
+        "unchanged by the length."
+    ),
+    ("loremaster/tests/_sdk3_proxy.py", "StoreBounceProxy._listen_held"): (
+        "`asyncio.start_server(handler, sock=held.socket)` BINDS NOTHING: it is handed the socket a "
+        "`LoopbackPort` bound and has held since, and asyncio's `sock=` branch only `listen()`s it "
+        "(CPython 3.14 `BaseEventLoop.create_server`, read). This detector keys the listener VERB on any "
+        "receiver, not the bind, so it flags a held-socket serve — a scanner firing on correct code (the "
+        "#466 race is the BIND, which the bind rule catches on its own). RULING-14 B2 assumed `sock=` "
+        "passes the scan; probed false at dabc671. Re-open trigger: a second held-socket asyncio serve in "
+        "any test tree — then narrow the verb rule to spare `sock=`-only calls (an operator ruling) or give "
+        "`loremaster.testing.loopback` an asyncio serve entry point, and delete this row."
+    ),
 }
 
 

@@ -59,8 +59,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import enum
+import socket
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
+
+from loremaster.testing.loopback import LoopbackPort
 
 # A server WebSocket close frame (FIN + opcode 0x8) with an empty payload: "no status code".
 _CLOSE_FRAME_NO_STATUS = b"\x88\x00"
@@ -141,14 +144,19 @@ class StoreBounceProxy:
         return self._server is not None
 
     async def start(self) -> None:
-        """Listen on an ephemeral loopback port."""
-        await self._listen(port=0)
+        """Listen on an ephemeral loopback port, served FROM a held :class:`LoopbackPort` (#466)."""
+        held = LoopbackPort(_LISTEN_HOST)
+        try:
+            await self._listen_held(held)
+        except BaseException:
+            held.close()
+            raise
 
     async def come_up(self) -> None:
         """Listen again on the SAME port (the store is back)."""
         if self._server is not None:
             return
-        await self._listen(port=self._port)
+        await self._relisten_same_port()
 
     async def go_down(self, mode: SeverMode = SeverMode.ABORT) -> int:
         """Stop listening and sever every live socket; returns how many were severed."""
@@ -189,9 +197,30 @@ class StoreBounceProxy:
         """Teardown: go down for good."""
         await self.go_down(SeverMode.ABORT)
 
-    async def _listen(self, *, port: int) -> None:
-        self._server = await asyncio.start_server(self._handle, _LISTEN_HOST, port, reuse_address=True)
-        self._port = self._server.sockets[0].getsockname()[1]
+    async def _listen_held(self, held: LoopbackPort) -> None:
+        """Serve FROM ``held``'s already-bound socket: ``start_server`` is handed the socket, never a number,
+        so it binds nothing and no other session can take the port between bind and listen (#466).
+
+        The served socket gets ``SO_REUSEADDR`` (``start_server`` sets it only in host/port mode): the
+        sockets this listener accepts inherit it, and :meth:`_relisten_same_port` can re-bind the port only
+        while every accepted socket still lingering on it carries it too (measured R43: without it,
+        ``come_up`` after a ``go_down`` in EITHER sever mode raised ``EADDRINUSE``). From here the server
+        owns the socket and closes it in :meth:`go_down`. The #466 scan still sees the ``start_server`` VERB
+        here, so this function carries its own ``_EXEMPT_SITES`` row.
+        """
+        held.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._server = await asyncio.start_server(self._handle, sock=held.socket)
+        self._port = held.port
+
+    async def _relisten_same_port(self) -> None:
+        """Re-bind the port NUMBER :meth:`start` was given, after :meth:`go_down` closed the listener.
+
+        A bounce must come back on the address its clients already hold, so this is #466's
+        close-then-re-bind shape on purpose, exempted with its evidence and re-open trigger
+        (``_EXEMPT_SITES`` in ``test_no_raw_listener_in_test_trees.py``). A collision is ``EADDRINUSE``
+        raised LOUDLY by ``start_server``, never a listener on a different port.
+        """
+        self._server = await asyncio.start_server(self._handle, _LISTEN_HOST, self._port, reuse_address=True)
 
     async def _handle(self, client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter) -> None:
         host, port = self.upstream_host_port
