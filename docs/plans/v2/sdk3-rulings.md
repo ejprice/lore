@@ -283,3 +283,27 @@ Contract round 4 committed `b655971` (packet doc §ROUND 4 R4.0–R4.13, Appendi
   `governed.py` `_bare` (feeds `pdp.Resource` — an ACCESS decision, first priority), the served refusal text in
   `principals.py` (message ids are ULIDs, always digit-led, so always bracketed under SDK 3.0's `str()`), and
   `memory/local.py`'s two owner compares (verify the `record_id` guard by execution).
+
+## R13 — round 5 (lead, under the autonomy grant, 2026-11-07; operator MAY OVERTURN)
+Round 5 committed `0ac1434` (C9) + `082d2f2` (the rest; packet doc §ROUND 5 R5.0–R5.11, Appendix F). Lead re-ran
+RED@HEAD (23 declared = 23 observed) and the typecheck/ruff currency (RED_ORPHANED 0). The a28 class now passes 42 ×3
+on the round-5 reference (C9 fixed there).
+- **Satisfiability is NOT yet shown for R11.** ~29 nodes are red on the round-5 reference, green at HEAD and green on
+  the r4 baseline — nearly all from its tenacity/scout port (`test_retry_seam` 11, `test_scout` 13, the scout CAS
+  pin, a19's sanitise-routing pin, two a19-householding pins). Adversary round 2 builds its OWN reference anyway; it
+  must classify each as REFERENCE BUG (a correct port passes it) or CONTRACT CONTRADICTION (no correct port can — e.g.
+  a scan of `_ensure_connection` callers, or a pin on one jitter draw per attempt where tenacity draws `wait` before
+  `stop`). Contradictions go to round 6.
+- **RS7 REVISED: `SurrealStore.upsert` is KEPT and routed through `compose`** (so it sits under the row cap), not
+  deleted. It has 0 production callers but 90 test fixture call sites in 7 files; deleting it buys nothing a consumer
+  notices and costs 90 edits. Supersedes the R12 addendum's deletion line.
+- **C10 — `_surreal_harness.run` and `_sdk_guard` SDK-3 adaptations are BUILDER work** (test infrastructure, not
+  pins encoding a ruling; R9 D3 does not reach them). The build lands SDK 3.0 in one commit, so no interim
+  version-awareness is needed there.
+- **F-r5-1 — `_POW_ALLOWLIST` drops `_txn.py` in the build commit** (after R11 `_txn` keeps no private power ladder).
+- **F-r5-2 — an unknown-outcome publish PROPAGATES the error** (no verify-and-return).
+- **F-r5-3 — gap, to round 6 if the adversary confirms it:** the indexer pin admits a build that raises out of
+  `index_all` and aborts the sweep; an unknown commit on one file must not stop the others.
+- Found by round 5, recorded: SDK 2.0 is already wrong at HEAD for NON-WORD principal/agent keys (governed gate
+  denies the owner; memory replay revives a predecessor) — latent today (lore mints no non-word keys), live under
+  SDK 3.0 for ~28% of principals (digit-led). The round-5 pins cover both.
