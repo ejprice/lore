@@ -790,6 +790,10 @@ def required_datetime(value: object, *, table: str, row_id: object, column: str)
 
     The refusal is a SERVED surface (R17): it names the unreadable ROW (``record_text``, R7 (d)), the column
     and what it held, and says it is a store-integrity fault scoped to that row — never a caller error.
+    STATED BOUND (lead, R36 note): the row id is the parts form ``table:key``, which equals the engine's
+    ``<string> id`` for every key lore mints and differs only for a non-word key (the engine brackets it,
+    R8 F15) — acceptable because this text DISPLAYS the faulty row and is never persisted or compared; a
+    named cold-audit check.
 
     Args:
         value: The column's decoded value.

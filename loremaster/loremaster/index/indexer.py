@@ -726,19 +726,13 @@ class Indexer:
         # typed :class:`SurrealStoreError` at BUILD time,
         # before anything persists; catch it, isolate THIS file ``failed`` (last-good
         # retained), and let the OTHER files keep indexing (clause 5).
-        try:
-            fragments = self._compose_file_fragments(
-                tier=tier, path=path, source=source, content_hash=content_hash,
-                records=records, vectors=vectors, new_ids=new_ids,
-                mtime_ns=mtime_ns, size=size, chunks=chunks,
-            )
-            await self._store.apply(fragments)
-        except SurrealStoreError as store_error:
-            return await self._isolate_store_failure(
-                store_error, tier=tier, path=path, content_hash=content_hash,
-                mtime_ns=mtime_ns, size=size, prior=prior, prior_ids=prior_ids,
-                new_ids=new_ids, n_chunks=len(records),
-            )
+        refused = await self._commit_or_isolate(
+            tier=tier, path=path, source=source, content_hash=content_hash,
+            records=records, vectors=vectors, new_ids=new_ids, mtime_ns=mtime_ns,
+            size=size, chunks=chunks, prior=prior, prior_ids=prior_ids,
+        )
+        if refused is not None:
+            return refused
 
         duration_ms = (time.monotonic_ns() - started_ns) / 1_000_000
         logger.info(
@@ -935,67 +929,83 @@ class Indexer:
             return doc_results[0]
         return await self._embedder.embed_documents(texts)
 
-    async def _isolate_store_failure(
+    async def _commit_or_isolate(
         self,
-        error: SurrealStoreError,
         *,
         tier: str,
         path: str,
+        source: str,
         content_hash: str,
+        records: list[Record],
+        vectors: list[list[float] | None],
+        new_ids: list[str],
         mtime_ns: int,
         size: int,
+        chunks: list[Chunk],
         prior: FileRow | None,
         prior_ids: list[str],
-        new_ids: list[str],
-        n_chunks: int,
-    ) -> IndexOutcome:
-        """THE one disposition of a refused per-file store transaction — both sweep shapes call this.
+    ) -> IndexOutcome | None:
+        """Commit one file's composed transaction, or isolate it — THE one per-file store catch site.
 
-        Shared by :meth:`_index_chunks` (realtime / single file) and :meth:`_commit_batch_file` (the
-        two-pass batch sweep), so their fates cannot drift (adversary round 3 MP-1: the two cloned
-        ``except`` arms had already diverged once). Never raises the store error: one file's fault never
-        stops the sweep, whatever its outcome class (R15 MP-A).
+        Both sweep shapes call this — :meth:`_index_chunks` (realtime / single file) and
+        :meth:`_commit_batch_file` (the two-pass batch sweep) — and keep no ``except`` arm of their own, so
+        their fates cannot drift (adversary round 3 MP-1 found the two cloned arms had already diverged;
+        ruling R36 made the catch site itself the one implementation). Never raises the store error: one
+        file's fault never stops the sweep, whatever its outcome class (R15 MP-A).
 
-        1. **Outcome unknown** (:class:`SurrealOutcomeUnknownError`, R9 D1 / R12 F18): the transaction may
-           have committed, so the manifest row is READ BACK. It is atomic with the chunks, so a row that
-           is ``indexed`` at this content hash with exactly the new chunk ids proves the commit landed —
-           the file is served ``indexed``, never ``failed``. Otherwise it provably did not land and falls
-           through to 2.
-        2. **Refused** — logged, and the file isolated ``failed`` (last-good retained) with a reason that
+        1. **Committed** — returns ``None``; the caller records the file ``indexed``.
+        2. **Outcome unknown** (:class:`SurrealOutcomeUnknownError`, R9 D1 / R12 F18): the transaction may
+           have committed, so the manifest row is READ BACK. It is atomic with the chunks, so a row that is
+           ``indexed`` at this content hash with exactly the new chunk ids proves the commit landed — the
+           file is served ``indexed``, never ``failed``. Otherwise it provably did not land and falls
+           through to 3.
+        3. **Refused** — logged, and the file isolated ``failed`` (last-good retained) with a reason that
            NAMES the bound for a row-cap refusal (R4 rider 3) and is persisted for ``index_status``.
 
         Returns:
-            ``indexed`` when an unknown-outcome commit is proven landed; otherwise ``failed``.
+            ``None`` when the transaction committed; otherwise the file's outcome (``indexed`` for a proven-
+            landed unknown outcome, else ``failed``).
         """
-        if isinstance(error, SurrealOutcomeUnknownError):
-            row = await self._manifest.get(tier, path)
-            landed = (
-                row is not None
-                and row.state == STATE_INDEXED
-                and row.sha512 == content_hash
-                and list(row.chunk_ids) == list(new_ids)
+        try:
+            fragments = self._compose_file_fragments(
+                tier=tier, path=path, source=source, content_hash=content_hash,
+                records=records, vectors=vectors, new_ids=new_ids,
+                mtime_ns=mtime_ns, size=size, chunks=chunks,
+            )
+            await self._store.apply(fragments)
+        except SurrealStoreError as error:
+            if isinstance(error, SurrealOutcomeUnknownError):
+                row = await self._manifest.get(tier, path)
+                landed = (
+                    row is not None
+                    and row.state == STATE_INDEXED
+                    and row.sha512 == content_hash
+                    and list(row.chunk_ids) == list(new_ids)
+                )
+                logger.warning(
+                    "index.file.store_outcome_unknown",
+                    extra={"tier": tier, "file_path": path, "landed": landed},
+                    exc_info=True,
+                )
+                if landed:
+                    return IndexOutcome(
+                        tier=tier, file_path=path, state=STATE_INDEXED, n_chunks=len(records)
+                    )
+            reason = (
+                f"{_FAILED_STORE_REASON}: {error}"
+                if isinstance(error, TxnRowCapExceededError)
+                else _FAILED_STORE_REASON
             )
             logger.warning(
-                "index.file.store_outcome_unknown",
-                extra={"tier": tier, "file_path": path, "landed": landed},
+                "index.file.store_failed",
+                extra={"tier": tier, "file_path": path, "reason": reason},
                 exc_info=True,
             )
-            if landed:
-                return IndexOutcome(tier=tier, file_path=path, state=STATE_INDEXED, n_chunks=n_chunks)
-        reason = (
-            f"{_FAILED_STORE_REASON}: {error}"
-            if isinstance(error, TxnRowCapExceededError)
-            else _FAILED_STORE_REASON
-        )
-        logger.warning(
-            "index.file.store_failed",
-            extra={"tier": tier, "file_path": path, "reason": reason},
-            exc_info=True,
-        )
-        return await self._mark_file_failed(
-            tier=tier, path=path, content_hash=content_hash, mtime_ns=mtime_ns,
-            size=size, prior=prior, prior_ids=prior_ids, reason=reason,
-        )
+            return await self._mark_file_failed(
+                tier=tier, path=path, content_hash=content_hash, mtime_ns=mtime_ns,
+                size=size, prior=prior, prior_ids=prior_ids, reason=reason,
+            )
+        return None
 
     async def _mark_file_failed(
         self,
@@ -1922,19 +1932,13 @@ class Indexer:
                 mtime_ns=pf.mtime_ns, size=pf.size, prior=prior, prior_ids=prior_ids,
                 reason=_FAILED_EMBED_REASON,
             )
-        try:
-            fragments = self._compose_file_fragments(
-                tier=pf.tier, path=pf.path, source=pf.source,
-                content_hash=pf.content_hash, records=pf.records, vectors=vectors,
-                new_ids=pf.new_ids, mtime_ns=pf.mtime_ns, size=pf.size, chunks=pf.chunks,
-            )
-            await self._store.apply(fragments)
-        except SurrealStoreError as store_error:
-            return await self._isolate_store_failure(
-                store_error, tier=pf.tier, path=pf.path, content_hash=pf.content_hash,
-                mtime_ns=pf.mtime_ns, size=pf.size, prior=prior, prior_ids=prior_ids,
-                new_ids=pf.new_ids, n_chunks=len(pf.records),
-            )
+        refused = await self._commit_or_isolate(
+            tier=pf.tier, path=pf.path, source=pf.source, content_hash=pf.content_hash,
+            records=pf.records, vectors=vectors, new_ids=pf.new_ids, mtime_ns=pf.mtime_ns,
+            size=pf.size, chunks=pf.chunks, prior=prior, prior_ids=prior_ids,
+        )
+        if refused is not None:
+            return refused
         duration_ms = (time.monotonic_ns() - started_ns) / 1_000_000
         logger.info(
             "index.file.done",
