@@ -28,7 +28,7 @@ dependencies = [
     # as a TRANSITIVE dependency of pydantic-settings, and a transitive pin is
     # somebody else's promise to keep.
     "python-dotenv>=1.2",
-    "surrealdb>=2.0",
+    "surrealdb==3.0.0",
     "httpx>=0.28",
     "python-ulid>=4.0.1",
     "numpy>=2.5.1",
