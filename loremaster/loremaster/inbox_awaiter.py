@@ -321,9 +321,9 @@ class InboxAwaiter:
     async def _teardown(
         self, connection: Any, live_uuid: Any, consume_task: asyncio.Task[None] | None
     ) -> None:
-        """Cancel the LIVE consumer, kill the subscription, close the connection — each
-        swallowing an already-dead socket at the shared SDK-await boundary (``close`` is in
-        the SDK guard's SAFE set; ``kill`` rides :meth:`_safe_kill`)."""
+        """Cancel the LIVE consumer, kill the subscription, close the connection. The kill
+        swallows an already-dead socket at the shared SDK-await boundary (``kill`` rides
+        :meth:`_safe_kill`); the ``close`` is NOT swallowed, so a failing close propagates."""
         if consume_task is not None:
             consume_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -332,7 +332,4 @@ class InboxAwaiter:
             return
         if live_uuid is not None:
             await self._safe_kill(connection, live_uuid)
-        try:
-            await connection.close()
-        except _SDK_AWAIT_BOUNDARY_ERRORS:
-            pass
+        await connection.close()
