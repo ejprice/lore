@@ -219,6 +219,8 @@ from loremaster.store._txn import (
     SurrealOutcomeUnknownError,
     SurrealStoreError,
     TxnContentionExhaustedError,
+    parse_served_instant,
+    served_instant_text,
 )
 from loremaster.store.candidate import Candidate
 
@@ -4988,25 +4990,21 @@ class AppContext:
     def _parse_rollup_since(since: str | None) -> datetime:
         """Parse rollup's ``since`` cursor; omitted ⇒ the epoch full-history bootstrap.
 
-        A trailing ``Z`` is normalised to ``+00:00`` before parsing (accepting
-        exactly the text a previous rollup's ``next cursor`` line emitted); a
-        naive (tz-less) or unparseable value is a teaching :class:`ValueError`
-        naming the rejected text verbatim.
+        Parsed by THE cursor codec's :func:`~loremaster.store._txn.parse_served_instant` (R43 / #590): the
+        nanosecond text a previous rollup's ``next cursor`` line emitted round-trips EXACTLY, so the
+        exclusive ``updated_at > $since`` boundary never re-serves the row the cursor was read from. A
+        pre-R43 microsecond cursor still parses and re-serves at most its boundary row once. A naive
+        (tz-less) or unparseable value is a teaching :class:`ValueError` naming the rejected text verbatim.
         """
         if since is None:
             return _ROLLUP_EPOCH
-        normalised = f"{since[:-1]}+00:00" if since.endswith("Z") else since
-        teaching_error = ValueError(
-            f"rollup 'since' must be a timezone-aware ISO-8601 timestamp — pass "
-            f"the 'next cursor' value a previous rollup returned; got {render_attributed(since)}"
-        )
         try:
-            parsed = datetime.fromisoformat(normalised)
+            return parse_served_instant(since)
         except ValueError as error:
-            raise teaching_error from error
-        if parsed.tzinfo is None:
-            raise teaching_error
-        return parsed
+            raise ValueError(
+                f"rollup 'since' must be a timezone-aware ISO-8601 timestamp — pass "
+                f"the 'next cursor' value a previous rollup returned; got {render_attributed(since)}"
+            ) from error
 
     @classmethod
     def _render_rollup(
@@ -5044,7 +5042,8 @@ class AppContext:
         direct-render callers (which pass no ``extra_sections``) get exactly the old
         text.
         """
-        since_iso = effective_since.isoformat()
+        # The cursor ECHO renders through THE cursor codec too (R43): it names the instant the agent passed.
+        since_iso = served_instant_text(effective_since)
         task_rows = task_window.rows
         finding_rows = finding_window.rows
         lines: list[str]
@@ -5101,7 +5100,7 @@ class AppContext:
         # (empty sections ⇒ old text).
         lines.extend(extra_sections)
         next_cursor = cls._rollup_next_cursor(effective_since, task_window, finding_window)
-        lines.append(f"next cursor: {next_cursor.isoformat()}")
+        lines.append(f"next cursor: {served_instant_text(next_cursor)}")
         return "\n".join(lines)
 
     @staticmethod

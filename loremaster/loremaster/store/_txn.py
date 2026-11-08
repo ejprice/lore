@@ -104,8 +104,10 @@ from surrealdb import (
     AsyncHttpSurrealConnection,
     AsyncSurreal,
     AsyncWsSurrealConnection,
+    PreciseDatetime,
     ReconnectOptions,
 )
+from surrealdb.data.types.datetime import parse_instant
 from surrealdb.errors import (
     AlreadyExistsError,
     ErrorKind,
@@ -821,6 +823,54 @@ def required_datetime(value: object, *, table: str, row_id: object, column: str)
 def stored_datetime(value: object, *, table: str, row_id: object, column: str) -> datetime | None:
     """An ``option<datetime>`` column's value: ``None`` when unset, else :func:`required_datetime`'s check."""
     return None if value is None else required_datetime(value, table=table, row_id=row_id, column=column)
+
+
+# THE CURSOR CODEC (R43 / B1, finding #590). Any served timestamp an agent may HAND BACK is rendered with
+# :func:`served_instant_text` and parsed with :func:`parse_served_instant` — both ends the SDK's own
+# nanosecond codec (``PreciseDatetime.isoformat_with_nanoseconds`` / ``parse_instant``), so an exclusive
+# boundary (``updated_at > $since``) compares the SAME precision the store holds. ``datetime.isoformat()``
+# serves microseconds and ``datetime.fromisoformat`` truncates a nine-digit text to six (measured, Python
+# 3.14.7), so either one on the path makes a cursor re-serve the row it was read from. A second codec for a
+# hand-back stamp is copy #2 of this rule; the rider for packet 67b's ``as_of`` is this pair.
+def served_instant_text(value: datetime) -> str:
+    """The text an agent is SERVED for a stamp it may hand back — the engine's nine-digit UTC form.
+
+    A ``PreciseDatetime`` (every stamp SDK 3.0 decodes) keeps its nanoseconds
+    (``2026-11-08T18:17:45.186697518Z``); a plain ``datetime`` (a computed or bootstrap value) renders with
+    ``000`` nanoseconds. A naive value is read as UTC (the SDK's rule).
+
+    Args:
+        value: The stamp to serve.
+
+    Returns:
+        The stamp as ``YYYY-MM-DDTHH:MM:SS.fffffffffZ``.
+    """
+    if not isinstance(value, PreciseDatetime):
+        value = PreciseDatetime.combine(value.date(), value.timetz())
+    return value.isoformat_with_nanoseconds()
+
+
+def parse_served_instant(text: str) -> datetime:
+    """Parse a stamp an agent HANDS BACK (text :func:`served_instant_text` served) to the nanosecond.
+
+    The VALUE is the SDK's ``parse_instant`` (1–9 fraction digits, ``Z`` or an offset). That parser reads a
+    zone-less text as UTC; a cursor must name its zone, so the stdlib is consulted for ONE fact only — did
+    the text carry a zone — and a naive text is refused. A pre-R43 microsecond cursor still parses (six
+    digits): it re-serves at most its boundary row ONCE, after which the served cursor carries nanoseconds.
+
+    Args:
+        text: The handed-back stamp.
+
+    Returns:
+        A tz-aware ``PreciseDatetime``.
+
+    Raises:
+        ValueError: ``text`` is not an ISO 8601 datetime, or names no zone.
+    """
+    instant = parse_instant(text)
+    if datetime.fromisoformat(text.strip()).tzinfo is None:
+        raise ValueError(f"{text!r} names no timezone")
+    return instant
 
 
 #: The record-key escapes the engine (``<string> id``) and the SDK (``str(RecordID)``) wrap a digit-led or
