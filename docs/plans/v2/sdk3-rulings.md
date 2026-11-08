@@ -277,3 +277,9 @@ Contract round 4 committed `b655971` (packet doc §ROUND 4 R4.0–R4.13, Appendi
   through `compose`: a dead door with no consumer is removed (drop-list row; the builder re-confirms 0 callers).
 - **X18/X19 (nested `PrincipalStore` close in `KeepStore`/`PrincipalKeyStore`; `LocalMemoryBackend._rebuild_lock`)
   are pinned by behaviour in round 5**, since the shared factory replaces the code that carries them.
+- **C9's class is PINNED, not handed to the builder (lead, 2026-11-07).** Root cause: `principals._measured_counts`
+  and `_owned_unscoped_part` compare `str(RecordID)` with a differently-rendered id. CLASS: *one record compared
+  through two text forms*. The four at-risk siblings found by the round-5 sweep get pins in round 5:
+  `governed.py` `_bare` (feeds `pdp.Resource` — an ACCESS decision, first priority), the served refusal text in
+  `principals.py` (message ids are ULIDs, always digit-led, so always bracketed under SDK 3.0's `str()`), and
+  `memory/local.py`'s two owner compares (verify the `record_id` guard by execution).
