@@ -91,7 +91,6 @@ from loremaster.render import render_attributed
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
     SurrealConnectionError,
-    SurrealStoreError,
     TxnContentionExhaustedError,
     TxnFragment,
     _SurrealConnection,
@@ -101,8 +100,10 @@ from loremaster.store._txn import (
     execute_transaction,
     open_surreal_connection,
     record_key,
+    required_datetime,
     run_query,
     signin_credentials,
+    stored_datetime,
 )
 from loremaster.store.surreal_schema import (
     _MESSAGE_GRADE_DIRECTIVE,
@@ -1275,8 +1276,8 @@ class MessageLedger:
             task_id=row.get("task_id"),
             body=str(row.get("body") or ""),
             refs=list(row.get("refs") or []),
-            created_at=self._require_aware_utc(row.get("created_at")),
-            acked_at=self._to_aware_utc(row.get("acked_at")),
+            created_at=required_datetime(row.get("created_at"), row="message", column="created_at"),
+            acked_at=stored_datetime(row.get("acked_at"), row="delivery", column="acked_at"),
             ack_note=row.get("ack_note"),
             question=bool(row.get("question")),
         )
@@ -1494,7 +1495,9 @@ class MessageLedger:
                 continue
             stamp = row.get("acked_at")
             indexed[record_key(row[id_key])] = (
-                self._require_aware_utc(stamp) if require_stamp else self._to_aware_utc(stamp)
+                required_datetime(stamp, row="delivery", column="acked_at")
+                if require_stamp
+                else stored_datetime(stamp, row="delivery", column="acked_at")
             )
         return indexed
 
@@ -1669,7 +1672,9 @@ class MessageLedger:
                 return WaitingOnAnswer(
                     thread=thread,
                     question_seq=question_seq,
-                    asked_at=self._require_aware_utc(question.get("created_at")),
+                    asked_at=required_datetime(
+                        question.get("created_at"), row="message", column="created_at"
+                    ),
                 )
         return None
 
@@ -1800,7 +1805,7 @@ class MessageLedger:
             question=bool(row.get("question")),
             thread=str(row.get("thread") or ""),
             task_id=row.get("task_id"),
-            created_at=self._require_aware_utc(row.get("created_at")),
+            created_at=required_datetime(row.get("created_at"), row="message", column="created_at"),
         )
 
     # -- result narrowing / mapping ----------------------------------------
@@ -1812,33 +1817,5 @@ class MessageLedger:
             return []
         return [row for row in result if isinstance(row, dict)]
 
-    def _require_aware_utc(self, value: Any) -> datetime:
-        """Normalise a REQUIRED datetime column to tz-aware UTC, refusing a bad value.
 
-        Raises:
-            SurrealStoreError: The value is missing or is not a datetime.
-        """
-        coerced = self._to_aware_utc(value)
-        if coerced is None:
-            raise SurrealStoreError(
-                f"message row datetime column is missing or not a datetime "
-                f"(got {type(value).__name__})"
-            )
-        return coerced
-
-    @staticmethod
-    def _to_aware_utc(value: Any) -> datetime | None:
-        """Coerce a stored datetime into a tz-aware UTC datetime (or ``None``)."""
-        if value is None:
-            return None
-        if isinstance(value, datetime):
-            aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-            return aware.astimezone(UTC)
-        text = str(value).replace("Z", "+00:00")
-        try:
-            parsed = datetime.fromisoformat(text)
-        except ValueError:
-            return None
-        aware = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
-        return aware.astimezone(UTC)
 

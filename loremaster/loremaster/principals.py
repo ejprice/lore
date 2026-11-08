@@ -117,8 +117,10 @@ from loremaster.store._txn import (
     open_surreal_connection,
     record_key,
     record_text,
+    required_datetime,
     run_query,
     signin_credentials,
+    stored_datetime,
     wrap_store_rejection,
 )
 from loremaster.store.surreal_schema import (
@@ -910,8 +912,8 @@ class PrincipalStore:
             display_name=self._optional_str(row.get(_COL_DISPLAY_NAME)),
             status=str(row[_COL_STATUS]),
             role=str(row[_COL_ROLE]),
-            expires_at=self._to_aware_utc(row.get(_COL_EXPIRES_AT)),
-            created_at=self._require_aware_utc(row.get(_COL_CREATED_AT)),
+            expires_at=stored_datetime(row.get(_COL_EXPIRES_AT), row="principal", column=_COL_EXPIRES_AT),
+            created_at=required_datetime(row.get(_COL_CREATED_AT), row="principal", column=_COL_CREATED_AT),
         )
 
     @staticmethod
@@ -932,45 +934,7 @@ class PrincipalStore:
 
         return rows_of(result, noun=noun, landed=landed)
 
-    def _require_aware_utc(self, value: Any) -> datetime:
-        """Normalise the REQUIRED ``created_at`` to tz-aware UTC, refusing a bad value.
 
-        ``created_at`` is a non-``option`` column the schema always stamps, so a
-        faithful row always carries a real datetime; a missing/uncoercible one is a
-        corrupt row, refused LOUDLY rather than silently coerced.
-
-        Raises:
-            SurrealStoreError: The value is missing or cannot be read as a datetime.
-        """
-        coerced = self._to_aware_utc(value)
-        if coerced is None:
-            raise SurrealStoreError(
-                f"principal row column {_COL_CREATED_AT!r} is missing or not a datetime "
-                f"(got {type(value).__name__})"
-            )
-        return coerced
-
-    @staticmethod
-    def _to_aware_utc(value: Any) -> datetime | None:
-        """Coerce a stored datetime into a tz-aware UTC datetime (or ``None``).
-
-        The SDK's CBOR decoder returns tz-aware datetimes; a naive datetime or an
-        ISO-string/wrapper shape is normalised defensively so a principal's datetimes
-        are ALWAYS tz-aware (a naive stamp is the classic wrong-anchor bug for a value
-        fleet agents in different timezones compare). ``None`` passes through.
-        """
-        if value is None:
-            return None
-        if isinstance(value, datetime):
-            aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-            return aware.astimezone(UTC)
-        text = str(value).replace("Z", "+00:00")
-        try:
-            parsed = datetime.fromisoformat(text)
-        except ValueError:
-            return None
-        aware = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
-        return aware.astimezone(UTC)
 
 
 # --------------------------------------------------------------------------- #

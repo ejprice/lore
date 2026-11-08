@@ -329,7 +329,7 @@ class AuditStore:
         Executes :meth:`append_fragment`'s SINGLE composable statement through
         :func:`~loremaster.store._txn.compose` + the VERIFIED
         :func:`~loremaster.store._txn.execute_transaction` seam (store reference §3 — which
-        checks EVERY statement, never the lax ``.query()`` first-statement-only path). The
+        checks EVERY statement's status and classifies the rollback's root cause). The
         write IS the composable fragment (ONE path — ``append`` never hand-rolls a second,
         non-composable CREATE), so it can never drift from what 63/64 compose.
 

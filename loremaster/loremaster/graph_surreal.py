@@ -1171,7 +1171,9 @@ class SurrealCodeGraph:
         excluded from the prefix arm so a single segment can never swallow
         unrelated symbols.
         """
-        unique: dict[str, RecordID] = {}
+        # ``RecordID`` is hashable on SDK 3.0 (drop list #7, pin K0): de-duplicated by the id itself, in
+        # first-seen order.
+        unique: dict[RecordID, None] = {}
         # Base arm: any reference kind whose dst is a frontier name (full or bare).
         name_ids: list[RecordID] = []
         bare_frontier_names: list[str] = []
@@ -1191,7 +1193,7 @@ class SurrealCodeGraph:
         )
         for record_id in base_src_ids:
             if isinstance(record_id, RecordID):
-                unique[str(record_id)] = record_id
+                unique[record_id] = None
         # Module-prefix arm (imports-only): importers of a symbol resolved under a
         # dotted frontier module name (``pkg.a`` never pulls a sibling ``pkg.ab.X``).
         prefixes = [
@@ -1210,8 +1212,8 @@ class SurrealCodeGraph:
             )
             for record_id in prefixed_src_ids:
                 if isinstance(record_id, RecordID):
-                    unique[str(record_id)] = record_id
-        return await self._nodes_by_ids(list(unique.values()))
+                    unique[record_id] = None
+        return await self._nodes_by_ids(list(unique))
 
     async def tests_for(self, symbol_or_file: str) -> list[GraphNode]:
         """Return the test nodes related to ``symbol_or_file``.
@@ -1369,19 +1371,15 @@ class SurrealCodeGraph:
         bare = self._bare(name)
         # Self-reference exclusion set: the literal query, plus every bridged
         # collidee's own FQN (recursion through any of them is still not an
-        # external use). ``RecordID`` is unhashable, so the dst ids are keyed
-        # by their string form (the same de-dupe-by-string-key idiom
-        # ``what_imports`` already uses for its own bridged name set).
+        # external use). The dst ids are de-duplicated by the ``RecordID`` itself (hashable on SDK 3.0 —
+        # drop list #7), in first-seen order.
         target_names = {name}
-        name_ids_by_key: dict[str, RecordID] = {
-            str(self._name_id(name)): self._name_id(name),
-            str(self._name_id(bare)): self._name_id(bare),
-        }
+        name_ids: dict[RecordID, None] = dict.fromkeys((self._name_id(name), self._name_id(bare)))
         if name == bare:
             for fqn in await self._bare_name_answerers([bare]):
                 target_names.add(fqn)
                 fqn_id = self._name_id(fqn)
-                name_ids_by_key[str(fqn_id)] = fqn_id
+                name_ids[fqn_id] = None
 
         rows = self._rows(
             await self._query(
@@ -1389,7 +1387,7 @@ class SurrealCodeGraph:
                 f"WHERE {_COL_KIND} IN ${_P_KINDS} AND {_EDGE_OUT} IN ${_P_NAMES}",
                 {
                     _P_KINDS: list(_REFERENCE_KINDS),
-                    _P_NAMES: list(name_ids_by_key.values()),
+                    _P_NAMES: list(name_ids),
                 },
             )
         )
@@ -1424,7 +1422,7 @@ class SurrealCodeGraph:
             target_names,
         )
 
-        referencing = self._dedupe_by_id(await self._nodes_by_ids(list(referencing_ids.values())))
+        referencing = self._dedupe_by_id(await self._nodes_by_ids(list(referencing_ids)))
         return ReferenceSummary(
             qualified_name=name,
             production_references=len(production),
@@ -1505,7 +1503,7 @@ class SurrealCodeGraph:
     @classmethod
     def _classify_reference_rows(
         cls, rows: Sequence[Mapping[str, Any]], target_names: set[str]
-    ) -> tuple[set[str], set[str], dict[str, RecordID]]:
+    ) -> tuple[set[str], set[str], dict[RecordID, None]]:
         """Split ``rows`` into (production, test, referencing-id) buckets.
 
         Shared by :meth:`references`'s full query and its exact-only channel
@@ -1521,12 +1519,12 @@ class SurrealCodeGraph:
 
         Returns:
             ``(production, test, referencing_ids)`` — the distinct production
-            and test source qnames, plus the source ids keyed by their string
-            form (the unhashable-``RecordID`` de-dupe idiom).
+            and test source qnames, plus the distinct source ids in first-seen
+            order (keys of an insertion-ordered dict; ``RecordID`` is hashable on SDK 3.0).
         """
         production: set[str] = set()
         test: set[str] = set()
-        referencing_ids: dict[str, RecordID] = {}
+        referencing_ids: dict[RecordID, None] = {}
         for row in rows:
             source_id = row[_EDGE_IN]
             if not isinstance(source_id, RecordID):
@@ -1538,7 +1536,7 @@ class SurrealCodeGraph:
                 test.add(source_qname)
             else:
                 production.add(source_qname)
-            referencing_ids[str(source_id)] = source_id
+            referencing_ids[source_id] = None
         return production, test, referencing_ids
 
     async def dead_code(

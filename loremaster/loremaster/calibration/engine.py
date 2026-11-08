@@ -304,8 +304,8 @@ class CalibrationEngine:
     def _backoff_delay(self, attempt: int) -> float:
         """Draw this probe's reconnect delay from the SHARED full-jitter policy.
 
-        A named seam rather than an expression inline in :meth:`_probe_loop`, mirroring
-        :meth:`loremaster.scout.CommandSubscriber._backoff`: it is what lets the
+        A named seam rather than an expression inline in :meth:`_probe_loop` (packet 68
+        ports this loop to a native tenacity ``AsyncRetrying``, as packet 66 did scout's): it is what lets the
         one-implementation invariant DRIVE this call site directly and prove it shares the
         policy (``loremaster/tests/test_backoff_seam.py``). A backoff buried inside a loop
         body can only be reached through the loop's whole harness, and a site a pin cannot

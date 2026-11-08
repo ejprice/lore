@@ -103,6 +103,7 @@ from loremaster.store._txn import (
     open_surreal_connection,
     record_key,
     record_key_or_none,
+    required_datetime,
     run_query,
     signin_credentials,
 )
@@ -1296,7 +1297,7 @@ class FindingLedger:
             area=str(row.get(_COL_AREA, "")),
             category=str(row.get(_COL_CATEGORY, "")),
             created_by=str(row.get(_COL_CREATED_BY, "")),
-            created_at=self._require_aware_utc(row.get(_COL_CREATED_AT)),
+            created_at=required_datetime(row.get(_COL_CREATED_AT), row="finding", column=_COL_CREATED_AT),
             supersedes=record_key_or_none(row.get(_COL_SUPERSEDES)),
             provenance=dict(row.get(_COL_PROVENANCE) or {}),
         )
@@ -1323,44 +1324,6 @@ class FindingLedger:
             return 0
         return int(rows[0].get(_COUNT_KEY, 0))
 
-    def _require_aware_utc(self, value: Any) -> datetime:
-        """Normalise a REQUIRED datetime column to tz-aware UTC, refusing a bad value.
 
-        ``created_at`` is a non-``option`` schema column the ledger always sets, so a
-        faithful row always carries a real datetime; a missing/uncoercible one is a
-        corrupt row, refused LOUDLY rather than silently coerced.
-
-        Raises:
-            SurrealStoreError: The value is missing or cannot be read as a datetime.
-        """
-        coerced = self._to_aware_utc(value)
-        if coerced is None:
-            raise SurrealStoreError(
-                f"finding row column {_COL_CREATED_AT!r} is missing or not a datetime "
-                f"(got {type(value).__name__})"
-            )
-        return coerced
-
-    @staticmethod
-    def _to_aware_utc(value: Any) -> datetime | None:
-        """Coerce a stored datetime into a tz-aware UTC datetime (or ``None``).
-
-        The SDK's CBOR decoder returns tz-aware datetimes, but a naive datetime or an
-        ISO-string/wrapper shape is normalised defensively so ``Finding.created_at``
-        is ALWAYS tz-aware (a naive stamp is the classic wrong-anchor bug for a value
-        fleet agents in different timezones compare). ``None`` passes through.
-        """
-        if value is None:
-            return None
-        if isinstance(value, datetime):
-            aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-            return aware.astimezone(UTC)
-        text = str(value).replace("Z", "+00:00")
-        try:
-            parsed = datetime.fromisoformat(text)
-        except ValueError:
-            return None
-        aware = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
-        return aware.astimezone(UTC)
 
 

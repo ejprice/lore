@@ -37,8 +37,8 @@ mis-reported as ``removed`` because it momentarily left the ``indexed`` set.
 
 :class:`DiffEngine` mirrors :class:`~loremaster.index.snapshots.SnapshotStamper`
 exactly: it owns its OWN lazily-opened, signed-in SurrealDB connection (the same
-connect-lock + CAS-drop + ``KeyError``-classification self-heal idiom every
-sibling port uses) for the read queries below, and reads through the injected
+connect-lock + CAS-drop self-heal idiom every sibling port uses, on the shared
+``open_surreal_connection`` factory) for the read queries below, and reads through the injected
 ``store`` / ``manifest`` collaborators (their OWN connections) for the live
 "now" state — never touching their connection lifecycle.
 

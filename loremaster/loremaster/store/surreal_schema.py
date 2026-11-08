@@ -2866,8 +2866,9 @@ def generate_floor_calibration_ddl() -> str:
         A newline-separated, semicolon-terminated DDL string, in the same shape
         every other ``generate_*_ddl`` returns, ready to wrap in ONE
         ``BEGIN … COMMIT`` and run through ``execute_transaction`` (NEVER a bare
-        multi-statement ``query()`` — store reference §3 validates statement[0]
-        only).
+        multi-statement ``query()`` — the single-statement seam refuses one, R2,
+        and only ``execute_transaction`` classifies a rollback's root cause, store
+        reference §3).
     """
     statements: list[str] = _floor_measurement_statements()
     statements += _floor_head_statements()

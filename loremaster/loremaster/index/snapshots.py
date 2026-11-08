@@ -21,7 +21,8 @@ Two independent pieces:
   :class:`~loremaster.store.surreal.SurrealStore` /
   :class:`~loremaster.index.surreal_manifest.SurrealManifest` /
   :class:`~loremaster.graph_surreal.SurrealCodeGraph`'s identical
-  connect-lock + CAS-drop + ``KeyError``-classification self-heal idiom),
+  connect-lock + CAS-drop self-heal idiom, on the shared ``open_surreal_connection``
+  factory),
   and reads the ``store``/``manifest`` collaborators it is constructed with
   to build a snapshot. ``stamp()`` is UNCONDITIONAL — it does not decide
   "should I stamp right now"; that gate (full sweep success, sweep did

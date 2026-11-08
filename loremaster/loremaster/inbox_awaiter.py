@@ -237,7 +237,7 @@ class InboxAwaiter:
 
         ⚠ The catch NAMES the shared module global (never an inline tuple): the cross-suite
         mutation pins rebind it, so a build holding a private clone would keep recovering
-        after ``KeyError`` was dropped from the shared set and REDDEN. That is the
+        after the SDK transport error was dropped from the shared set and REDDEN. That is the
         "prove sharing by mutation" invariant — routing is not sharing (#102).
         """
         try:

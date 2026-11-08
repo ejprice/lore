@@ -95,6 +95,7 @@ import time
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, NoReturn
 
 from lorerunes.engine_rejection import CatchSpec
@@ -770,6 +771,36 @@ def one_statement_result(results: object) -> Any:
             f"expected — multi-statement work rides execute_transaction"
         )
     return results[0]
+
+
+def required_datetime(value: object, *, row: str, column: str) -> datetime:
+    """A REQUIRED datetime column's value, refused loudly when it is missing or not a tz-aware datetime.
+
+    Validation only, never coercion (operator ruling R6 S2): SDK 3.0.0 decodes every ``datetime`` column as a
+    tz-aware UTC ``PreciseDatetime`` that keeps the engine's nanoseconds (R6 F3, measured), so the six
+    per-module ``_to_aware_utc`` coercers were DELETED (drop list #8 — every column they read is declared
+    ``datetime`` / ``option<datetime>``, so their string and naive branches were unreachable from the store).
+    What survives is the corrupt-row guard: a required stamp that is absent or of another type is refused,
+    never silently coerced.
+
+    Args:
+        value: The column's decoded value.
+        row: The row's noun for the message (``"task"``, ``"agent"``, …).
+        column: The column's name for the message.
+
+    Raises:
+        SurrealStoreError: ``value`` is not a tz-aware ``datetime``.
+    """
+    if isinstance(value, datetime) and value.tzinfo is not None:
+        return value
+    raise SurrealStoreError(
+        f"{row} row column {column!r} is missing or not a tz-aware datetime (got {type(value).__name__})"
+    )
+
+
+def stored_datetime(value: object, *, row: str, column: str) -> datetime | None:
+    """An ``option<datetime>`` column's value: ``None`` when unset, else :func:`required_datetime`'s check."""
+    return None if value is None else required_datetime(value, row=row, column=column)
 
 
 #: The record-key escapes the engine (``<string> id``) and the SDK (``str(RecordID)``) wrap a digit-led or
@@ -2173,15 +2204,16 @@ def _failed_statements(response: dict[str, Any]) -> list[_FailedStatement]:
 
 
 # The exception classes the installed SDK's ``parse_query_error`` (and the ``parse_rpc_error`` it recurses
-# into for a ``cause``) can raise on a malformed per-statement dict — read from ``surrealdb/errors.py``
-# (SDK 2.0.0, amendment 37 §7 / F-C8), never a bare ``except``:
-#   * ``AttributeError`` — a ``cause`` that is not a dict (``parse_rpc_error`` calls ``raw.get``; measured by
-#     coldaudit-63c-i-a-3);
+# into for a ``cause``) can raise on a malformed per-statement dict — never a bare ``except``. Re-measured on
+# SDK 3.0.0 (packet 66 drop list #15, build-66 probe ``probe_c15_parse_failures.py``):
 #   * ``TypeError`` — an unhashable ``kind`` (or a cause's unhashable ``code``) used as a ``KIND_TO_CLASS`` /
-#     ``CODE_TO_KIND`` dict key;
+#     ``CODE_TO_KIND`` dict key — still raised;
 #   * ``RecursionError`` — a ``cause`` chain deeper than the interpreter's recursion limit
-#     (``parse_rpc_error`` recurses once per level).
-_SDK_PARSE_FAILURES = (AttributeError, TypeError, RecursionError)
+#     (``parse_rpc_error`` recurses once per level) — still raised.
+# RETIRED: ``AttributeError`` for a ``cause`` that is not a dict (SDK 2.0.0, coldaudit-63c-i-a-3) — SDK
+# 3.0.0's ``parse_rpc_error`` answers a non-dict with an ``InternalError`` instead of raising (measured: a
+# string and a list cause both RETURN a typed error).
+_SDK_PARSE_FAILURES = (TypeError, RecursionError)
 
 
 def _parse_failed_statement(index: int, statement_result: dict[str, Any]) -> ServerError | None:

@@ -119,6 +119,7 @@ from loremaster.store._txn import (
     execute_transaction,
     open_surreal_connection,
     record_key,
+    required_datetime,
     run_query,
     signin_credentials,
 )
@@ -1327,36 +1328,8 @@ class BriefLedger:
             body=str(row.get(_COL_BODY, "")),
             created_by=str(row.get(_COL_CREATED_BY, "")),
             note=row.get(_COL_NOTE),
-            created_at=self._require_aware_utc(row.get(_COL_CREATED_AT)),
+            created_at=required_datetime(row.get(_COL_CREATED_AT), row="brief", column=_COL_CREATED_AT),
         )
 
-    def _require_aware_utc(self, value: Any) -> datetime:
-        """Normalise a REQUIRED datetime column to tz-aware UTC, refusing a bad value.
 
-        Raises:
-            SurrealStoreError: The value is missing or cannot be read as a datetime.
-        """
-        coerced = self._to_aware_utc(value)
-        if coerced is None:
-            raise SurrealStoreError(
-                f"brief row column {_COL_CREATED_AT!r} is missing or not a datetime "
-                f"(got {type(value).__name__})"
-            )
-        return coerced
-
-    @staticmethod
-    def _to_aware_utc(value: Any) -> datetime | None:
-        """Coerce a stored datetime into a tz-aware UTC datetime (or ``None``)."""
-        if value is None:
-            return None
-        if isinstance(value, datetime):
-            aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-            return aware.astimezone(UTC)
-        text = str(value).replace("Z", "+00:00")
-        try:
-            parsed = datetime.fromisoformat(text)
-        except ValueError:
-            return None
-        aware = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
-        return aware.astimezone(UTC)
 

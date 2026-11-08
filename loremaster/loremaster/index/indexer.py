@@ -679,9 +679,10 @@ class Indexer:
         commit the new ones land in. An oversized ``file_text`` body (over the
         store's :attr:`file_text_max_bytes` cap) is indexed WITHOUT the file_text
         fragment (a single WARNING; chunks/manifest/graph still land ``indexed``). A
-        composed transaction that would overflow the store's hard statement cap is
-        refused LOUDLY by ``apply`` (a typed :class:`SurrealStoreError`) and isolated
-        ``failed`` — one pathological file never kills the sweep.
+        composed transaction that would overflow the store's row cap
+        (``TXN_ROW_HARD_CAP``) is refused LOUDLY by ``apply`` (a typed
+        :class:`SurrealStoreError` naming the bound) and isolated ``failed`` — one
+        pathological file never kills the sweep.
         """
         started_ns = time.monotonic_ns()
         records = [
@@ -721,8 +722,8 @@ class Indexer:
         # old upsert-new-before-purge ordering — a concurrent reader observes only
         # the complete pre- or post-replace state, so the stale points/edges are
         # purged in the SAME commit the new ones land in. A composed transaction the
-        # store refuses (its hard statement-count cap overflowed — a pathologically
-        # chunk-heavy file) raises a typed :class:`SurrealStoreError` at BUILD time,
+        # store refuses (its row cap overflowed — a pathologically large file) raises a
+        # typed :class:`SurrealStoreError` at BUILD time,
         # before anything persists; catch it, isolate THIS file ``failed`` (last-good
         # retained), and let the OTHER files keep indexing (clause 5).
         try:

@@ -91,7 +91,6 @@ from loremaster.render import render_attributed, render_fenced
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
     SurrealConnectionError,
-    SurrealStoreError,
     TxnContentionExhaustedError,
     TxnUniqueViolationError,
     _SurrealConnection,
@@ -100,8 +99,10 @@ from loremaster.store._txn import (
     execute_transaction,
     open_surreal_connection,
     record_key,
+    required_datetime,
     run_query,
     signin_credentials,
+    stored_datetime,
 )
 from loremaster.store.surreal_schema import (
     _PRINCIPAL_STATUS_ACTIVE,
@@ -1124,12 +1125,16 @@ class AgentRegistry:
         if row.get(_OWNER_STATUS_ALIAS) != _PRINCIPAL_STATUS_ACTIVE:
             self._deny_capability("owner-inactive")
             return None
-        owner_expires_at = self._to_aware_utc(row.get(_OWNER_EXPIRES_AT_ALIAS))
+        owner_expires_at = stored_datetime(
+            row.get(_OWNER_EXPIRES_AT_ALIAS), row="agent", column=_OWNER_EXPIRES_AT_ALIAS
+        )
         if owner_expires_at is not None and owner_expires_at <= now:
             self._deny_capability("owner-expired")
             return None
         # (4b, ESC-3) the OPTIONAL capability expiry — enforced only when SET.
-        capability_expires_at = self._to_aware_utc(row.get(_COL_CAPABILITY_EXPIRES_AT))
+        capability_expires_at = stored_datetime(
+            row.get(_COL_CAPABILITY_EXPIRES_AT), row="agent", column=_COL_CAPABILITY_EXPIRES_AT
+        )
         if capability_expires_at is not None and capability_expires_at <= now:
             self._deny_capability("capability-expired")
             return None
@@ -1454,8 +1459,10 @@ class AgentRegistry:
             task_id=row.get(_COL_TASK_ID),
             checkpoint=row.get(_COL_CHECKPOINT),
             last_note=row.get(_COL_LAST_NOTE),
-            registered_at=self._require_aware_utc(row.get(_COL_REGISTERED_AT), _COL_REGISTERED_AT),
-            heartbeat_at=self._require_aware_utc(row.get(_COL_HEARTBEAT_AT), _COL_HEARTBEAT_AT),
+            registered_at=required_datetime(
+                row.get(_COL_REGISTERED_AT), row="agent", column=_COL_REGISTERED_AT
+            ),
+            heartbeat_at=required_datetime(row.get(_COL_HEARTBEAT_AT), row="agent", column=_COL_HEARTBEAT_AT),
             # #304: NONE-tolerant — a legacy row omits the column entirely (store
             # reference §2: ``SELECT *`` omits a NONE-valued option column), so a
             # required-datetime decode would wrongly raise. The write-side stamp
@@ -1468,38 +1475,5 @@ class AgentRegistry:
             declared_cadence=row.get(_COL_DECLARED_CADENCE),
         )
 
-    def _require_aware_utc(self, value: Any, column: str) -> datetime:
-        """Normalise a REQUIRED datetime column to tz-aware UTC, refusing a bad value.
 
-        Raises:
-            SurrealStoreError: The value is missing or cannot be read as a datetime.
-        """
-        coerced = self._to_aware_utc(value)
-        if coerced is None:
-            raise SurrealStoreError(
-                f"agent row column {column!r} is missing or not a datetime "
-                f"(got {type(value).__name__})"
-            )
-        return coerced
-
-    @staticmethod
-    def _to_aware_utc(value: Any) -> datetime | None:
-        """Coerce a stored datetime into a tz-aware UTC datetime (or ``None``).
-
-        Mirrors :meth:`~loremaster.tasks.TaskLedger._to_aware_utc`: the SDK's
-        CBOR decoder returns tz-aware datetimes, but a naive datetime or an
-        ISO-string/wrapper shape is normalised defensively.
-        """
-        if value is None:
-            return None
-        if isinstance(value, datetime):
-            aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-            return aware.astimezone(UTC)
-        text = str(value).replace("Z", "+00:00")
-        try:
-            parsed = datetime.fromisoformat(text)
-        except ValueError:
-            return None
-        aware = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
-        return aware.astimezone(UTC)
 

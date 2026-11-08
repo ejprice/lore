@@ -386,9 +386,9 @@ class SurrealLeaseStore:
 
         The multi-statement DDL rides
         :func:`~loremaster.store._txn.execute_transaction`, which verifies EVERY
-        statement's status; the SDK's plain ``query()`` validates statement[0]
-        only, which is how a silent partial schema apply happens (store
-        reference §3).
+        statement's status and applies the slice atomically (store reference §3) —
+        under SDK 2.0 a plain ``query()`` validated statement[0] only, which is how
+        a silent partial schema apply happened.
         """
         await self._ensure_connection()
         ddl = generate_lease_ddl()

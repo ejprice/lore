@@ -303,8 +303,8 @@ class FloorCalibrationStore:
 
         The multi-statement DDL rides
         :func:`~loremaster.store._txn.execute_transaction`, which verifies EVERY
-        statement's status; the SDK's plain ``query()`` validates statement[0]
-        only (store reference §3).
+        statement's status and classifies the rollback's root cause (store
+        reference §3); the single-statement seam refuses multi-statement text (R2).
         """
         await self._ensure_connection()
         ddl = generate_floor_calibration_ddl()

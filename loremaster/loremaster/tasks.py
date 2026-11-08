@@ -83,7 +83,7 @@ import asyncio
 import graphlib
 import logging
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any, Literal, NoReturn, Protocol, cast
 from uuid import uuid4
 
@@ -111,8 +111,10 @@ from loremaster.store._txn import (
     execute_transaction,
     open_surreal_connection,
     record_key,
+    required_datetime,
     run_query,
     signin_credentials,
+    stored_datetime,
 )
 from loremaster.store.surreal_schema import BLOCKS_RELATION, TASK_TABLE, generate_task_ddl
 
@@ -2610,12 +2612,12 @@ class TaskLedger:
             description=str(row.get(_COL_DESCRIPTION, "")),
             status=cast(TaskStatus, row.get(_COL_STATUS)),
             owner=row.get(_COL_OWNER),
-            claimed_at=self._to_aware_utc(row.get(_COL_CLAIMED_AT)),
+            claimed_at=stored_datetime(row.get(_COL_CLAIMED_AT), row="task", column=_COL_CLAIMED_AT),
             blocked_by=[str(blocker) for blocker in (row.get(_COL_BLOCKED_BY) or ())],
             provenance=dict(row.get(_COL_PROVENANCE) or {}),
             superseded_by=row.get(_COL_SUPERSEDED_BY),
-            created_at=self._require_aware_utc(row.get(_COL_CREATED_AT)),
-            updated_at=self._to_aware_utc_ceiling(row.get(_COL_UPDATED_AT)),
+            created_at=required_datetime(row.get(_COL_CREATED_AT), row="task", column=_COL_CREATED_AT),
+            updated_at=stored_datetime(row.get(_COL_UPDATED_AT), row="task", column=_COL_UPDATED_AT),
             summary=row.get(_COL_SUMMARY),
             report_path=row.get(_COL_REPORT_PATH),
         )
@@ -2657,77 +2659,5 @@ class TaskLedger:
             return 0
         return int(rows[0].get(_COUNT_KEY, 0))
 
-    def _require_aware_utc(self, value: Any) -> datetime:
-        """Normalise a REQUIRED datetime column to tz-aware UTC, refusing a bad value.
 
-        ``created_at`` is a non-``option`` schema column the ledger always sets,
-        so a faithful row always carries a real datetime; a missing/uncoercible
-        one is a corrupt row, refused LOUDLY rather than silently coerced.
-
-        Raises:
-            SurrealStoreError: The value is missing or cannot be read as a datetime.
-        """
-        coerced = self._to_aware_utc(value)
-        if coerced is None:
-            raise SurrealStoreError(
-                f"task row column {_COL_CREATED_AT!r} is missing or not a datetime "
-                f"(got {type(value).__name__})"
-            )
-        return coerced
-
-    @staticmethod
-    def _to_aware_utc(value: Any) -> datetime | None:
-        """Coerce a stored datetime into a tz-aware UTC datetime (or ``None``).
-
-        The SDK's CBOR decoder returns tz-aware datetimes, but a naive datetime
-        or an ISO-string/wrapper shape is normalised defensively so
-        ``Task.created_at`` / ``Task.claimed_at`` are ALWAYS tz-aware (a naive
-        stamp is the classic wrong-anchor bug for a value fleet agents in
-        different timezones compare). ``None`` (an unset option column) passes
-        through as ``None``.
-        """
-        if value is None:
-            return None
-        if isinstance(value, datetime):
-            aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-            return aware.astimezone(UTC)
-        # An ISO-string / wrapper fallback (``str()`` covers the SDK's
-        # IsoDateTimeWrapper, whose repr is the ISO-8601 text).
-        text = str(value).replace("Z", "+00:00")
-        try:
-            parsed = datetime.fromisoformat(text)
-        except ValueError:
-            return None
-        aware = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
-        return aware.astimezone(UTC)
-
-    @classmethod
-    def _to_aware_utc_ceiling(cls, value: Any) -> datetime | None:
-        """Decode a SERVER-``time::now()``-stamped column, rounded UP one microsecond.
-
-        PKT-06 §1 fix (live-verified against spike-surreal): SurrealDB's
-        ``time::now()`` carries nanosecond precision server-side, but Python's
-        ``datetime`` — and this SDK's CBOR decode — can only represent
-        microseconds, so the decoded value is a TRUNCATED (rounded DOWN)
-        approximation of the true stored instant. Re-binding that exact
-        decoded value as a later query's ``$since`` parameter therefore
-        compares LESS than the still-stored original (``stored > $since``
-        stays true even for the row the cursor was read FROM), silently
-        breaking :meth:`updated_since`'s advertised EXCLUSIVE boundary for any
-        cursor round-tripped through it. Rounding the decoded value UP by one
-        whole microsecond (the finest increment Python can represent)
-        guarantees it is never smaller than the true stored instant,
-        restoring the exclusive-boundary property. Applied ONLY where a
-        decoded value may later be REBOUND as a store parameter
-        (:attr:`Task.updated_at`) — never to ``created_at``, a Python-
-        authored value with no server-side precision to lose. Mirrors the
-        design's already-ACCEPTED microsecond-tie residual (R1): the
-        vanishingly rare case of a second, genuinely-independent event
-        landing inside this same sub-microsecond window is a missed *notice*
-        on the NEXT poll, never lost data (``action=query`` still serves it).
-        """
-        aware = cls._to_aware_utc(value)
-        if aware is None:
-            return None
-        return aware + timedelta(microseconds=1)
 

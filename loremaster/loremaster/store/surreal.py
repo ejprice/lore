@@ -62,9 +62,8 @@ Deliberate divergences from the retired ``QdrantStore`` (module deleted at P8a;
 not oversights):
 
 * **Server, never embedded.** :data:`_SurrealConnection` is typed as the SDK's
-  full return union (including ``AsyncEmbeddedSurrealConnection``) because
-  that is what :func:`surrealdb.AsyncSurreal` can hand back for *some* URL
-  scheme, but this store only ever opens a networked ``ws://``/``http://`` URL —
+  networked return union (SDK 3.0 moved the embedded engine to the separate
+  ``surrealdb-embedded`` package), and this store only ever opens a networked ``ws://``/``http://`` URL —
   never a local/embedded engine — because the hybrid-search dialect behaviours
   it depends on (server-side HNSW, BM25 FULLTEXT, ``search::rrf``) are
   properties of the standalone server, the same real-server-only posture
@@ -1160,8 +1159,8 @@ class SurrealStore:
         the guard against an accidentally-huge batch. The whole transaction runs under the named
         :data:`~loremaster.store._txn.INDEX_TRANSACTION_TIMEOUT_SECONDS` override (R5 F4b), not the
         30 s default. Runs through the shared :func:`~loremaster.store._txn.
-        execute_transaction`, which verifies EVERY statement's status (never the
-        SDK's first-statement-only ``query()``) and self-heals a transport failure.
+        execute_transaction`, which verifies EVERY statement's status, classifies the
+        rollback's root cause and self-heals a transport failure.
 
         Args:
             fragments: The producer fragments to apply as one transaction (at
@@ -1369,8 +1368,8 @@ class SurrealStore:
         ids NOT in it have drifted (a refactor deleted the referenced chunk).
         Mirrors :meth:`delete_points`'s id-list idiom — each id is bound as a
         :class:`RecordID` under the ``chunk`` table, and the projection is
-        ``record::id`` so the bare ids come back as plain strings
-        (:class:`RecordID` is unhashable, so it can never enter the returned set).
+        ``record::id`` so the bare ids come back as plain strings — the same
+        bare-id strings the caller asked about, so the set compares directly.
 
         An empty ``ids`` issues NO request and returns the empty set (the common
         "this recall carried no refs" case). A DOWN server RAISES rather than

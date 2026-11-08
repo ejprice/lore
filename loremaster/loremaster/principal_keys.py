@@ -114,6 +114,7 @@ from loremaster.store._txn import (
     record_text,
     run_query,
     signin_credentials,
+    stored_datetime,
     wrap_store_rejection,
 )
 from loremaster.store.surreal_schema import (
@@ -617,10 +618,12 @@ class PrincipalKeyStore:
         row = rows[0]
         key_name = str(row[_COL_NAME])
 
-        revoked_at = PrincipalStore._to_aware_utc(row.get(_COL_REVOKED_AT))
+        revoked_at = stored_datetime(row.get(_COL_REVOKED_AT), row="principal_key", column=_COL_REVOKED_AT)
         if revoked_at is not None:
             return self._deny("key-revoked")
-        key_expires_at = PrincipalStore._to_aware_utc(row.get(_COL_EXPIRES_AT))
+        key_expires_at = stored_datetime(
+            row.get(_COL_EXPIRES_AT), row="principal_key", column=_COL_EXPIRES_AT
+        )
         if key_expires_at is not None and key_expires_at <= now:
             return self._deny("key-expired")
 
@@ -670,11 +673,10 @@ class PrincipalKeyStore:
         /``created_at`` — always present) and ``row.get(…)`` for the ``option<>`` ones
         (``expires_at``/``revoked_at`` — store law §2: a ``RETURN AFTER`` / ``SELECT *``
         omits a NONE ``option<>`` column, and even an explicit projection reads it back
-        as ``None``). Datetimes are normalised to tz-aware UTC via the SHARED
-        :meth:`~loremaster.principals.PrincipalStore._to_aware_utc` coercion (the
-        fleet-comparable anchor — never a cloned coercion).
+        as ``None``). Datetimes arrive from the SDK as tz-aware UTC ``PreciseDatetime`` values and are
+        checked (never coerced) by the shared :func:`~loremaster.store._txn.stored_datetime`.
         """
-        created_at = PrincipalStore._to_aware_utc(row.get(_COL_CREATED_AT))
+        created_at = stored_datetime(row.get(_COL_CREATED_AT), row="principal_key", column=_COL_CREATED_AT)
         if created_at is None:
             raise PrincipalKeyStoreError(
                 f"principal_key row column {_COL_CREATED_AT!r} is missing or not a datetime"
@@ -684,8 +686,8 @@ class PrincipalKeyStore:
             principal_id=record_text(row[_COL_PRINCIPAL]),
             name=str(row[_COL_NAME]),
             created_at=created_at,
-            expires_at=PrincipalStore._to_aware_utc(row.get(_COL_EXPIRES_AT)),
-            revoked_at=PrincipalStore._to_aware_utc(row.get(_COL_REVOKED_AT)),
+            expires_at=stored_datetime(row.get(_COL_EXPIRES_AT), row="principal_key", column=_COL_EXPIRES_AT),
+            revoked_at=stored_datetime(row.get(_COL_REVOKED_AT), row="principal_key", column=_COL_REVOKED_AT),
         )
 
     @classmethod

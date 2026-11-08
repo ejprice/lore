@@ -93,6 +93,7 @@ from loremaster.store._txn import (
     record_text,
     run_query,
     signin_credentials,
+    stored_datetime,
     wrap_store_rejection,
 )
 from loremaster.store.surreal_schema import (
@@ -363,15 +364,6 @@ class KeepStore:
             raise KeepStoreError(f"no principal with email {email!r}")
         return record_key(principal.id)
 
-    @staticmethod
-    def _to_aware_utc(value: Any) -> datetime | None:
-        """Coerce a stored datetime into a tz-aware UTC datetime (or ``None``).
-
-        Reuses the fleet-comparable-anchor coercion policy verbatim from
-        :meth:`~loremaster.principals.PrincipalStore._to_aware_utc` (the shared
-        datetime seam — never a cloned coercion).
-        """
-        return PrincipalStore._to_aware_utc(value)
 
     # -- row mappers (keep-specific, mirroring PrincipalStore._row_to_principal) ---
 
@@ -398,9 +390,10 @@ class KeepStore:
         :meth:`~loremaster.principals.PrincipalStore._optional_str` — ``None`` for the
         NONE ``option<string>`` (a nameless ``dm`` keep, store law §2, read via the
         explicit :data:`_KEEP_READ_PROJECTION`, never ``SELECT *``). ``created_at`` is a
-        required self-stamped datetime coerced to the fleet-comparable tz-aware UTC anchor.
+        required self-stamped datetime, checked (never coerced) by the shared
+        :func:`~loremaster.store._txn.stored_datetime` — the SDK decodes it tz-aware UTC.
         """
-        created_at = self._to_aware_utc(row.get("created_at"))
+        created_at = stored_datetime(row.get("created_at"), row="keep", column="created_at")
         if created_at is None:
             raise KeepStoreError("a keep row is missing its required created_at stamp")
         return Keep(
@@ -418,7 +411,7 @@ class KeepStore:
         each reduced to its bare id. ``rank``/``since`` are always present (``rank``
         DEFAULTs, ``since`` self-stamps). ``since`` coerces to tz-aware UTC.
         """
-        since = self._to_aware_utc(row.get("since"))
+        since = stored_datetime(row.get("since"), row="member_of", column="since")
         if since is None:
             raise KeepStoreError("a member_of row is missing its required since stamp")
         return Membership(
