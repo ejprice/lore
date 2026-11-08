@@ -59,8 +59,11 @@ hand-back (`scratchpad/sdk3r7/REPORT.md`). Rounds 1–6 below are history, excep
    error), `async def _run`; DELETED `_txn_conflict_backoff_seconds`, `_conflict_wait`, `_conflict_sleep`, the stop-peeking
    `_wait`, the `RetryError` handler.
 3. `scout.CommandSubscriber.run`: ONE native `AsyncRetrying` per outage on `backoff.full_jitter`; a mid-serve drop is the
-   outage's first failure (`_SocketDropped`), so it is backed off before the reconnect and a live connection resets the
-   ladder. DELETED `_connect_wait`, `_backoff_delay`, `_backoff`.
+   outage's first failure (raised as a `ConnectionResetError`, a member of the ladder's own caught family — a NEW
+   exception type in `run`'s `except` reddens `test_exhaustion_fates`'s site registry), so it is backed off before the
+   reconnect and a live connection resets the ladder. `_txn.retry_on_conflict` keeps its annotated
+   `last_conflict_cause` declaration (assigned `nonlocal` from the callback): `test_retry_seam`'s chaining pin grades
+   the explanation on it. DELETED `_connect_wait`, `_backoff_delay`, `_backoff`.
 4. `_txn` unknown-outcome text carries both halves of Q6's advice.
 5. Test-side, reference only: `_surreal_harness.run` = the STAGED C10 rule (`scratchpad/sdk3r7/c10/run_rule.patch`, FORK-R7-1).
 Pristine copies: `scratchpad/sdk3r7/ref_pristine/`. Packet 68 owns the five other loops, `jittered_fixed` and the shim.
