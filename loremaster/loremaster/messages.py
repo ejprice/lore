@@ -1788,7 +1788,8 @@ class MessageLedger:
             table=MESSAGE_TABLE,
             column="created_at",
             projection=(
-                "seq, grade, body, refs, thread, question, task_id, sender.name AS sender_name, created_at"
+                "id, seq, grade, body, refs, thread, question, task_id, "
+                "sender.name AS sender_name, created_at"
             ),
             since=since,
             limit=limit,
