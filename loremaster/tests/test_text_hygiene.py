@@ -108,6 +108,11 @@ _TIER1_FILE_TOKEN_WHITELIST: frozenset[tuple[str, str]] = frozenset(
         ("server.py", "lore_references"),
         # server.py:4244 -- "lore_reindex no longer exists as a separate tool."
         ("server.py", "lore_reindex"),
+        # Packet 66 (sidecar RULING-14 B3, R43): a ContextVar debug name, never served; "lore_" is a
+        # namespace here, not a tool. A rename was REJECTED as the dodge-shaped move. NAMED BOUND (the
+        # scanner owner's, no change now — R38): on the THIRD non-tool `lore_` literal, refine Tier 1 to
+        # skip name-argument positions (`ContextVar(...)`, `getLogger(...)`), brought to the operator then.
+        ("store/_txn.py", "lore_long_operation_seconds"),
     }
 )
 
