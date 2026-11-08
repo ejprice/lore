@@ -760,3 +760,33 @@ Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-15.md`.
 - **Receipt:** builder exit at HEAD `3f4d20a`, TREE `3fd07c54…`, DIRTY 0: 530 failed / 11224 passed = the owned 530, node for node. Currency RED_ORPHANED 0.
   - The lead re-ran the R44 / #593 / R34 / `TestRollupDispatch` files: 61 passed, EXIT=0, same TREE.
   - #595 (`test_rrf_ordering_is_deterministic` failed once in a subset run; 20/20 alone) is not ruled flaky: the full suite arbitrates.
+
+## R45 — sidecar ruling 16: the audit DELTA's NO-GO (#596) and S2–S6 (adopted by the lead)
+Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-16.md`.
+The audit's §DELTA at `672b6d6` passed every item but one: the ONE full suite (530 = 530 both ways, RED_ORPHANED 0), the B1 / R44 mutations, the B2 EADDRINUSE replay, #25 CONFIRMED, and R-13 (r_a3_floor16 = ADVERSARY4 R4-10).
+- **S1 / #596 (blocking):** R44's h3 was false on a non-MIN truncated leg and beside a held leg. The sidecar recorded it as its own quantifier error: the clause was derived on one truncated leg and served on every leg.
+  - Fix: ONE leg-agnostic string (`H3_EARLIEST_RESUME`), true in every state. It teaches dedupe by task id / finding number, because rollup rows render no stamps.
+  - Closing rule: a leg header states leg-local facts plus one global sentence whose truth does not depend on which leg renders it.
+  - Pins P7 (two truncated legs, live, with the measured re-serve walk) and P8 (truncated beside held, live).
+- **S2:** h3 has one spelling (test_mcp_server imports the constant).
+- **S4:** the R34 tail no longer asserts "the store's other rows are intact" (a false clear under schema drift). It states only what the read knows.
+- **S6:** `message_activity_since` projects `id`, so a refused message row is named. DEVIATION accepted: the pin forces an ARRAY stamp. On 3.3.5, `> $since` admits array/object/uuid/record and never string/number/bool/null/duration, so a string-stamp pin was red for the wrong reason.
+- **S3:** a `snapshot_gc._to_aware_utc` docstring bound with a trigger (no code change).
+- **S5:** a named bound, no edit.
+- The builder's `_rollup_next_cursor` docstring had S1's over-claim in prose; it was re-worded (lead #19130).
+- **Commits:** pins first `15a553f` (17 red at `672b6d6` = declared); production `8509e14` (S1), `a535d2e` (S4), `f289f5b` (S6), `8289bc5` (S3).
+- **Receipt:** 530F/11298P = the owned 530.
+  - The run straddled the servicer's test-only `de6e116` (a hold crossed in flight; the servicer was editing the two files from ~22:19Z). The lead ruled: the run stands for every other file; the closing receipt re-runs the two.
+
+## R46 — sidecar ruling 17: #597, a non-datetime stamp is invisible to every stamp-paged leg — a PINNED BOUND in 66 (adopted by the lead)
+Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-17.md`.
+- **Reachability, by construction:** all three stamp columns are `datetime` / `option<datetime>` on SCHEMAFULL tables, typed so since birth. Every production write is coerced, and export/import keeps `d'…'`.
+  - The ONE door is an admin DDL retype (#107's door class).
+  - Un-probed sub-case: NULL under `option<datetime>`.
+- **Packet 66 ships a PINNED BOUND:**
+  - the servicer's pin-the-miss `de6e116`: a string stamp is invisible to the leg (rows and count) while a single read refuses it; array control; the KNOWN BOUND (#597) message on every closing path;
+  - two declared mutations redden exactly the 2 pins;
+  - the predicate stated once in `read_stamp_page`'s docstring, `d2df34c`.
+  A per-call check was rejected: a TableScan per leg per call, to detect an admin-only state.
+- **#597 stays OPEN** as the follow-up's spec: an integrity count per stamp column at `ensure_ready()` after DDL convergence, loud when N>0, with four re-open triggers. Scheduling it is the operator's call.
+- **Closing receipt** at `d2df34c` (TREE `b4927866…`, DIRTY 0): 66d + r15 + rollup-cursor + test_mcp_server + test_text_hygiene = 28F/692P; the 28 were all red in the audit's full run. Currency RED_ORPHANED 0. Lead re-run of the 66d / r15 / rollup-cursor files: 49 passed, EXIT=0, same TREE.
