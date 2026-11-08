@@ -984,6 +984,12 @@ class BriefLedger:
         pair) re-raises, since :meth:`_select_briefed_edge` then finds no
         existing edge to attribute the failure to.
 
+        NAMED BOUND (R43, audit-66 O21 / R-12, LOW): when a call's RELATE committed but its reply was
+        lost (an outcome-unknown transport error) and the caller re-acks, the re-ack meets UNIQUE, reads
+        back the FIRST call's own edge and reports ``already_acked=True`` — the ack IS recorded, only the
+        "already" attribution is wrong. Re-open trigger: any consumer that branches on ``already_acked``
+        for more than display.
+
         Returns:
             ``(already_acked, via)`` — ``via`` is the FIRST-recorded value on
             an idempotent no-op, else the value just written.

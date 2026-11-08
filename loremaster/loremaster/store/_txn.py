@@ -878,9 +878,11 @@ def parse_served_instant(text: str) -> datetime:
     return instant
 
 
-#: The record-key escapes the engine (``<string> id``) and the SDK (``str(RecordID)``) wrap a digit-led or
-#: non-word key in: ``keep:⟨01J…⟩`` (angle, SDK 3.0.0 and the engine), ``principal:`abc-def``` (backtick, the
-#: engine for a hyphenated key and SDK 3.0.1). One layer is stripped from served text (packet doc §R4.7 C6).
+#: The record-key escapes a served id text can carry; ONE layer is stripped (packet doc §R4.7 C6). Measured
+#: (audit-66 ``probe_record_text``, with controls; re-run by build-66 R-9): ``⟨…⟩`` is SDK 3.0.0's
+#: ``str(RecordID)`` for a digit-led or non-word key (``keep:⟨01J…⟩``) — the ENGINE renders a ULID /
+#: ``[a-z0-9]`` key BARE; ``` `…` ``` is the engine's ``<string> id`` for a non-word key
+#: (``memory:`4cd6…-…```, ``keep:`a-b```, and SDK 3.0.1's form).
 _RECORD_KEY_ESCAPES: tuple[tuple[str, str], ...] = (("⟨", "⟩"), ("`", "`"))
 
 
@@ -919,9 +921,14 @@ def record_key_or_none(value: object) -> str | None:
 def record_text(value: object) -> str:
     """A record id's ``table:key`` text from its parts — never ``str(RecordID)`` (operator ruling R7 (d)).
 
-    For every key lore mints (ULID, ``[a-z0-9]``, hex) this equals the engine's ``<string> id``. For a
-    NON-WORD key the engine brackets and this does not (R8 F15): text that is PERSISTED or compared with
-    persisted text must be the engine's form, read with ``<string> id`` in the query, not built here.
+    Measured (audit-66 ``probe_record_text``; re-run by build-66 R-9): for lore's WORD keys (ULID,
+    engine-minted ``[a-z0-9]``, hex, composite arrays) this equals the engine's ``<string> id``. It does NOT
+    for a non-word key, and lore mints two: ``memory``'s uuid5 ids and ``floor_calibration``'s uuid4
+    measurement ids are hyphenated, so the engine backticks them (``memory:`4cd6…-…```) and this does not
+    (R8 F15). Text that is PERSISTED, compared with persisted text, or EXPECTED BACK from an agent must be
+    the engine's form, read with ``<string> id`` in the query (RS4's form), never built here.
+    STATED BOUND (R43, R-7) + re-open trigger: any served surface that expects a non-word key handed back
+    serves the engine's ``<string> id``; today none does (the R34 refusal displays one, remedy "report it").
     """
     table = getattr(value, "table_name", None)
     key = getattr(value, "id", None)
@@ -1829,6 +1836,13 @@ async def _raise_attempt_failure(
        — the request may have committed (R5 rider 2, R8 F14); a server-ANSWERED refusal (``NotAllowed``)
        stays a definite :class:`SurrealConnectionError` (R12 F-b). SDK 2.0's response-routing ``KeyError``
        arm is retired (drop list #1).
+       NAMED BOUND (R43, audit-66 T3 / R-4): a 30 s ``TransportTimeoutError`` also drops the owner's SHARED
+       connection, so a healthy sibling request in flight on it fails too and is served OUTCOME UNKNOWN —
+       honest ("may have landed — verify"), only over-broad. Re-open trigger: Q2's instrument (the
+       :18500-copy conformance run and the full suite grep ``TransportTimeoutError`` /
+       ``SurrealOutcomeUnknownError``, expected 0) — the first non-zero count opens the fork, fix shape
+       pre-named: drop only on ``ConnectionUnavailableError``, and pin "a sibling in flight during another
+       request's timeout succeeds".
     2. **Retryable conflict** — :func:`is_retryable_conflict_error` (the typed ``TransactionConflict``):
        raise :class:`RetryableConflictSignal` for :func:`retry_on_conflict` to consume.
     3. **Domain rejection** — every other kind (``Validation`` / ``Internal`` / ``Query`` / …) is the

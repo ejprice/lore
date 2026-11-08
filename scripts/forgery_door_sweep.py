@@ -176,7 +176,8 @@ class InjectedStoreFault(Exception):
     """The fault this sweep injects at one door, and NOTHING in production catches it.
 
     Deliberately outside every exception family the store seam handles
-    (``OSError``/``SurrealError``/``WebSocketException``, ``KeyError``,
+    (``OSError``/``SurrealError`` — SDK 3.0 raises every transport fault as a ``SurrealError``; the
+    SDK-2.0 ``WebSocketException`` and ``KeyError`` arms are retired, drop list #1/#9 —
     ``RetryableConflictSignal``, ``SurrealStoreError``): a fault that production could
     classify would be answering a question about the CLASSIFIER. This one asks the only
     question the sweep is for — *does an unhandled store failure at this door reach the

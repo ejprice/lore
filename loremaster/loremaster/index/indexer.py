@@ -764,8 +764,9 @@ class Indexer:
         """Build the ordered producer fragments for one file's atomic apply.
 
         Spans the four producers the per-file transaction covers: the chunk-replace
-        (a DELETE + one UPSERT per record — empty ``records`` composes a bare DELETE
-        that purges any prior points), the ``file_text`` body (SKIPPED when it
+        (a DELETE + ONE batched ``INSERT INTO chunk $rows ON DUPLICATE KEY UPDATE`` —
+        R4, ``SurrealStore._chunk_rows_fragment`` — and empty ``records`` composes a
+        bare DELETE that purges any prior points), the ``file_text`` body (SKIPPED when it
         exceeds the store's cap — see :meth:`_file_text_within_cap`), the manifest
         row (committed ``indexed``), and — only for a ``.py`` file with a wired graph
         — the code-graph slice. The chunk vectors are paired with their records
@@ -958,7 +959,10 @@ class Indexer:
            have committed, so the manifest row is READ BACK. It is atomic with the chunks, so a row that is
            ``indexed`` at this content hash with exactly the new chunk ids proves the commit landed — the
            file is served ``indexed``, never ``failed``. Otherwise it provably did not land and falls
-           through to 3.
+           through to 3. NAMED BOUND (R43, audit-66 T20 / R-11, LOW): a row that ALREADY matched before
+           this apply (``indexed`` at this hash with these chunk ids) would read back as "landed" whatever
+           this transaction did — unreachable through :meth:`index_file`, whose content-hash fast path skips
+           such a file before any apply. Re-open trigger: any apply path that bypasses that fast path.
         3. **Refused** — logged, and the file isolated ``failed`` (last-good retained) with a reason that
            NAMES the bound for a row-cap refusal (R4 rider 3) and is persisted for ``index_status``.
 

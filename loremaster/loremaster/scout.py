@@ -638,7 +638,13 @@ class CommandSubscriber:
             logger.debug("command_subscriber.kill.already_closed")
 
     async def stop(self) -> None:
-        """Stop the run loop and close the cached connection (idempotent)."""
+        """Stop the run loop and close the cached connection (idempotent).
+
+        NAMED BOUND (R43, audit-66 T23 / R-12, LOW): called while the reconnect ladder is SLEEPING a
+        backoff, the ladder's ``stop`` predicate is consulted only after that sleep, so one more connect
+        + LIVE + kill can run before the loop exits. Re-open trigger: a shutdown that must finish within
+        one backoff interval, or a measured stray LIVE subscription after ``stop()``.
+        """
         self._running = False
         await self._drop_connection()
 

@@ -651,12 +651,12 @@ class SurrealCodeGraph:
         "<module>."``): a trailing-dot-anchored ``<module>.`` prefix matches every
         ``name`` for a SYMBOL resolved UNDER that module (``demo.reflib.`` →
         ``demo.reflib.widget``) while the anchor keeps a sibling module out
-        (``pkg.a.`` never matches ``pkg.ab.ab_symbol``). Queried as a half-open
-        RANGE predicate (:meth:`_prefix_range_query`), not ``string::starts_with``
-        — ledger #30: the range pushes through the ``name_value`` index; the
-        function form does not (live ``EXPLAIN`` probe). Every prefix stays a
-        BOUND parameter (no interpolation); an empty ``prefixes`` short-circuits
-        to no query.
+        (``pkg.a.`` never matches ``pkg.ab.ab_symbol``). Queried with the engine's
+        NATIVE ``string::starts_with`` (:meth:`_prefix_range_query`, drop list #10):
+        on 3.3.5 it is served by the ``name_value`` index, so ledger #30's half-open
+        range workaround is retired (the method keeps its historical name). Every
+        prefix stays a BOUND parameter (no interpolation); an empty ``prefixes``
+        short-circuits to no query.
         """
         if not prefixes:
             return []
