@@ -799,12 +799,12 @@ def required_datetime(value: object, *, table: str, row_id: object, column: str)
     STORE's other rows are intact, but the RESPONSE that read this row (a listing, or a single-record read)
     cannot be completed, so the text says both.
     STATED BOUND (R36 note, corrected by R43 / audit-66 9a): the row id is the parts form ``table:key``. It
-    equals the engine's ``<string> id`` for lore's WORD keys (ULID, engine-minted ``[a-z0-9]``, hex,
-    composite arrays) but NOT for the hyphenated uuid keys lore also mints — ``memory``'s uuid5 ids and
-    ``floor_calibration``'s uuid4 measurement ids, which the engine backticks (``memory:`4cd6…-…```) and
-    this text does not. For those rows it is a COMPARISON form, not a hand-back form (``memory:4cd6…-…`` does
-    not parse as SurrealQL) — acceptable because the remedy this text teaches is "report it", never "hand it
-    back". See :func:`record_text` for the trigger.
+    equals the engine's ``<string> id`` for a word key that holds a letter (ULID, ``[a-z0-9]``, hex) and for
+    composite arrays, but NOT for a non-word or all-digit key — ``memory``'s uuid5 ids and
+    ``floor_calibration``'s uuid4 measurement ids, which the engine backticks (``memory:`4cd6…-…```), and
+    the rare all-digit ``uuid4().hex`` key (:func:`record_text`). For those rows it is a COMPARISON form, not
+    a hand-back form (``memory:4cd6…-…`` does not parse as SurrealQL) — acceptable because the remedy this
+    text teaches is "report it", never "hand it back". See :func:`record_text` for the trigger.
 
     Args:
         value: The column's decoded value.
@@ -879,10 +879,10 @@ def parse_served_instant(text: str) -> datetime:
 
 
 #: The record-key escapes a served id text can carry; ONE layer is stripped (packet doc §R4.7 C6). Measured
-#: (audit-66 ``probe_record_text``, with controls; re-run by build-66 R-9): ``⟨…⟩`` is SDK 3.0.0's
-#: ``str(RecordID)`` for a digit-led or non-word key (``keep:⟨01J…⟩``) — the ENGINE renders a ULID /
-#: ``[a-z0-9]`` key BARE; ``` `…` ``` is the engine's ``<string> id`` for a non-word key
-#: (``memory:`4cd6…-…```, ``keep:`a-b```, and SDK 3.0.1's form).
+#: (audit-66 ``probe_record_text``, with controls; re-run by build-66 R-9):
+#: ``⟨…⟩`` is SDK 3.0.0's ``str(RecordID)`` for a digit-led or non-word key (``keep:⟨01J…⟩``); the ENGINE
+#: renders a word key that holds a letter BARE (ULID, digit-led ``4558tc…``, hex) and backticks a non-word OR
+#: all-digit key (``keep:`a-b```, ``keep:`42```, ``memory:`4cd6…-…```) — ``` `…` ``` is also SDK 3.0.1's form.
 _RECORD_KEY_ESCAPES: tuple[tuple[str, str], ...] = (("⟨", "⟩"), ("`", "`"))
 
 
@@ -921,12 +921,14 @@ def record_key_or_none(value: object) -> str | None:
 def record_text(value: object) -> str:
     """A record id's ``table:key`` text from its parts — never ``str(RecordID)`` (operator ruling R7 (d)).
 
-    Measured (audit-66 ``probe_record_text``; re-run by build-66 R-9): for lore's WORD keys (ULID,
-    engine-minted ``[a-z0-9]``, hex, composite arrays) this equals the engine's ``<string> id``. It does NOT
-    for a non-word key, and lore mints two: ``memory``'s uuid5 ids and ``floor_calibration``'s uuid4
-    measurement ids are hyphenated, so the engine backticks them (``memory:`4cd6…-…```) and this does not
-    (R8 F15). Text that is PERSISTED, compared with persisted text, or EXPECTED BACK from an agent must be
-    the engine's form, read with ``<string> id`` in the query (RS4's form), never built here.
+    Measured (audit-66 ``probe_record_text``; re-run by build-66 R-9): for a word key that holds a letter
+    (ULID, engine-minted ``[a-z0-9]``, hex) and for composite arrays this equals the engine's ``<string>
+    id``. It does NOT for a non-word or ALL-DIGIT key (the engine backticks ``keep:`42```), and lore mints
+    both: ``memory``'s uuid5 ids and ``floor_calibration``'s uuid4 measurement ids are hyphenated
+    (``memory:`4cd6…-…```), and a ``uuid4().hex`` key (findings, tasks) is all digits with probability
+    ``(10/16)**32`` ≈ 3e-7 (R8 F15). Text that is PERSISTED, compared with persisted text, or EXPECTED BACK
+    from an agent must be the engine's form, read with ``<string> id`` in the query (RS4's form), never built
+    here.
     STATED BOUND (R43, R-7) + re-open trigger: any served surface that expects a non-word key handed back
     serves the engine's ``<string> id``; today none does (the R34 refusal displays one, remedy "report it").
     """
