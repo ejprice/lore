@@ -355,3 +355,11 @@ builder → cold audit → ONE full suite (flock, -n 12) → in-image conformanc
 Missing pins still open at that point travel to the builder brief and the cold audit as NAMED residuals; an
 UNSATISFIABLE pin (red on every correct build) is the one thing that still stops a builder, since a builder may not
 edit tests. Still NO prod deploy (65-cut owns it).
+
+## R17 — the governing test (operator, 2026-11-08)
+Operator, verbatim: *"And we must hold to consumer law and the trust doctrine. Agents are lores clients."* Every
+remaining ruling, contract pin, build decision and audit verdict in packet 66 is judged against repo CLAUDE.md's
+Consumer Law + Trust Doctrine: a served response is trustworthy iff an agent acting on it WITHOUT CHECKING cannot be
+wrong in a way the response did not name (Leg 1 scope diff; Leg 2 forgery pins by construction). Sharpest here:
+outcome-unknown vs failed (F14/D1/F18), served id text (F15/C9), refused-file naming (R4), retry teaching prose. The
+builder and cold-audit briefs carry this as a numbered first criterion; the design sidecar rules under it.
