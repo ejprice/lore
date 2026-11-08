@@ -624,9 +624,11 @@ class CommandSubscriber:
 
         async def _attempt() -> None:
             try:
-                # Bounded (``TEARDOWN_KILL_TIMEOUT_SECONDS``): on a dropped socket SDK 3.0 parks the kill
-                # on the reconnect; the stdlib ``TimeoutError`` is an ``OSError``, swallowed below.
-                async with asyncio.timeout(TEARDOWN_KILL_TIMEOUT_SECONDS):
+                # Bounded by the SDK's own request timeout (R41 FORK T): on a dropped socket SDK 3.0 parks
+                # the kill in its reconnect wait, which ``connection.timeout()`` bounds, raising the typed
+                # ``TransportTimeoutError`` (a ``SurrealError``), swallowed below. See
+                # ``TEARDOWN_KILL_TIMEOUT_SECONDS``.
+                with connection.timeout(TEARDOWN_KILL_TIMEOUT_SECONDS):
                     await connection.kill(live_uuid)
             except _SDK_AWAIT_BOUNDARY_ERRORS as error:
                 if is_retryable_conflict_error(error):

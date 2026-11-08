@@ -162,11 +162,15 @@ class SurrealOutcomeUnknownError(SurrealConnectionError):
 
 
 #: The bound on a best-effort LIVE ``kill()`` at teardown (scout's command channel, the ``await`` verb's
-#: LIVE). Under SDK 3.0 a request on a dropped socket PARKS on the factory's reconnect until the request
-#: timeout (measured: ``kill()`` with the store down → ``TransportTimeoutError`` after 30 s, 40/40, build-66
-#: probe ``probe_c_proxy.py``); SDK 2.0 failed at once. Without this bound a teardown during an outage holds
-#: its caller 30 s — past the ``await`` verb's budget and the ~60 s MCP ceiling. The kill is cleanup the
-#: server also performs when the session ends, so giving up after this bound loses nothing.
+#: LIVE), applied as ``with connection.timeout(TEARDOWN_KILL_TIMEOUT_SECONDS)`` — the SDK's own
+#: request-timeout override (ruling R41 FORK T). Under SDK 3.0 a request on a dropped socket PARKS in the
+#: reconnect wait until the request timeout (measured: ``kill()`` with the store down →
+#: ``TransportTimeoutError`` after 30 s, 40/40, build-66 probe ``probe_c_proxy.py``); SDK 2.0 failed at
+#: once. Without this bound a teardown during an outage holds its caller 30 s — past the ``await`` verb's
+#: budget and the ~60 s MCP ceiling. WORST CASE 2 x this value: both halves — the reconnect wait and the
+#: request itself — get the budget. A timed-out kill skips the SDK's ``_end_live`` bookkeeping, which is
+#: harmless: the caller's teardown cancels the consume task. The kill is cleanup the server also performs
+#: when the session ends, so giving up after this bound loses nothing.
 TEARDOWN_KILL_TIMEOUT_SECONDS = 2.0
 
 #: The advice an outcome-unknown error carries (R19 Q6, R27-3): the seam cannot tell a read from a write, so
