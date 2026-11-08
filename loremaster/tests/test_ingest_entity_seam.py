@@ -584,10 +584,13 @@ class TestOneImplementation:
     async def test_entity_write_reddens_with_the_shared_compose_cap(
         self, entity_bench: _EntityBench, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """P6: shrinking the SHARED ``TXN_STATEMENT_HARD_CAP`` blocks the ENTITY rows.
+        """P6: shrinking the SHARED ``TXN_ROW_HARD_CAP`` blocks the ENTITY rows.
 
-        Prove-by-mutation (CLAUDE.md #102/#120 — routing ≠ sharing): with the cap
-        at 1, ANY ``compose`` refuses the file's multi-statement apply, so a
+        SDK3 R8 F12 (round 4): the ROW bound replaced the statement cap everywhere, so
+        the shared bound this pin shrinks is ``TXN_ROW_HARD_CAP`` (was
+        ``TXN_STATEMENT_HARD_CAP``). Prove-by-mutation (CLAUDE.md #102/#120 — routing
+        ≠ sharing): with the row cap at 1, ANY ``compose`` refuses the file's
+        multi-row apply, so a
         correct build (entity fragment composed INTO that apply) lands NO entity
         rows. A build that hand-rolls a private writer (bypassing ``compose``)
         would leave the rows behind — this pin catches it. Positive control: with
@@ -605,7 +608,10 @@ class TestOneImplementation:
         # isolation — it NEVER raises), so `capped == []` is the SOLE discriminator
         # (CF1): a correct build's entity rows vanish with the refused apply; a
         # private-writer (routing≠sharing) build leaves them behind.
-        monkeypatch.setattr(txn_module, "TXN_STATEMENT_HARD_CAP", 1)
+        assert hasattr(txn_module, "TXN_ROW_HARD_CAP"), (
+            "store._txn.TXN_ROW_HARD_CAP does not exist (SDK3 R8 F12)"
+        )
+        monkeypatch.setattr(txn_module, "TXN_ROW_HARD_CAP", 1)
         await entity_bench.indexer.index_file(_TIER, "books/a.fake", _FILE_A)
         capped = [r for r in await _fetch_nodes(entity_bench.env) if r["file_path"] == "books/a.fake"]
         assert capped == [], (

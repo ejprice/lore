@@ -23,8 +23,9 @@ about the contract certifies a bug):
 * :meth:`FakeSurrealStore.apply` composes the fragments into ONE atomic
   transaction: it enforces the SAME param-collision guard
   (:class:`~loremaster.store._txn.TxnParamCollisionError`), the SAME empty guard
-  (``ValueError``) and the SAME hard statement-count cap
-  (:data:`~loremaster.store._txn.TXN_STATEMENT_HARD_CAP`, raising
+  (``ValueError``) and the SAME hard ROW cap
+  (:data:`~loremaster.store._txn.TXN_ROW_HARD_CAP` — SDK3 R8 F12: the row bound replaced the
+  statement cap; a fake fragment writes one row per statement unless it carries ``rows``), raising
   :class:`~loremaster.store.surreal.SurrealStoreError`) the real
   ``compose``/``apply`` do — and applies every producer's effect all-or-nothing,
   so a mid-transaction failure rolls the WHOLE thing back (the atomicity the
@@ -87,7 +88,8 @@ from loremaster.index.surreal_manifest import (
     MANIFEST_FRAGMENT_PARAM_PREFIX,
     STATE_INDEXED,
 )
-from loremaster.store._txn import TXN_STATEMENT_HARD_CAP, TxnParamCollisionError
+from loremaster.store import _txn
+from loremaster.store._txn import TxnParamCollisionError
 from loremaster.store.candidate import Candidate
 from loremaster.store.surreal import (
     _MAX_HYBRID_K,
@@ -101,6 +103,11 @@ from loremaster.store.surreal import (
 )
 from loremaster.store.surreal_schema import CHUNK_FILTER_KEYS, CHUNK_FULLTEXT_FIELDS
 from lorescribe.models import Chunk
+
+# SDK3 R8 F12 (round 4): the fake enforces the production ROW cap. Read from ``store._txn`` once at import;
+# until the SDK3 build lands ``TXN_ROW_HARD_CAP`` does not exist and the retired statement cap (equal, for a
+# fake that writes one row per statement) stands in — DELETE the fallback with the build.
+TXN_ROW_HARD_CAP: int = getattr(_txn, "TXN_ROW_HARD_CAP", None) or _txn.TXN_STATEMENT_HARD_CAP
 
 # The producer tags every fake fragment carries so a ported test can assert the
 # COMPOSITION of one atomic apply (e.g. "index_file composed exactly the chunk +
@@ -294,12 +301,12 @@ class FakeSurrealStore:
         *,
         dim: int,
         file_text_max_bytes: int = FILE_TEXT_MAX_BYTES,
-        txn_statement_hard_cap: int = TXN_STATEMENT_HARD_CAP,
+        txn_row_hard_cap: int = TXN_ROW_HARD_CAP,
         db: _FakeSurrealDatabase | None = None,
     ) -> None:
         self._dim = dim
         self._file_text_max_bytes = file_text_max_bytes
-        self._txn_statement_hard_cap = txn_statement_hard_cap
+        self._txn_row_hard_cap = txn_row_hard_cap
         self.db = db if db is not None else _FakeSurrealDatabase()
         # Every atomic apply's composed fragment list, in order — the telemetry a
         # ported test inspects to pin the composition of one transaction.
@@ -424,19 +431,20 @@ class FakeSurrealStore:
         if not fragments:
             raise ValueError("apply() requires at least one fragment")
         merged: dict[str, Any] = {}
-        statement_count = 0
+        row_count = 0
         for fragment in fragments:
-            statement_count += len(fragment.statements)
+            rows = getattr(fragment, "rows", None)
+            row_count += len(fragment.statements) if rows is None else rows
             for key in fragment.params:
                 if key in merged:
                     raise TxnParamCollisionError(
                         f"parameter {key!r} bound by more than one fragment"
                     )
                 merged[key] = fragment.params[key]
-        if statement_count > self._txn_statement_hard_cap:
+        if row_count > self._txn_row_hard_cap:
             raise SurrealStoreError(
-                f"composed transaction has {statement_count} statements, exceeding "
-                f"the hard cap of {self._txn_statement_hard_cap}"
+                f"composed transaction writes {row_count} rows, exceeding "
+                f"the row cap of {self._txn_row_hard_cap}"
             )
         snapshot = self.db.snapshot()
         try:
@@ -1767,21 +1775,21 @@ def fake_surreal_trio(
     tier_roots: Mapping[str, str | Path] | None = None,
     project_roots: Sequence[str | Path] | None = None,
     file_text_max_bytes: int = FILE_TEXT_MAX_BYTES,
-    txn_statement_hard_cap: int = TXN_STATEMENT_HARD_CAP,
+    txn_row_hard_cap: int = TXN_ROW_HARD_CAP,
 ) -> FakeSurrealTrio:
     """Build store + manifest + graph fakes over ONE shared database.
 
     The overridable ceilings let a unit test drive the oversize-``file_text``
     skip (a small file crosses a small ``file_text_max_bytes``) and the
     cap-overflow failed-state (a small file crosses a small
-    ``txn_statement_hard_cap``) cheaply — the indexer reads both from the store
+    ``txn_row_hard_cap``) cheaply — the indexer reads both from the store
     (clause 5), never a hand-copied literal.
     """
     db = _FakeSurrealDatabase()
     store = FakeSurrealStore(
         dim=dim,
         file_text_max_bytes=file_text_max_bytes,
-        txn_statement_hard_cap=txn_statement_hard_cap,
+        txn_row_hard_cap=txn_row_hard_cap,
         db=db,
     )
     manifest = FakeSurrealManifest(db=db)

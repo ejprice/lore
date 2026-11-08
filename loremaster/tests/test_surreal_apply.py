@@ -31,7 +31,8 @@ THE PINNED PUBLIC API SURFACE (named here, blind to any implementation)
         # raise TxnParamCollisionError on ANY param-name collision across
         # fragments; raise ValueError when handed no fragments.
 
-    TXN_STATEMENT_WARN_THRESHOLD: int   # apply() WARNs above this body-stmt count
+    TXN_ROW_WARN_THRESHOLD: int   # apply() WARNs above this ROW count (SDK3 R9 D2; read live, getattr)
+    TXN_ROW_HARD_CAP: int         # compose() refuses above this ROW count (SDK3 R8 F12; read live, getattr)
 
 ``loremaster.store.surreal`` (on ``SurrealStore``):
 
@@ -63,7 +64,7 @@ source) all happen at BUILD time; only ``apply`` touches the socket.
 RED STRATEGY (why the file COLLECTS but every test FAILS)
 ---------------------------------------------------------
 The brand-new *top-level* names (``TxnFragment`` / ``compose`` /
-``TxnParamCollisionError`` / ``TXN_STATEMENT_WARN_THRESHOLD`` / the four param
+``TxnParamCollisionError`` / the four param
 prefixes) are imported under a guard so a pre-P5-C2 collection does NOT explode
 into one ``ImportError`` that hides the whole contract — the file collects and
 each test reports its OWN behavioural failure. The new *methods* hang off
@@ -130,7 +131,6 @@ try:
         MANIFEST_FRAGMENT_PARAM_PREFIX,
     )
     from loremaster.store._txn import (  # noqa: E402
-        TXN_STATEMENT_WARN_THRESHOLD,
         TxnFragment,
         TxnParamCollisionError,
         compose,
@@ -155,7 +155,6 @@ except ImportError:  # pragma: no cover - pre-P5-C2 RED: the compose/apply API i
     # Documented placeholder values: every test that reads these ALSO calls a
     # not-yet-existing builder method first, so the RED comes from the real
     # API-under-test, never from these fallbacks.
-    TXN_STATEMENT_WARN_THRESHOLD = 800
     CHUNK_FRAGMENT_PARAM_PREFIX = "st_"
     FILE_TEXT_FRAGMENT_PARAM_PREFIX = "ft_"
     MANIFEST_FRAGMENT_PARAM_PREFIX = "mf_"
@@ -167,10 +166,7 @@ except ImportError:  # pragma: no cover - pre-P5-C2 RED: the compose/apply API i
 # an import failure here can NEVER regress an already-GREEN P5-C2 test; only
 # the tests below that actually exercise these three new names go RED.
 try:
-    from loremaster.store._txn import (  # noqa: E402
-        TXN_STATEMENT_HARD_CAP,
-        TxnEnvelopeViolationError,
-    )
+    from loremaster.store._txn import TxnEnvelopeViolationError  # noqa: E402
     from loremaster.store.surreal import FILE_TEXT_MAX_BYTES  # noqa: E402
 
     _HARDENING_API_AVAILABLE = True
@@ -188,7 +184,6 @@ except ImportError:  # pragma: no cover - pre-P5-C3a RED: the hardening API is a
     # Documented placeholders: every test that reads these ALSO calls the real
     # API under test, so the RED comes from the real behaviour, never from
     # these fallback numbers.
-    TXN_STATEMENT_HARD_CAP = 5000
     FILE_TEXT_MAX_BYTES = 10 * 1024 * 1024
 
 
@@ -554,6 +549,17 @@ def _synthetic_fragment(statement_count: int) -> Any:
     statements = [f"UPDATE marker:{index} SET n = $sy_p{index}" for index in range(statement_count)]
     params = {f"sy_p{index}": index for index in range(statement_count)}
     return TxnFragment(statements=statements, params=params)
+
+
+def _txn_bound(name: str) -> int:
+    """A composed-transaction bound read LIVE from ``store._txn`` (SDK3 R8 F12 / R9 D2: ``TXN_ROW_HARD_CAP``,
+    ``TXN_ROW_WARN_THRESHOLD`` — the ROW bounds that REPLACED the statement cap and the statement warn). Read
+    with ``getattr`` so a build lacking one fails the calling test on its own assertion, not at collection."""
+    from loremaster.store import _txn  # noqa: PLC0415
+
+    value = getattr(_txn, name, None)
+    assert isinstance(value, int), f"store._txn.{name} does not exist (SDK3 packet doc §R4)"
+    return value
 
 
 # ===========================================================================
@@ -1426,27 +1432,25 @@ class TestApplyTxnSizeTelemetry:
         assert getattr(record, "statement_count") == _TELEMETRY_SMALL_STATEMENTS  # noqa: B009 - logging extra, unknown to mypy
         assert getattr(record, "param_count") == _TELEMETRY_SMALL_STATEMENTS  # noqa: B009 - logging extra, unknown to mypy
 
-    async def test_apply_warns_above_statement_threshold(
+    async def test_apply_warns_above_the_row_threshold(
         self,
         surreal_env: SurrealEnv,  # noqa: F811
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
+        # SDK3 R9 D2 (round 4): the WARN is a ROW warn — ``TXN_ROW_WARN_THRESHOLD`` replaced the 800-statement
+        # ``TXN_STATEMENT_WARN_THRESHOLD`` (one strain measure, rows: R8 F12). One single-row statement past
+        # the row threshold (read from the shared constant, never a hand-copied number) trips it; that rows,
+        # not statements, decide is pinned in ``test_sdk3_row_bound.TestTheSizeWarnFiresOnRows``.
+        row_warn = _txn_bound("TXN_ROW_WARN_THRESHOLD")
         store, _captured = self._offline_store(surreal_env, monkeypatch)
-        # One past the documented ceiling (read from the shared constant, never a
-        # hand-copied number) — enough to trip the WARNING.
-        oversized = _synthetic_fragment(TXN_STATEMENT_WARN_THRESHOLD + 1)
+        oversized = _synthetic_fragment(row_warn + 1)
 
         with caplog.at_level(logging.DEBUG, logger="loremaster.store.surreal"):
             await store.apply([oversized])
 
-        warnings = [
-            record
-            for record in caplog.records
-            if record.levelno == logging.WARNING and getattr(record, "statement_count", None) is not None
-        ]
-        assert warnings, "apply must WARN when the transaction exceeds the threshold"
-        assert getattr(warnings[0], "statement_count") > TXN_STATEMENT_WARN_THRESHOLD  # noqa: B009 - logging extra, unknown to mypy
+        warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+        assert warnings, "apply must WARN when the transaction's rows exceed the row threshold"
 
     async def test_apply_stays_quiet_below_statement_threshold(
         self,
@@ -1471,7 +1475,8 @@ class TestApplyTxnSizeTelemetry:
 
 # ===========================================================================
 # 10. Composed-transaction hardening (P5-C3a, ledger security-audit items):
-#     (a) a HARD ceiling on the composed body-statement count — the write-path
+#     (a) a HARD ceiling on the composed transaction's ROWS (SDK3 R8 F12; it was
+#         the body-statement count until the row bound replaced it) — the write-path
 #         analogue of the read path's ``k`` clamp, guarding the SHARED server
 #         against a pathological file (e.g. 100k tiny generated functions)
 #         producing one multi-hundred-thousand-statement transaction
@@ -1494,20 +1499,22 @@ class TestApplyTxnSizeTelemetry:
 _HARD_CAP_OVERAGE = 1
 
 
-class TestComposeStatementHardCap:
+class TestComposeRowHardCap:
     """``compose()`` (and therefore ``apply()``, which calls it first) refuses
-    to build a transaction whose body-statement count exceeds
-    :data:`TXN_STATEMENT_HARD_CAP` — a ceiling well above the existing
-    :data:`TXN_STATEMENT_WARN_THRESHOLD` WARN, so a batch that only warns today
-    keeps composing, while a genuinely pathological one is refused outright.
+    to build a transaction whose ROWS exceed ``TXN_ROW_HARD_CAP`` — SDK3 R8 F12
+    (round 4): the ROW bound REPLACED the 5,000-statement ``TXN_STATEMENT_HARD_CAP``
+    everywhere (statement count no longer measures strain once rows are batched,
+    R4). A ceiling well above the ``TXN_ROW_WARN_THRESHOLD`` WARN, so a batch that
+    only warns keeps composing, while a genuinely pathological one is refused
+    outright. (Was ``TestComposeStatementHardCap`` — same three properties, over
+    rows; a fragment of single-row statements writes one row per statement.)
     """
 
     def test_compose_raises_surreal_store_error_over_the_hard_cap(self) -> None:
-        # Arrange: the pathological-file shape — one fragment whose statement
-        # count alone exceeds the ceiling (mirrors a 100k-tiny-function file
-        # whose chunk-replace fragment would otherwise emit one UPSERT per
-        # function in a single composed transaction).
-        over_cap_count = TXN_STATEMENT_HARD_CAP + _HARD_CAP_OVERAGE
+        # Arrange: the pathological-file shape — one fragment whose ROWS alone
+        # exceed the ceiling (one single-row statement past the real cap).
+        row_cap = _txn_bound("TXN_ROW_HARD_CAP")
+        over_cap_count = row_cap + _HARD_CAP_OVERAGE
         oversized = _synthetic_fragment(over_cap_count)
 
         # Act & Assert
@@ -1516,28 +1523,29 @@ class TestComposeStatementHardCap:
         message = str(exc_info.value)
         # The message names BOTH the actual count and the configured cap, so
         # an operator can see the real number without re-deriving it from logs.
-        assert str(over_cap_count) in message, "error message must name the actual statement count"
-        assert str(TXN_STATEMENT_HARD_CAP) in message, "error message must name the configured cap"
+        assert str(over_cap_count) in message, "error message must name the actual row count"
+        assert str(row_cap) in message, "error message must name the configured row cap"
 
     def test_compose_accepts_exactly_at_the_hard_cap(self) -> None:
         # The boundary itself must compose fine — a ceiling, not an off-by-one
         # trap that rejects a legitimately-sized batch sitting exactly on it.
-        at_cap = _synthetic_fragment(TXN_STATEMENT_HARD_CAP)
+        row_cap = _txn_bound("TXN_ROW_HARD_CAP")
+        at_cap = _synthetic_fragment(row_cap)
 
         statement_text, merged_params = compose(at_cap)
 
-        assert len(merged_params) == TXN_STATEMENT_HARD_CAP
+        assert len(merged_params) == row_cap
         assert statement_text.count("BEGIN") == 1
         assert statement_text.count("COMMIT") == 1
 
     def test_compose_still_succeeds_above_warn_threshold_but_below_hard_cap(self) -> None:
-        # The hard cap is a DISTINCT, HIGHER ceiling than the existing WARN
-        # threshold, not a tightening of it: a batch that trips the WARN (see
+        # The hard cap is a DISTINCT, HIGHER ceiling than the WARN threshold,
+        # not a tightening of it: a batch that trips the WARN (see
         # ``TestApplyTxnSizeTelemetry``) must still compose successfully so
         # long as it stays under the hard cap.
-        between_count = TXN_STATEMENT_WARN_THRESHOLD + 1
-        assert between_count < TXN_STATEMENT_HARD_CAP, (
-            "fixture assumption: the warn threshold must sit strictly below the hard cap"
+        between_count = _txn_bound("TXN_ROW_WARN_THRESHOLD") + 1
+        assert between_count < _txn_bound("TXN_ROW_HARD_CAP"), (
+            "fixture assumption: the row warn threshold must sit strictly below the row hard cap"
         )
         between = _synthetic_fragment(between_count)
 
@@ -1546,11 +1554,12 @@ class TestComposeStatementHardCap:
         assert len(merged_params) == between_count
 
 
-class TestApplyStatementHardCapNeverReachesTheServer:
-    """``apply()`` surfaces the same hard-cap rejection — and, critically,
+class TestApplyRowHardCapNeverReachesTheServer:
+    """``apply()`` surfaces the same row-cap rejection — and, critically,
     never calls ``execute_transaction`` when it does: the whole point of a
     BUILD-time cap is that a pathological batch never even reaches the socket,
-    let alone strains the shared server."""
+    let alone strains the shared server. (SDK3 R8 F12, round 4: was
+    ``TestApplyStatementHardCapNeverReachesTheServer``, over statements.)"""
 
     def _offline_store(
         self, env: SurrealEnv, monkeypatch: pytest.MonkeyPatch
@@ -1586,7 +1595,7 @@ class TestApplyStatementHardCapNeverReachesTheServer:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         store, captured = self._offline_store(surreal_env, monkeypatch)
-        oversized = _synthetic_fragment(TXN_STATEMENT_HARD_CAP + _HARD_CAP_OVERAGE)
+        oversized = _synthetic_fragment(_txn_bound("TXN_ROW_HARD_CAP") + _HARD_CAP_OVERAGE)
 
         with pytest.raises(SurrealStoreError):
             await store.apply([oversized])

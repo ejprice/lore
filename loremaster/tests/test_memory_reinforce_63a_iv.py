@@ -43,6 +43,11 @@ _VALIDITY_COL = "valid_until"
 
 
 def _bare_s(value: Any) -> str:
+    """Bare id of a str OR a RecordID — from a RecordID's PARTS (``.id``), never ``str(RecordID)``, which
+    SDK 3.0 renders bracketed for a digit-led key (R7 (d), packet 66)."""
+    key = getattr(value, "id", None)
+    if getattr(value, "table_name", None) is not None and key is not None:
+        return str(key)
     text = str(value)
     return text.partition(":")[2] or text
 

@@ -82,6 +82,7 @@ from loremaster.memory.local import LocalMemoryBackend
 from loremaster.store import surreal_schema
 from loremaster.store.surreal import SurrealStoreError
 from loresigil.testing import FakeEmbedder
+from surrealdb.errors import ConnectionUnavailableError
 
 import lorerunes as pdp
 from loremaster import governed
@@ -759,6 +760,7 @@ class TestTransportAndContentionKeepTheSupersedeLedgerRow:
         Then replay converges: ``restore_from_ledger`` lands S and closes P byte-identically
         (``valid_until == S.created_at``, ``superseded_by == S``). POSITIVE-CONTROL for the injection:
         the fault counter fired exactly once."""
+        from loremaster.store import _txn as txn_module
         from loremaster.store._txn import SurrealConnectionError
 
         backend, ledger, connection, _env = supersede_world
@@ -768,15 +770,23 @@ class TestTransportAndContentionKeepTheSupersedeLedgerRow:
         before_ids = {record.memory_id for record in ledger.all_records()}
         live = backend._connection
         assert live is not None, "the backend must hold a live connection after the seed remember"
+        # R6 F10 (drop row #1): the in-flight ws reset is SDK 3.0's typed ConnectionUnavailableError (a
+        # TransportError), no longer SDK 2.0's raw KeyError(<request-uuid>).
         counter = _arm_one_shot_txn_fault(
-            monkeypatch, live, error=KeyError("injected in-flight ws reset 0f3e-uuid")
+            monkeypatch, live, error=ConnectionUnavailableError("injected in-flight ws reset 0f3e-uuid")
         )
-        with pytest.raises(SurrealConnectionError):
+        with pytest.raises(SurrealConnectionError) as caught:
             await backend.remember(
                 "successor note transport", kind="fact", subject=_ADMIN, scope=_SERVER_SCOPE,
                 supersedes=predecessor_id,
             )
         assert counter["fired"] == 1, "the injected transport fault did not reach the composed txn seam"
+        unknown_type = getattr(txn_module, "SurrealOutcomeUnknownError", None)
+        assert unknown_type is not None and isinstance(caught.value, unknown_type), (
+            f"the in-flight drop on the composed supersede surfaced as {type(caught.value).__name__}, not "
+            f"store._txn.SurrealOutcomeUnknownError — F14: the COMMIT may have landed with the reply lost, "
+            f"which is exactly why this pin keeps the ledger row"
+        )
         new_ids = {record.memory_id for record in ledger.all_records()} - before_ids
         assert len(new_ids) == 1, (
             "a TRANSPORT failure on the composed supersede DELETED the successor's durable ledger row "
@@ -873,8 +883,8 @@ class TestCompensationIsDomainScopedAcrossShapesAndCauses:
         else:
             live = backend._connection
             assert live is not None
-            _arm_one_shot_txn_fault(
-                monkeypatch, live, error=KeyError("injected in-flight ws reset quantifier")
+            _arm_one_shot_txn_fault(  # R6 F10: SDK 3.0's typed in-flight drop (was a raw KeyError)
+                monkeypatch, live, error=ConnectionUnavailableError("injected in-flight ws reset quantifier")
             )
             note = "quantifier transport note"
             expected_type = SurrealConnectionError

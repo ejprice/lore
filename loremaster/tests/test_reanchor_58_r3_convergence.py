@@ -52,7 +52,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from _reanchor_58_support import (
@@ -133,7 +133,12 @@ SCALES: dict[str, Callable[[int], int]] = {
     "fit+1": lambda fit: fit + 1,
     "2fit+1": lambda fit: 2 * fit + 1,
 }
-CAP = _txn.TXN_STATEMENT_HARD_CAP
+# SDK3 R8 F12 (round 4): the ROW bound REPLACES the statement cap; packet 58's packer re-sizes by ROWS when 58
+# is revived (dormant — this file is RED on the unbuilt 58 API). Read without breaking COLLECTION once the
+# statement cap is deleted (``None`` → every use raises; already RED). Re-size at 58's revival
+# (packet doc §R4, fork F19). The ``cast`` keeps this file's (and its importers') arithmetic typed as
+# today; at runtime it is ``None`` once the constant is gone.
+CAP = cast("int", getattr(_txn, "TXN_STATEMENT_HARD_CAP", None))
 
 
 def _pad(text: str) -> str:

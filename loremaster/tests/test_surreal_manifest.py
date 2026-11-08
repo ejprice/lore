@@ -129,7 +129,12 @@ from loremaster.store.surreal import (
 from loremaster.store.surreal_schema import FILE_STATES, FILE_TABLE, generate_manifest_ddl
 from pydantic import SecretStr
 from surrealdb import AsyncSurreal as _RealAsyncSurreal
-from surrealdb.errors import ErrorKind, ServerError
+from surrealdb.errors import ConnectionUnavailableError, ErrorKind, ServerError
+from test_surreal_store import (
+    _SDK_INFLIGHT_DROP_TEXT,
+    _count_sdk_connections,
+    _outcome_unknown_type,
+)
 
 # A port with nothing listening — the "server is down" adversary (same dead
 # port ``test_surreal_store.py`` uses, so a shared firewall/port-reservation
@@ -1185,32 +1190,23 @@ class TestDropConnectionCompareAndSwap:
 
 
 # ---------------------------------------------------------------------------
-# P5-C1c, hardening #3 (SurrealDB docs-audit follow-up, ledger #28): a raw SDK
-# routing ``KeyError`` must be classified as a connection fault — mirrors
-# ``test_surreal_store.py``'s identical ``_query`` seam (see that file's
-# module note for the live-probed root cause: an in-flight query on a dropped
-# socket surfaces ``builtins.KeyError(<request-uuid>)`` from the SDK's own
-# response routing, never ``_CONNECTION_ERRORS``, and the SCOPING note on why
-# classifying it here cannot misclassify a KeyError from our own code).
+# P5-C1c hardening #3, RE-RULED for SDK 3.0 (packet 66, sdk3-rulings.md R6 F10 + R8 F14; drop row #1) —
+# mirrors ``test_surreal_store.py``'s identical single-statement seam; see that file's module note for the
+# history (SDK 2.0's raw in-flight ``KeyError`` arm is RETIRED; SDK 3.0 raises its typed
+# ``ConnectionUnavailableError``) and for the two shared helpers imported here.
 # ---------------------------------------------------------------------------
 
-_SDK_ROUTING_KEY_ERROR_TOKEN = "3fae6a02-9c1e-4c1b-8f3a-77c2e4a9b001"
 
+class TestQuerySeamSdkTransportErrorClassification:
+    """P5-C1c hardening #3 (re-ruled, F10/F14): an SDK transport error raised BY THE SDK CALL inside
+    ``SurrealManifest``'s single-statement seam surfaces as ``SurrealOutcomeUnknownError`` and self-heals; a
+    ``KeyError`` there propagates as the bug it is."""
 
-class TestQuerySeamSdkKeyErrorClassification:
-    """P5-C1c hardening #3: a KeyError raised BY THE SDK CALL ITSELF inside
-    ``_query`` must surface as ``SurrealConnectionError`` and self-heal.
-
-    LOAD-BEARING: must FAIL RED against current code — ``_query``'s except
-    clause only catches ``_CONNECTION_ERRORS``; ``KeyError`` propagates
-    completely untyped today.
-    """
-
-    async def test_sdk_routing_key_error_surfaces_as_connection_error_and_heals(
+    async def test_an_sdk_transport_error_surfaces_as_outcome_unknown_and_heals(
         self, surreal_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch  # noqa: F811
     ) -> None:
-        factory, get_call_count = _plain_counting_connection_factory()
-        monkeypatch.setattr("loremaster.index.surreal_manifest.AsyncSurreal", factory)
+        unknown_type = _outcome_unknown_type()
+        connections = _count_sdk_connections(monkeypatch)
         live_manifest = SurrealManifest(
             url=surreal_env.url,
             namespace=surreal_env.namespace,
@@ -1220,27 +1216,59 @@ class TestQuerySeamSdkKeyErrorClassification:
         )
         try:
             await live_manifest.ensure_ready()
-            assert get_call_count() == 1
+            assert connections() == 1
             broken_connection = live_manifest._connection
             assert broken_connection is not None
+            injected = ConnectionUnavailableError(_SDK_INFLIGHT_DROP_TEXT)
 
-            # A deterministic stand-in for the SDK's own response-routing
-            # failure (see the module note above) — patched on the LIVE
-            # connection INSTANCE itself.
-            async def _raise_routing_key_error(*args: object, **kwargs: object) -> Any:
-                raise KeyError(_SDK_ROUTING_KEY_ERROR_TOKEN)
+            async def _raise_transport_error(*args: object, **kwargs: object) -> Any:
+                raise injected
 
-            monkeypatch.setattr(broken_connection, "query", _raise_routing_key_error)
+            monkeypatch.setattr(broken_connection, "query", _raise_transport_error)
 
-            # Act / Assert: the raw KeyError must surface as a typed
-            # SurrealConnectionError (never bare) AND drop the connection.
-            with pytest.raises(SurrealConnectionError):
+            # A READ — F14 holds for every request (the seam cannot tell a read from a write).
+            with pytest.raises(SurrealConnectionError) as caught:
                 await live_manifest.all_files()
-            assert live_manifest._connection is None
+            assert isinstance(caught.value, unknown_type), (
+                f"an SDK transport error on a request surfaced as {type(caught.value).__name__}, not "
+                f"SurrealOutcomeUnknownError (F14: the request was sent and no reply came back)"
+            )
+            assert caught.value.__cause__ is injected, "the SDK's own error must stay the cause"
+            assert live_manifest._connection is None, "a transport fault must drop the cached handle"
 
             # Recovery: the NEXT call reconnects — exactly one NEW connection.
             assert await live_manifest.all_files() == []
-            assert get_call_count() == 2
+            assert connections() == 2
+        finally:
+            await live_manifest.close()
+
+    async def test_a_keyerror_propagates_as_a_bug_not_as_transport(
+        self, surreal_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch  # noqa: F811
+    ) -> None:
+        live_manifest = SurrealManifest(
+            url=surreal_env.url,
+            namespace=surreal_env.namespace,
+            database=surreal_env.database,
+            user=surreal_env.user,
+            password=surreal_env.password,
+        )
+        try:
+            await live_manifest.ensure_ready()
+            connection = live_manifest._connection
+            assert connection is not None
+            bug = KeyError("a lookup lore got wrong")
+
+            async def _raise_bug(*args: object, **kwargs: object) -> Any:
+                raise bug
+
+            monkeypatch.setattr(connection, "query", _raise_bug)
+            with pytest.raises(BaseException) as caught:
+                await live_manifest.all_files()
+            assert caught.value is bug, (
+                f"a KeyError surfaced as {type(caught.value).__name__}: {caught.value!r} — the "
+                f"KeyError-as-transport arm is RETIRED (R6 F10, drop row #1); a KeyError is a bug and "
+                f"must propagate as itself, never be laundered into a transport error"
+            )
         finally:
             await live_manifest.close()
 
@@ -1255,7 +1283,7 @@ class TestQuerySeamSdkKeyErrorClassification:
 # ``SurrealManifest._query`` already splits a caught error into transport
 # (self-heal + ``SurrealConnectionError``) vs domain (keep the connection +
 # ``SurrealStoreError``) — see ``TestResilience`` /
-# ``TestQuerySeamSdkKeyErrorClassification`` above. What it did NOT do was
+# ``TestQuerySeamSdkTransportErrorClassification`` above. What it did NOT do was
 # launder the DOMAIN branch's message: it interpolated the raw ``{error}``
 # straight into the raised ``SurrealStoreError``. A domain ``ASSERT``/coercion
 # rejection's engine text can echo a bound VALUE back verbatim, and that text

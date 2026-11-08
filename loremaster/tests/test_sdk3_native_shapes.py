@@ -29,7 +29,9 @@ stands — the measured reason this pin exists.
 
 from __future__ import annotations
 
+import importlib
 import inspect
+import types
 import typing
 from collections.abc import AsyncIterator
 from typing import Any
@@ -270,3 +272,73 @@ class TestTheSdkGuardReachesTheBuilderDoors:
             assert not report.escapes, f"premise: the call rode the driver ({report.escapes!r})"
         finally:
             await connection.close()
+
+
+def _hint_can_carry_text_or_a_record(hint: Any) -> bool:
+    """Whether a parameter's annotation can carry SurrealQL text, a record target or a table: ``str``, a
+    record-id type or a table type at its TOP level (a union is opened; a container such as ``dict[str, …]``
+    is not — a credentials mapping is not a statement). An unannotated parameter fails CLOSED (True)."""
+    if hint is inspect.Parameter.empty or hint is Any:
+        return True
+    members = typing.get_args(hint) if typing.get_origin(hint) in (typing.Union, types.UnionType) else (hint,)
+    sdk = importlib.import_module("surrealdb")
+    record_types = tuple(
+        cls
+        for cls in (getattr(sdk, name, None) for name in ("RecordID", "StringRecordId", "Table"))
+        if isinstance(cls, type)
+    )
+    return any(
+        member is str or (isinstance(member, type) and record_types and issubclass(member, record_types))
+        for member in members
+    )
+
+
+def _is_write_capable_door(function: Any) -> bool:
+    """A door (``_is_door``) that can run a statement or touch a record: one that returns a statement
+    BUILDER or batch (not a plain coroutine — the I/O happens in what it returns, carrying whatever the
+    caller built), or a coroutine with a parameter that can carry text, a record id or a table. Derived from
+    the SDK's own signatures; fails CLOSED on an annotation it cannot resolve."""
+    if not _is_door(function):
+        return False
+    if not inspect.iscoroutinefunction(function):
+        return True
+    try:
+        hints = typing.get_type_hints(function)
+    except Exception:  # noqa: BLE001 - an unresolvable annotation is write-capable until proven otherwise
+        return True
+    for name, parameter in inspect.signature(function).parameters.items():
+        if name == "self":
+            continue
+        if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
+            return True  # *args / **kwargs can carry anything
+        if _hint_can_carry_text_or_a_record(hints.get(name, parameter.annotation)):
+            return True
+    return False
+
+
+class TestTheGuardsSafeSetHoldsNoWriteCapableDoor:
+    """Round 4 — RS6. ``_sdk_guard.SAFE_CONNECTION_METHODS`` is a hand-list of methods the guard exempts
+    (its own comment: a deny-by-default safe set where every exemption must be evidence-backed). A hand-list
+    needs a check against its source of truth: the exemption is safe only for a method that CANNOT run a
+    statement or touch a record — so SAFE ∩ (derived write-capable doors) must be empty, on every SDK
+    connection class the guard arms. Widening SAFE with ``insert`` / ``batch`` / ``relate`` / ``upsert`` /
+    ``select`` (the adversary's surviving build) passes every F5 pin, because the F5 door set is computed
+    AFTER the SAFE filter; this pin reads the SAFE list against the SDK's own signatures instead."""
+
+    def test_no_safe_method_is_a_write_capable_door(self) -> None:
+        for connection_class in _sdk_guard.SDK_CONNECTION_CLASSES:
+            assert _is_write_capable_door(inspect.unwrap(connection_class.query)), (
+                f"control: {connection_class.__name__}.query is not classified write-capable — the "
+                f"predicate cannot fire, so this pin would pass for any SAFE list"
+            )
+            unsafe = sorted(
+                name
+                for name in _sdk_guard.SAFE_CONNECTION_METHODS
+                if (method := getattr(connection_class, name, None)) is not None
+                and _is_write_capable_door(inspect.unwrap(method))
+            )
+            assert not unsafe, (
+                f"{connection_class.__name__}: the guard exempts {unsafe}, which can run a statement or "
+                f"touch "
+                f"a record — calls through them escape the retry-driver and multi-statement checks silently"
+            )

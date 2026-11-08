@@ -313,3 +313,53 @@ class TestARegisteredAgentIsOwnedAndScopedByEngineIds:
                 f"[{rendering}] the agent's persisted scope {rows[0]['scope']!r} is not its session "
                 f"keep's engine text {keep_text[0]!r} — rows scoped before and after the bump would not match"
             )
+
+
+class TestANonWordKeyServesTheEnginesText:
+    """Round 4 — RS4 (operator ruling R8 F15): the ENGINE form (``<string> id``) is the text form for
+    anything persisted or compared with persisted text; ``.table_name + ":" + .id`` is allowed only where
+    no persisted comparison exists. The two forms AGREE for every word key (``[A-Za-z0-9_]``) — which is
+    every key lore mints today — and DIFFER for a non-word key: the engine brackets it
+    (``keep:⟨sdk3-non-word⟩``), the parts-join does not. A served keep id is compared with persisted text
+    (every ``keep:<id>`` scope on a governed row), so it must be the engine's form for EVERY key the
+    engine holds. A non-word keep key is constructed directly (a restored or legacy row; lore's own mint
+    cannot produce one) — the case the word-key pins above cannot tell apart."""
+
+    _NON_WORD_KEY = "sdk3-non-word.key"
+
+    async def test_a_non_word_keep_key_is_served_as_the_engines_text_and_found_again(
+        self, stores: tuple[PrincipalStore, KeepStore, Any]
+    ) -> None:
+        principal_store, keep_store, admin = stores
+        await principal_store.create(email=_KEEPER_EMAIL)
+        minted = await keep_store.create_keep(keeper_email=_KEEPER_EMAIL, type="project", name="sdk3")
+        rows = await run(admin, "SELECT * FROM keep")
+        assert len(rows) == 1, f"premise: one minted keep ({rows!r})"
+        content = {field: value for field, value in rows[0].items() if field != "id"}
+        for unique_field in ("name", "key"):  # never collide with the minted keep on a UNIQUE index
+            if isinstance(content.get(unique_field), str):
+                content[unique_field] = f"{content[unique_field]}-clone"
+        await run(
+            admin,
+            "CREATE $id CONTENT $content",
+            {"id": RecordID("keep", self._NON_WORD_KEY), "content": content},
+        )
+        engine_text = (
+            await run(
+                admin, "SELECT VALUE <string> id FROM $id", {"id": RecordID("keep", self._NON_WORD_KEY)}
+            )
+        )[0]
+        assert engine_text != f"keep:{self._NON_WORD_KEY}", (
+            f"premise: the engine brackets a non-word key (it rendered {engine_text!r}) — otherwise the two "
+            f"R7 (d) forms agree and this pin cannot discriminate"
+        )
+        served = await keep_store.get_keep(engine_text)
+        assert served is not None, (
+            f"get_keep({engine_text!r}) found nothing: the engine's own text must name it"
+        )
+        assert served.id == engine_text, (
+            f"the served id {served.id!r} of a non-word keep is not the engine's text {engine_text!r}; "
+            f"F15: a "
+            f"served id compared with persisted text (keep scopes) is the ENGINE form, never a parts-join"
+        )
+        assert minted.id != served.id, "premise: two distinct keeps"

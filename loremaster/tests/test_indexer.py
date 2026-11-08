@@ -252,7 +252,7 @@ def _trio(
     snapshot_root: Path | None = None,
     with_graph: bool = False,
     file_text_max_bytes: int | None = None,
-    txn_statement_hard_cap: int | None = None,
+    txn_row_hard_cap: int | None = None,
 ) -> FakeSurrealTrio:
     """Build the store + manifest + graph fakes over one shared database.
 
@@ -267,8 +267,8 @@ def _trio(
         kwargs["project_roots"] = project_roots
     if file_text_max_bytes is not None:
         kwargs["file_text_max_bytes"] = file_text_max_bytes
-    if txn_statement_hard_cap is not None:
-        kwargs["txn_statement_hard_cap"] = txn_statement_hard_cap
+    if txn_row_hard_cap is not None:
+        kwargs["txn_row_hard_cap"] = txn_row_hard_cap
     return fake_surreal_trio(**kwargs)
 
 
@@ -691,7 +691,7 @@ class TestCapOverflowFailedState:
         # file_text + 2 manifest = 8 — so cap 6 fails the widget and passes the
         # tiny sibling. The cap is the store's own guard, read from the store
         # (clause 5), never a value the indexer hardcodes.
-        trio = _trio(txn_statement_hard_cap=6)
+        trio = _trio(txn_row_hard_cap=6)  # SDK3 R8 F12: the fake's cap is the ROW cap (1 row/statement)
         indexer = _make_indexer(
             config=config, trio=trio, embedder=FakeEmbedder(dim=_DIM),
             snapshot_root=tmp_path / "snap",

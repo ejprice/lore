@@ -44,6 +44,7 @@ from _surreal_harness import (
     unique_database,
 )
 from loremaster.scout import _open_command_connection
+from loremaster.store import _txn
 from loremaster.store._txn import SurrealConnectionError, run_query
 from loremaster.store.lease import SurrealLeaseStore
 from test_retry_seam import (
@@ -74,7 +75,13 @@ _RACING_FAILURE_BOUND_SECONDS = 20.0
 # measured from the moment the store returns, within which every owner's first call must answer: the
 # factory's reconnect delay is capped at 2.0 s (+10% SDK jitter = 2.2 s), plus the handshake and session
 # replay. "~2 s" in the ruling; 3.0 s here.
-_LONG_OUTAGE_SECONDS = 15.0
+# Round 4 (RS2): the outage must OUTLAST a finite attempt budget, or "reconnect forever" is pinned only up
+# to the horizon. Factory delays (SDK ``ReconnectOptions.delay``): attempt 1 waits ~1.0 s, every later one
+# 1.8-2.0 s (capped at 2.0, jitter 10%), so ``attempts=20`` gives up after 35.2-39.1 s; 45 s kills every
+# budget <= 22 attempts (the adversary's surviving ``attempts=20``). BOUND, stated: a finite budget whose
+# give-up time exceeds 45 s (>= ~25 attempts) survives — "forever" is unpinnable by any finite outage;
+# raising the outage buys ~0.5 attempts per second of run time.
+_LONG_OUTAGE_SECONDS = 45.0
 _FIRST_CALL_AFTER_LONG_OUTAGE_BOUND_SECONDS = 3.0
 
 # How long the no-zombie pins watch the proxy for a socket nobody should be opening. It covers the
@@ -386,6 +393,18 @@ class TestACallRacingTheDropFailsLoudAndTyped:
             f"means a call silently 'succeeded' across a drop; any other type misclassifies a transport "
             f"fault (a domain rejection tells the caller its write was illegal)."
         )
+        # Round 4 — MP2 (operator ruling R8 F14): these are READS (``RETURN sleep(3s)``), and the seam cannot
+        # tell a read from a write, so a request in flight at a drop is outcome-unknown WHATEVER its text.
+        # A build that maps only write-looking statements to outcome-unknown fails here.
+        unknown_type = getattr(_txn, "SurrealOutcomeUnknownError", None)
+        assert unknown_type is not None, "store._txn.SurrealOutcomeUnknownError does not exist (R5 rider 2)"
+        not_unknown = [outcome for outcome in outcomes if not isinstance(outcome, unknown_type)]
+        assert not not_unknown, (
+            f"{len(not_unknown)} of {_IN_FLIGHT_CALLS} READS in flight at the drop were raised as "
+            f"{sorted({type(item).__name__ for item in not_unknown})}, not SurrealOutcomeUnknownError — F14: "
+            f"every SDK transport failure on a request is outcome-unknown; a narrower mapping is a statement "
+            f"sniff that reports a LET-prefixed or RETURN (UPSERT …) write as 'nothing happened'"
+        )
 
     async def test_after_the_racing_failure_the_next_call_succeeds_and_no_stale_socket_survives(
         self, lease_owner: SurrealLeaseStore, proxy: StoreBounceProxy
@@ -450,9 +469,10 @@ class TestRecoveryLatencyAfterALongOutage:
     returns answers within ~2 s (L6)". Round 3 quantifies it over EVERY owner (derived, never hand-listed):
     an owner that bypasses the factory keeps the SDK default (5 attempts, backoff to 60 s — after a 15 s
     outage its next attempt is ~15 s away), and one with the factory's delays but a finite attempt count
-    gives up ~7.5 s into the outage and never comes back; both fail this pin. The calls are issued the
-    moment the store returns, so the bound measures the reconnect cadence itself.
-    RED at HEAD (SDK 2.0 never reconnects: the first call fails outright). COST: ~20 s."""
+    gives up before the outage ends and never comes back; both fail this pin (round 4, RS2: the outage is
+    45 s, past ``attempts=20``'s ~39 s give-up). The calls are issued the moment the store returns, so the
+    bound measures the reconnect cadence itself.
+    RED at HEAD (SDK 2.0 never reconnects: the first call fails outright). COST: ~50 s."""
 
     async def test_every_owner_answers_promptly_once_the_store_returns(
         self, every_owner: dict[str, Any], proxy: StoreBounceProxy

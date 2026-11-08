@@ -118,6 +118,7 @@ from _surreal_harness import SurrealEnv
 from loremaster.store import _txn as txn_module
 from pydantic import SecretStr
 from surrealdb.errors import QueryError
+from test_retry_seam import move_the_sdk_conflict_predicate
 
 # A fake connection target; the real topology is irrelevant since ``AsyncSurreal``
 # itself is monkeypatched to return the fake below.
@@ -1479,8 +1480,9 @@ class TestTheHarnessRetryPolicyIsTheSeamsPolicy:
         await _surreal_harness.drop_database(_FAKE_ENV)
         assert control.query_calls == 2, "the control leg did not retry; the pin is blind"
 
-        # MUTATION: the seam no longer recognises the engine's conflict KIND (a28c DUAL: was its prose).
-        monkeypatch.setattr(txn_module, "_RETRYABLE_CONFLICT_KIND", "AKindNoEngineEmits")
+        # MUTATION: the ONE authority (the SDK predicate — drop row #2; a28c DUAL: was lore's kind literal,
+        # before that its prose) no longer recognises the engine's conflict KIND.
+        move_the_sdk_conflict_predicate(monkeypatch, "AKindNoEngineEmits")
 
         mutated = _FakeConnection(query_outcomes=[_conflict_error(), None])
         _patch_connection(monkeypatch, mutated)
@@ -1513,7 +1515,7 @@ class TestTheHarnessRetryPolicyIsTheSeamsPolicy:
             "the control leg did not retry; the pin is blind"
         )
 
-        monkeypatch.setattr(txn_module, "_RETRYABLE_CONFLICT_KIND", "AKindNoEngineEmits")
+        move_the_sdk_conflict_predicate(monkeypatch, "AKindNoEngineEmits")
 
         mutated = _FakeConnection(
             statement_outcomes={
@@ -1542,9 +1544,10 @@ class TestTheHarnessRetryPolicyIsTheSeamsPolicy:
         and survives only until the engine changes what it emits. lore #102/#120 measured
         exactly that: eleven seams routed through the driver, each classifying locally, 839/0
         green, all silently dead under a reworded message. Only moving the SHARED classifier
-        input can tell the two apart: ``_txn._RETRYABLE_CONFLICT_KIND`` since ``34d0b6b``
-        (63c-i-a amendment 36), which deleted the text ``_RETRYABLE_CONFLICT_MARKER`` this pin
-        first mutated (re-keyed by contract-486-r2, the a28c DUAL form of its two siblings).
+        input can tell the two apart: the SDK's ``QueryError.is_transaction_conflict`` since packet 66
+        (SDK 3.0, drop row #2, which retired lore's ``_txn._RETRYABLE_CONFLICT_KIND`` literal; that
+        literal had replaced, at ``34d0b6b`` / 63c-i-a amendment 36, the text
+        ``_RETRYABLE_CONFLICT_MARKER`` this pin first mutated — re-keyed by contract-486-r2).
 
         RED at HEAD: the control leg — ``run`` does not retry at all, so the conflict escapes.
         """
@@ -1562,7 +1565,7 @@ class TestTheHarnessRetryPolicyIsTheSeamsPolicy:
         )
 
         # MUTATION: the seam no longer recognises the engine's conflict KIND.
-        monkeypatch.setattr(txn_module, "_RETRYABLE_CONFLICT_KIND", "AKindNoEngineEmits")
+        move_the_sdk_conflict_predicate(monkeypatch, "AKindNoEngineEmits")
         mutated = _FakeConnection(query_outcomes=[_conflict_error(), _run_result()])
         with pytest.raises(QueryError):
             await _surreal_harness.run(

@@ -64,6 +64,7 @@ from uuid import NAMESPACE_URL, uuid5
 import pytest
 from loremaster.sanitise import max_backtick_run
 from loremaster.server import AppContext
+from surrealdb.errors import ConnectionUnavailableError
 from test_comms_tool import (  # noqa: F401 - _governed_ambient_token is an autouse fixture
     _03b_fleet,
     _governed_ambient_token,
@@ -75,6 +76,9 @@ from test_comms_waiting_line import _ask_via_dispatcher
 from test_link5_render_containment import FORGERY_MARKER, _leaks
 
 from loremaster import server
+
+# The SDK in-flight-drop error's text (R6 F10: SDK 3.0 raises its typed ``ConnectionUnavailableError``).
+_SDK_INFLIGHT_DROP_TEXT = "socket dropped with fake-await-request-uuid in flight"
 
 # The store TEST url — the seams this file reaches never open a socket (connect/drain are
 # injected/monkeypatched). Named so no pin can drift toward production :18500.
@@ -207,22 +211,35 @@ class TestAwaitIsDispatchable:
 # sharing; see test_scout.py for the scout leg).
 # =========================================================================== #
 class TestTheSharedSdkAwaitBoundaryConstant:
-    def test_the_constant_is_the_connection_errors_plus_keyerror(self) -> None:
-        # RED today: AttributeError (the constant is the pending named seam), reached
-        # through an Any handle so it is mypy-clean unbuilt AND built (see _awaiter_cls).
+    """R-2's named seam, RE-RULED for SDK 3.0 (packet 66, sdk3-rulings.md R6 F10; drop row #1): the
+    boundary no longer carries ``KeyError`` (SDK 2.0's raw in-flight-drop shape — SDK 3.0 raises its typed
+    ``ConnectionUnavailableError``, a ``TransportError``). Pinned by what an ``except`` NAMING the
+    boundary actually catches, not by the tuple's spelling: the SDK's transport error is caught, and a
+    ``KeyError`` — now a bug wherever it comes from — is not."""
+
+    def test_the_boundary_catches_the_sdk_transport_error_and_not_a_keyerror(self) -> None:
         from loremaster.store import _txn as _txn_module  # noqa: PLC0415
-        from loremaster.store._txn import _CONNECTION_ERRORS  # noqa: PLC0415
 
         txn: Any = _txn_module
-        _SDK_AWAIT_BOUNDARY_ERRORS = txn._SDK_AWAIT_BOUNDARY_ERRORS
-        assert KeyError in _SDK_AWAIT_BOUNDARY_ERRORS, (
-            "_SDK_AWAIT_BOUNDARY_ERRORS must include KeyError — the PROBED in-flight socket-drop "
-            "shape at the SDK-await boundary (store §3; probe PROBE 2)"
+        boundary = txn._SDK_AWAIT_BOUNDARY_ERRORS
+
+        def _caught_by_the_boundary(error: BaseException) -> bool:
+            try:
+                raise error
+            except boundary:
+                return True
+            except BaseException:  # noqa: BLE001 - the probe's other outcome, by design
+                return False
+
+        assert _caught_by_the_boundary(ConnectionUnavailableError(_SDK_INFLIGHT_DROP_TEXT)), (
+            "an except naming _SDK_AWAIT_BOUNDARY_ERRORS does not catch the SDK's own in-flight-drop "
+            "error (ConnectionUnavailableError) — await and the CommandSubscriber ladder would die on "
+            "every socket drop"
         )
-        assert set(_SDK_AWAIT_BOUNDARY_ERRORS) == set(_CONNECTION_ERRORS) | {KeyError}, (
-            "the shared boundary set must be EXACTLY (*_CONNECTION_ERRORS, KeyError) — the one "
-            "atom await and CommandSubscriber both ride (ONE IMPLEMENTATION, R-2); anything else "
-            "is a private variant"
+        assert not _caught_by_the_boundary(KeyError("fake-await-request-uuid")), (
+            "an except naming _SDK_AWAIT_BOUNDARY_ERRORS still catches KeyError — the KeyError-as-"
+            "transport arm is RETIRED (R6 F10, drop row #1): a KeyError is a bug and must propagate, "
+            "never be treated as a dropped socket"
         )
 
 
@@ -433,10 +450,11 @@ class _GatedDrain:
 class _FakeLiveConnection:
     """A minimal LIVE-wake connection mirroring test_scout's ``_FakeCommandConnection``.
 
-    ``dead`` raises the PROBED in-flight-drop shape (``KeyError(request-uuid)``,
-    ``REPORT-probe-await-05a-1.md`` PROBE 2) on establish; ``die_on_subscribe`` lets
-    establish succeed but raises when the LIVE is consumed. Neither answers the drain
-    read — that is the injected ``_GatedDrain`` seam."""
+    ``dead`` raises the SDK's in-flight-drop error on establish — SDK 3.0's typed
+    ``ConnectionUnavailableError`` (a ``TransportError``; R6 F10 retired SDK 2.0's raw
+    ``KeyError(request-uuid)`` shape, ``REPORT-probe-await-05a-1.md`` PROBE 2);
+    ``die_on_subscribe`` lets establish succeed but raises the same error when the LIVE is
+    consumed. Neither answers the drain read — that is the injected ``_GatedDrain`` seam."""
 
     def __init__(
         self, *, live_uuid: str = "live-await-1", die_on_subscribe: bool = False, dead: bool = False
@@ -451,14 +469,14 @@ class _FakeLiveConnection:
     async def query(self, statement: str, params: dict[str, Any] | None = None) -> Any:
         self.queries.append(statement)
         if self._dead:
-            raise KeyError("fake-await-request-uuid")
+            raise ConnectionUnavailableError(_SDK_INFLIGHT_DROP_TEXT)
         if statement.strip().upper().startswith("LIVE SELECT"):
             return self._live_uuid
         return []
 
     async def subscribe_live(self, query_uuid: Any) -> Any:
         if self._die_on_subscribe or self._dead:
-            raise KeyError("fake-await-live-drop")
+            raise ConnectionUnavailableError("fake-await live subscription dropped")
         await asyncio.Event().wait()  # a LIVE that never fires — the poll must carry the load
         yield {"action": "CREATE"}  # pragma: no cover
 
@@ -550,18 +568,28 @@ class _StampingDrain:
         return result
 
 
-def _drop_keyerror(monkeypatch: pytest.MonkeyPatch, module: Any) -> None:
-    """RUNTIME MUTATION of the SHARED error-classification symbol AS ``module`` sees it:
-    rebind BOTH ``_SDK_AWAIT_BOUNDARY_ERRORS`` and its ``_WITH_CONTENTION`` sibling to a
-    KeyError-free tuple. An ``except`` clause evaluates its type expression at match
-    time, so a catch that NAMES the module global picks up the drop; a catch holding a
-    PRIVATE INLINE tuple does NOT (raising=False makes the setattr a harmless no-op there
-    — and that unaffected recovery is exactly what the mutation pin reddens on)."""
-    from loremaster.store._txn import _CONNECTION_ERRORS  # noqa: PLC0415
-
-    keyerror_free = tuple(_CONNECTION_ERRORS)  # KeyError is NOT in _CONNECTION_ERRORS
+def drop_the_sdk_transport_error_from_the_shared_boundary(
+    monkeypatch: pytest.MonkeyPatch, module: Any
+) -> None:
+    """RUNTIME MUTATION of the SHARED error-classification symbol AS ``module`` sees it: rebind
+    BOTH ``_SDK_AWAIT_BOUNDARY_ERRORS`` and its ``_WITH_CONTENTION`` sibling to themselves MINUS
+    every member that catches the SDK's in-flight-drop error (``ConnectionUnavailableError``).
+    Derived from the module's own current value, so it holds whatever the boundary spells (a
+    ``SurrealError`` base, the SDK's ``TransportError``, …). An ``except`` clause evaluates its
+    type expression at match time, so a catch that NAMES the module global picks up the drop; a
+    catch holding a PRIVATE INLINE tuple does NOT (raising=False makes the setattr a harmless
+    no-op there — and that unaffected recovery is exactly what the mutation pin reddens on).
+    (R6 F10 re-keyed this from "drop KeyError": KeyError is no longer a boundary member.)"""
     for name in ("_SDK_AWAIT_BOUNDARY_ERRORS", "_SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION"):
-        monkeypatch.setattr(module, name, keyerror_free, raising=False)
+        current = getattr(module, name, None)
+        if current is None:
+            continue
+        members = current if isinstance(current, tuple) else (current,)
+        transport_free = tuple(
+            member for member in members if not issubclass(ConnectionUnavailableError, member)
+        )
+        assert transport_free != members, f"premise: {name} catches the SDK transport error"
+        monkeypatch.setattr(module, name, transport_free, raising=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -676,13 +704,13 @@ class TestPollOnlyCompleteness:
 
 # --------------------------------------------------------------------------- #
 # PIN #4 — FORGERY / SOCKET-DROP NON-LOSS (the real acceptance). A DEAD LIVE
-# (KeyError on establish, the PROBED shape) with traffic present → returned, no
+# (the SDK's transport error on establish; R6 F10) with traffic present → returned, no
 # false-empty, no crash. POSITIVE CONTROL: genuine-empty → empty.
 # --------------------------------------------------------------------------- #
 class TestSocketDropNonLoss:
     async def test_a_live_drop_with_traffic_present_does_not_false_empty(self) -> None:
         # ``dead=True`` — a fault EVERY build that touches the LIVE hits (establish
-        # raises the probed KeyError), unlike ``die_on_subscribe`` which a build that
+        # raises the SDK transport error), unlike ``die_on_subscribe`` which a build that
         # never consumes the LIVE would pass vacuously (fixture-must-discriminate).
         def chooser(call_index: int, now: float) -> Any:
             return _peek_traffic(99) if call_index >= 2 else _peek_empty()
@@ -718,23 +746,23 @@ class TestSocketDropNonLoss:
 # + 7b (await inline).
 # =========================================================================== #
 class TestAwaitSharesTheSdkBoundaryConstantByMutation:
-    async def test_dropping_keyerror_from_the_shared_constant_breaks_await_recovery(
+    async def test_dropping_the_transport_error_from_the_shared_constant_breaks_await_recovery(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # POSITIVE CONTROL (unpatched -> the SAME dead-LIVE scenario RETURNS the
         # traffic) is TestSocketDropNonLoss above. Here the shared symbol is mutated AS
-        # THE AWAITER'S MODULE SEES IT: KeyError leaves the boundary, so it escapes the
-        # awaiter's catch and await_inbox RAISES. A build holding a PRIVATE INLINE tuple
-        # is UNAFFECTED -> it still recovers (no raise) -> pytest.raises FAILS -> RED (7b).
+        # THE AWAITER'S MODULE SEES IT: the SDK's transport error leaves the boundary, so it
+        # escapes the awaiter's catch and await_inbox RAISES. A build holding a PRIVATE INLINE
+        # tuple is UNAFFECTED -> it still recovers (no raise) -> pytest.raises FAILS -> RED (7b).
         import sys  # noqa: PLC0415
 
         awaiter_module = sys.modules[_awaiter_cls().__module__]  # RED until built
-        _drop_keyerror(monkeypatch, awaiter_module)
+        drop_the_sdk_transport_error_from_the_shared_boundary(monkeypatch, awaiter_module)
 
         def chooser(call_index: int, now: float) -> Any:
             return _peek_traffic(99) if call_index >= 2 else _peek_empty()
 
-        with pytest.raises(KeyError):
+        with pytest.raises(ConnectionUnavailableError):
             await _drive_awaiter(chooser=chooser, connection=_FakeLiveConnection(dead=True))
 
     def test_no_inline_sdk_await_boundary_tuple_survives_in_scout_or_the_awaiter(self) -> None:

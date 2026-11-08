@@ -200,12 +200,18 @@ from loremaster.store.surreal import SurrealStore
 from loremaster.store.surreal_schema import AGENT_TABLE, BRIEF_TABLE, BRIEFED_RELATION
 from pydantic import SecretStr
 from surrealdb import (
-    AsyncEmbeddedSurrealConnection,
     AsyncHttpSurrealConnection,
     AsyncWsSurrealConnection,
     RecordID,
 )
-from surrealdb.errors import ErrorKind, InternalError, NotAllowedError, QueryError, ValidationError
+from surrealdb.errors import (
+    ConnectionUnavailableError,
+    ErrorKind,
+    InternalError,
+    NotAllowedError,
+    QueryError,
+    ValidationError,
+)
 
 from loremaster import briefs as briefs_module
 from loremaster import scout as scout_module
@@ -294,6 +300,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 # REPORT-contract-63c-i-a-a28c.md §A.2), and amendment 36 makes detection read that KIND. The property these
 # pins guard is unchanged — ONE detection authority, proven by MOVING it — only the thing moved changed: the
 # pins now mutate `_txn._RETRYABLE_CONFLICT_KIND` (was the text `_RETRYABLE_CONFLICT_MARKER`, deleted).
+#
+# ⚠ DUAL (packet 66 / SDK 3.0 — sdk3-rulings.md R6, drop list row #2, R9 D3): the bare "TransactionConflict"
+# literal `_txn._RETRYABLE_CONFLICT_KIND` is RETIRED. SDK 3.0 ships the predicate itself
+# (`surrealdb.errors.QueryError.is_transaction_conflict`), so THE detection authority is the SDK's predicate
+# and lore keeps no copy of the kind. The property is unchanged — ONE authority, proven by MOVING it — and the
+# thing moved is now that predicate: `move_the_sdk_conflict_predicate` rebinds it to answer for a different
+# kind. A build that still keys on a private literal (or on `details["kind"]` read by hand) is UNMOVED by the
+# mutation and reddens these pins in both directions.
 # ===========================================================================
 
 # A conflict message that shares NOT ONE discriminating token with the live one: no
@@ -306,14 +320,28 @@ _MUTATED_CONFLICT_TEXT = f"Row is presently occupied; {_MUTATED_MARKER}"
 _MUTATED_CONFLICT_KIND = "WriterMayTakeAnotherTurn"
 
 
-def _mutate_shared_marker(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Move the ONE conflict-detection authority — the typed conflict KIND (amendment 36; DUAL: was the text
-    marker). Every seam must follow it."""
-    assert hasattr(txn_module, "_RETRYABLE_CONFLICT_KIND"), (
-        "the shared conflict kind is gone — detection has no single authority left, "
-        "and nothing can pin that every caller agrees on what a conflict IS"
+def move_the_sdk_conflict_predicate(monkeypatch: pytest.MonkeyPatch, kind: str) -> None:
+    """Move THE conflict-detection authority — the SDK's ``QueryError.is_transaction_conflict`` (drop row
+    #2; DUAL: was lore's ``_txn._RETRYABLE_CONFLICT_KIND`` literal, before that the text marker) — so it
+    answers True exactly for an error whose typed ``details.kind`` is ``kind``. Every seam must follow it.
+
+    Shared by this file and ``test_surreal_harness.py`` (one mutation, not a clone per suite)."""
+    assert hasattr(QueryError, "is_transaction_conflict"), (
+        "surrealdb.errors.QueryError has no is_transaction_conflict predicate — this SDK cannot be THE "
+        "conflict authority (SDK 3.0 ships it; drop row #2 retires lore's literal in its favour)"
     )
-    monkeypatch.setattr(txn_module, "_RETRYABLE_CONFLICT_KIND", _MUTATED_CONFLICT_KIND)
+
+    def _moved(self: QueryError) -> bool:
+        details = getattr(self, "details", None)
+        return isinstance(details, dict) and details.get("kind") == kind
+
+    monkeypatch.setattr(QueryError, "is_transaction_conflict", property(_moved))
+
+
+def _mutate_shared_marker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Move the ONE conflict-detection authority to ``_MUTATED_CONFLICT_KIND`` (see
+    :func:`move_the_sdk_conflict_predicate`)."""
+    move_the_sdk_conflict_predicate(monkeypatch, _MUTATED_CONFLICT_KIND)
 
 # --- LIVE-CAPTURED engine shapes (see the module docstring's table) ----------
 _LIVE_CONFLICT_TEXT = "Transaction conflict: Resource busy. This transaction can be retried"
@@ -350,6 +378,14 @@ def _mutated_conflict_error() -> QueryError:
     )
 
 
+#: The SDK's transport-failure base (SDK 3.0: ``surrealdb.errors.TransportError``). SDK 2.0.0 has no such
+#: base, so there it falls back to the injected in-flight-drop class itself — looked up, never imported by
+#: name, so this module collects on either SDK.
+_SDK_TRANSPORT_ERROR: type[BaseException] = getattr(
+    importlib.import_module("surrealdb.errors"), "TransportError", ConnectionUnavailableError
+)
+
+
 # Every LIVE rejection that is NOT a retryable conflict. Retrying any of them would
 # never succeed, and hammering the engine with a statement it has already refused is
 # the failure mode a too-broad ``except`` produces.
@@ -373,16 +409,19 @@ _NON_CONFLICT_REJECTIONS = [
         False,
         id="transport-not-allowed",
     ),
-    # P-5 (contract adversary, W8-NOKEYERROR): the SDK's OWN response routing raises a bare
-    # ``builtins.KeyError(<request-uuid>)`` when a socket drops with a query in flight —
-    # probe-verified live, and every seam classifies it as TRANSPORT (``isinstance(error,
-    # KeyError) or is_connection_error(error)``). It is NOT a ``SurrealError``, so it enters
-    # the ``except`` through a DIFFERENT door from every other row here, and the contract was
-    # BLIND to it: a collapse whose ``run_query`` drops the ``KeyError`` from its catch tuple
-    # turns a self-healing reconnect into an unhandled crash, and this contract scored
-    # 342/342 on that build. (Three OTHER files pin it per-seam today — but the collapse makes
-    # ONE body serve all ten, so their coverage becomes incidental rather than structural.)
-    pytest.param(lambda: KeyError("a1b2c3d4-request-uuid"), False, id="sdk-KeyError-routing-drop"),
+    # P-5 (contract adversary, W8-NOKEYERROR), RE-RULED for SDK 3.0 (R6 F10 / R8 F14, drop row #1): the
+    # in-flight socket drop. SDK 2.0 raised a bare ``builtins.KeyError(<request-uuid>)`` here and every seam
+    # classified it as transport; that arm is RETIRED — SDK 3.0 raises its own typed
+    # ``ConnectionUnavailableError`` (a ``TransportError``, NOT a ``ServerError``: a DIFFERENT door from the
+    # ``NotAllowedError`` row above, which the server answered). F14: it surfaces as
+    # ``SurrealOutcomeUnknownError`` (the request was sent and no reply came). The retired KeyError's DUAL —
+    # a KeyError is now a BUG that propagates as itself — is pinned by
+    # ``test_a_keyerror_propagates_as_a_bug_not_as_transport`` below.
+    pytest.param(
+        lambda: ConnectionUnavailableError("socket dropped with request a1b2c3d4 in flight"),
+        False,
+        id="sdk-transport-inflight-drop",
+    ),
 ]
 
 # The multi-statement rollback shape, LIVE (the marker rides the COMMIT entry, LAST —
@@ -774,7 +813,6 @@ def _seam_on(seam: type, connection: Any) -> Any:
 _SDK_CONNECTION_CLASSES = (
     AsyncWsSurrealConnection,
     AsyncHttpSurrealConnection,
-    AsyncEmbeddedSurrealConnection,
 )
 
 
@@ -1228,6 +1266,36 @@ class TestEverySingleStatementSeamRetriesAConflict:
             assert instance._connection is None, (
                 "a transport fault must drop the cached handle so the next call reconnects"
             )
+            if isinstance(exc_info.value.__cause__, _SDK_TRANSPORT_ERROR):
+                unknown_type = getattr(txn_module, "SurrealOutcomeUnknownError", None)
+                assert unknown_type is not None and isinstance(exc_info.value, unknown_type), (
+                    f"{seam.__name__} surfaced an SDK transport error as "
+                    f"{type(exc_info.value).__name__}, not store._txn.SurrealOutcomeUnknownError "
+                    f"(F14: every SDK TransportError on a request is outcome-unknown)"
+                )
+
+    @pytest.mark.parametrize(("module_path", "seam"), _QUERY_SEAMS)
+    async def test_a_keyerror_propagates_as_a_bug_not_as_transport(
+        self, monkeypatch: pytest.MonkeyPatch, module_path: str, seam: type
+    ) -> None:
+        """The DUAL of the retired ``sdk-KeyError-routing-drop`` row (R6 F10, drop row #1): SDK 3.0 never
+        raises a raw ``KeyError`` for a socket drop, so a ``KeyError`` out of the SDK call is a BUG — every
+        seam lets it propagate as itself, unretried, never laundered into ``SurrealConnectionError`` (a
+        transport wrapper would make every caller reconnect and retry around a programming error)."""
+        recorder = _silence_sleep(monkeypatch)
+        bug = KeyError("a1b2c3d4-request-uuid")
+        connection = _RejectingConnection(bug)
+        instance = _seam_on(seam, connection)
+
+        with pytest.raises(BaseException) as exc_info:
+            await instance._query(_MINT_STATEMENT, {"name": _WAVE_NAME})
+
+        assert exc_info.value is bug, (
+            f"{seam.__name__} surfaced a KeyError as {type(exc_info.value).__name__}: "
+            f"{exc_info.value!r} — the KeyError-as-transport arm is RETIRED; it must propagate as itself"
+        )
+        assert connection.calls == 1, f"{seam.__name__} retried a KeyError {connection.calls - 1} times"
+        assert recorder.durations == []
 
 
 class TestDetectionFollowsTheOneSharedMarker:
@@ -2997,7 +3065,11 @@ class TestScoutCommandClaimRidesTheSeam:
                 id="reconnected-unauthenticated",
             ),
             pytest.param(lambda: OSError("connection refused"), id="dead-socket"),
-            pytest.param(lambda: KeyError("request-uuid"), id="SDK-routing-KeyError"),
+            # R6 F10 (drop row #1): SDK 3.0's typed in-flight drop, replacing SDK 2.0's raw KeyError.
+            pytest.param(
+                lambda: ConnectionUnavailableError("socket dropped with request-uuid in flight"),
+                id="SDK-transport-inflight-drop",
+            ),
         ],
     )
     async def test_a_transport_fault_still_reaches_the_reconnect_ladder(
@@ -3009,9 +3081,10 @@ class TestScoutCommandClaimRidesTheSeam:
         the seam **killed scout's reconnect ladder**, deterministically, and I reported a
         green I had never run.
 
-        The mechanism, stated so nobody rebuilds it: ``run()``'s ladder is
+        The mechanism, stated so nobody rebuilds it: ``run()``'s ladder is (R6 F10 retired its
+        ``KeyError`` member)
 
-            except (*_CONNECTION_ERRORS, KeyError):
+            except _SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION:   # the raw SDK types (+ contention)
                 await self._drop_connection(); await self._backoff(attempt); continue
 
         — it is built on the **RAW SDK TYPES**. The ledger seams wrap a transport fault as
@@ -3028,14 +3101,14 @@ class TestScoutCommandClaimRidesTheSeam:
         error = transport()
         connection = _ScriptedConnection(error=error, failures=None)
 
-        with pytest.raises((*_CONNECTION_ERRORS, KeyError)) as exc_info:
+        with pytest.raises(_CONNECTION_ERRORS) as exc_info:
             await _subscriber()._mark(connection, "command:1", "done")
 
         assert connection.calls == 1, "a transport fault was RETRIED as if it were contention"
-        assert isinstance(exc_info.value, (*_CONNECTION_ERRORS, KeyError)), (
-            f"scout's seam raised {type(exc_info.value).__name__}, which "
-            f"`except (*_CONNECTION_ERRORS, KeyError)` in run() CANNOT catch. The reconnect "
-            f"ladder is dead and every socket drop now kills the subscriber."
+        assert isinstance(exc_info.value, _CONNECTION_ERRORS), (
+            f"scout's seam raised {type(exc_info.value).__name__}, which the ladder in run() "
+            f"(the raw SDK types) CANNOT catch. The reconnect ladder is dead and every socket "
+            f"drop now kills the subscriber."
         )
         assert not isinstance(exc_info.value, SurrealStoreError), (
             "scout's transport fault was wrapped in a store error — the ladder is built on "

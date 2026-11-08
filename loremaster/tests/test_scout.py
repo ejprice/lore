@@ -120,6 +120,8 @@ from loremaster.store.surreal_schema import (
     SNAPSHOT_TABLE,
 )
 from loresigil.testing import FakeEmbedder
+from surrealdb.errors import ConnectionUnavailableError
+from test_comms_await import drop_the_sdk_transport_error_from_the_shared_boundary
 
 try:
     from loremaster.scout import (
@@ -1127,34 +1129,38 @@ class TestCommandSubscriberTransport:
 class TestCommandSubscriberSharesTheSdkAwaitBoundary:
     """Packet 05a-ii R-2 — the SCOUT leg of the cross-suite ONE-IMPLEMENTATION proof.
 
-    ``CommandSubscriber``'s reconnect ladder catches the SAME KeyError SDK-await
-    boundary the ``await`` verb catches — and R-2 (lead-ratified) requires BOTH to
-    reference the ONE shared symbol ``store._txn._SDK_AWAIT_BOUNDARY_ERRORS =
-    (*_CONNECTION_ERRORS, KeyError)`` rather than each hand-rolling
-    ``(*_CONNECTION_ERRORS, KeyError)`` inline (routing is not sharing).
+    ``CommandSubscriber``'s reconnect ladder catches the SAME SDK-await boundary the
+    ``await`` verb catches — and R-2 (lead-ratified) requires BOTH to reference the ONE
+    shared symbol ``store._txn._SDK_AWAIT_BOUNDARY_ERRORS`` rather than each hand-rolling
+    an inline tuple (routing is not sharing).
+
+    RE-RULED for SDK 3.0 (packet 66, sdk3-rulings.md R6 F10; drop row #1): the in-flight
+    drop is now the SDK's typed ``ConnectionUnavailableError`` (a ``TransportError``), not
+    SDK 2.0's raw ``KeyError(<request-uuid>)``, so both methods inject THAT error and the
+    mutation removes it from the boundary.
 
     TWO methods, a control + a mutation (adversary §4.1 fix — a behaviour pin alone is
     satisfied by a private inline tuple, so it is NOT the sharing invariant):
 
-    * ``test_reconnect_recovers_from_a_keyerror_inflight_drop`` — the POSITIVE CONTROL.
-      GREEN on current HEAD (the ladder already recovers a KeyError drop, inline) and
-      after wiring; proves the mutation below is load-bearing.
-    * ``test_dropping_keyerror_from_the_shared_constant_breaks_recovery`` — the RUNTIME
-      MUTATION. Rebinds the module global scout references and asserts recovery BREAKS.
-      RED on current HEAD (scout is inline) and RED for build 7a (scout keeps a private
-      clone); PASSES only when scout NAMES the patchable shared symbol. THIS is the
-      sharing invariant.
+    * ``test_reconnect_recovers_from_an_sdk_transport_inflight_drop`` — the POSITIVE
+      CONTROL; proves the mutation below is load-bearing.
+    * ``test_dropping_the_transport_error_from_the_shared_constant_breaks_recovery`` — the
+      RUNTIME MUTATION. Rebinds the module global scout references and asserts recovery
+      BREAKS. RED for build 7a (scout keeps a private clone); PASSES only when scout NAMES
+      the patchable shared symbol. THIS is the sharing invariant.
     """
 
-    async def test_reconnect_recovers_from_a_keyerror_inflight_drop(self) -> None:
-        # A mid-run KeyError drop (the PROBED in-flight shape, store §3 / PROBE 2), NOT a
-        # ConnectionReset: connection #1 raises KeyError on every op; #2 recovers the gap
-        # command. The subscriber must catch the KeyError (via _SDK_AWAIT_BOUNDARY_ERRORS)
-        # and reconnect, recovering the command EXACTLY once.
+    async def test_reconnect_recovers_from_an_sdk_transport_inflight_drop(self) -> None:
+        # A mid-run in-flight drop — the SDK's typed ConnectionUnavailableError (R6 F10), NOT a
+        # ConnectionReset: connection #1 raises it on every op; #2 recovers the gap command.
+        # The subscriber must catch it (via _SDK_AWAIT_BOUNDARY_ERRORS) and reconnect,
+        # recovering the command EXACTLY once.
         gap_command = {
             "id": "command:gapk", "kind": _RECONCILE_KIND, "payload": {}, "status": "pending",
         }
-        dead = _FakeCommandConnection(dead=True, drop_error=KeyError("req-uuid-abc"))
+        dead = _FakeCommandConnection(
+            dead=True, drop_error=ConnectionUnavailableError("socket dropped, req-uuid-abc in flight")
+        )
         recovered = _FakeCommandConnection(
             pending={"command:gapk": gap_command}, die_on_subscribe=True
         )
@@ -1172,38 +1178,36 @@ class TestCommandSubscriberSharesTheSdkAwaitBoundary:
             until=lambda: dispatched.count("command:gapk") == 1 and connector.calls >= 2,
         )
         assert connector.calls >= 2, (
-            "the subscriber did not RECONNECT after a KeyError in-flight drop — its reconnect "
-            "ladder failed to catch the KeyError boundary (the shared _SDK_AWAIT_BOUNDARY_ERRORS "
-            "dropped KeyError, or this catch site does not reference the shared constant)"
+            "the subscriber did not RECONNECT after the SDK's in-flight transport error — its "
+            "reconnect ladder failed to catch it (the shared _SDK_AWAIT_BOUNDARY_ERRORS lost the "
+            "SDK transport error, or this catch site does not reference the shared constant)"
         )
         assert dispatched.count("command:gapk") == 1, (
-            "the gap command was not recovered exactly once after a KeyError drop — the KeyError "
-            "escaped the reconnect ladder and killed the subscriber"
+            "the gap command was not recovered exactly once after an in-flight drop — the SDK "
+            "transport error escaped the reconnect ladder and killed the subscriber"
         )
 
-    async def test_dropping_keyerror_from_the_shared_constant_breaks_recovery(
+    async def test_dropping_the_transport_error_from_the_shared_constant_breaks_recovery(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The RUNTIME-MUTATION half (adversary §4.1): the test above is the POSITIVE
         CONTROL (unpatched ⇒ recovers). Here the module-level symbol scout's reconnect
-        ladder references is rebound to DROP KeyError; the SAME KeyError in-flight drop
-        must then NO LONGER recover. An ``except`` evaluates its type at match time, so a
-        catch that NAMES the patchable global picks up the drop; a PRIVATE INLINE
-        ``(*_CONNECTION_ERRORS, KeyError…)`` is UNAFFECTED — it still recovers and FAILS
-        this pin. That is exactly build 7a (await wired, scout inline), and it is why the
-        behaviour pin alone is not the sharing invariant."""
-        from loremaster.store._txn import _CONNECTION_ERRORS  # noqa: PLC0415
-
+        ladder references is rebound to DROP the SDK's transport error; the SAME in-flight
+        drop must then NO LONGER recover. An ``except`` evaluates its type at match time, so
+        a catch that NAMES the patchable global picks up the drop; a PRIVATE INLINE tuple is
+        UNAFFECTED — it still recovers and FAILS this pin. That is exactly build 7a (await
+        wired, scout inline), and it is why the behaviour pin alone is not the sharing
+        invariant. The mutation is the ONE helper the await leg uses (test_comms_await)."""
         from loremaster import scout  # noqa: PLC0415
 
-        keyerror_free = tuple(_CONNECTION_ERRORS)  # KeyError is NOT in _CONNECTION_ERRORS
-        for name in ("_SDK_AWAIT_BOUNDARY_ERRORS", "_SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION"):
-            monkeypatch.setattr(scout, name, keyerror_free, raising=False)
+        drop_the_sdk_transport_error_from_the_shared_boundary(monkeypatch, scout)
 
         gap_command = {
             "id": "command:gapk2", "kind": _RECONCILE_KIND, "payload": {}, "status": "pending",
         }
-        dead = _FakeCommandConnection(dead=True, drop_error=KeyError("req-uuid-xyz"))
+        dead = _FakeCommandConnection(
+            dead=True, drop_error=ConnectionUnavailableError("socket dropped, req-uuid-xyz in flight")
+        )
         recovered = _FakeCommandConnection(
             pending={"command:gapk2": gap_command}, die_on_subscribe=True
         )
@@ -1226,10 +1230,11 @@ class TestCommandSubscriberSharesTheSdkAwaitBoundary:
             if not task.done():
                 task.cancel()
             with contextlib.suppress(BaseException):
-                await task  # retrieve the escaped KeyError (expected when recovery breaks)
+                await task  # retrieve the escaped transport error (expected when recovery breaks)
         assert dispatched.count("command:gapk2") == 0, (
-            "the subscriber STILL recovered a KeyError drop AFTER KeyError was dropped from the "
-            "SHARED constant — its reconnect ladder holds a PRIVATE INLINE tuple, not a reference "
+            "the subscriber STILL recovered an in-flight drop AFTER the SDK transport error was "
+            "dropped from the SHARED constant — its reconnect ladder holds a PRIVATE INLINE tuple, "
+            "not a reference "
             "to the patchable module global (routing ≠ sharing, build 7a). The unpatched positive "
             "control above proves the mutation is real."
         )

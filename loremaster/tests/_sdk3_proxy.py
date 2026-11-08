@@ -30,6 +30,20 @@ engine finished long ago; the CLIENT simply sees its reply arrive ``seconds`` la
 long-operation pins make a startup DDL "take" longer than the default request timeout without depending
 on how long any real DDL takes on this box.
 
+Round 4 (MP3, the index-transaction leg): :meth:`StoreBounceProxy.hold_reply_to_large_request` arms a
+one-shot hold keyed on the REQUEST instead of on time: once one socket has carried at least ``min_bytes``
+client-to-server since arming, the NEXT server-to-client chunk on THAT socket is held. A file's index
+write is one request of megabytes (the per-row vectors), so this holds the reply to exactly that request
+on a connection whose other traffic is small — it keys on SIZE, never on the request's text, so it works
+whatever the WebSocket compression or the SDK's encoding. Unlike the time-based hold it is FRAME-AWARE:
+while it is active the server-to-client stream is parsed into WebSocket frames and only DATA frames are held
+— CONTROL frames (the pong to the SDK's keepalive ping, ``ping_interval=30`` / ``ping_timeout=10``) pass
+straight through, as they do from a real engine that is slow to answer a query. Holding the whole TCP stream
+instead starves the pong and the SDK closes the socket ~10 s after its next ping (measured 2026-11-07: a
+32 s whole-stream hold on a connection opened at boot ended "WebSocket connection closed before a response
+was received"). ASSUMPTION, stated: the hold starts at a server frame boundary — true when it triggers, since
+the server is idle while the client is still sending the large request.
+
 The proxy also COUNTS, so a pin can prove its own premise (a positive control): how many sockets it
 accepted, how many it severed, and how many are live now. A recovery pin that never saw its
 connections cut would pass for the wrong reason.
@@ -75,6 +89,13 @@ class _Pipe:
     client_writer: asyncio.StreamWriter
     upstream_writer: asyncio.StreamWriter
     tasks: list[asyncio.Task[None]] = field(default_factory=list)
+    # Client-to-server bytes since a large-request hold was armed, and whether this pipe's next reply is held.
+    sent_since_armed: int = 0
+    hold_next_reply: float | None = None
+    # Frame-aware hold state (server-to-client): unparsed bytes, held data frames, whether holding.
+    frame_buffer: bytearray = field(default_factory=bytearray)
+    held_frames: list[bytes] = field(default_factory=list)
+    holding_frames: bool = False
 
 
 @dataclass
@@ -85,7 +106,10 @@ class StoreBounceProxy:
     accepted_total: int = 0
     severed_total: int = 0
     held_total: int = 0
+    # Bytes forwarded client-to-store, all sockets (a pin can tell "sent nothing" from "sent, not held").
+    to_store_bytes: int = 0
     _hold_seconds: float | None = None
+    _large_request_hold: tuple[int, float] | None = None
     _port: int = 0
     _server: asyncio.base_events.Server | None = None
     _pipes: list[_Pipe] = field(default_factory=list)
@@ -155,6 +179,12 @@ class StoreBounceProxy:
         """Arm a one-shot hold: the next server-to-client chunk waits ``seconds`` (module docstring)."""
         self._hold_seconds = seconds
 
+    def hold_reply_to_large_request(self, *, min_bytes: int, seconds: float) -> None:
+        """Arm a one-shot hold on the reply to the next request of >= ``min_bytes`` (module docstring)."""
+        for pipe in self._pipes:
+            pipe.sent_since_armed = 0
+        self._large_request_hold = (min_bytes, seconds)
+
     async def close(self) -> None:
         """Teardown: go down for good."""
         await self.go_down(SeverMode.ABORT)
@@ -185,6 +215,18 @@ class StoreBounceProxy:
                 chunk = await reader.read(_FORWARD_CHUNK_BYTES)
                 if not chunk:
                     break
+                if writer is pipe.upstream_writer:
+                    self._note_sent(pipe, len(chunk))
+                if writer is pipe.client_writer and pipe.hold_next_reply is not None:
+                    self._start_frame_hold(pipe)
+                if writer is pipe.client_writer and pipe.holding_frames:
+                    pipe.frame_buffer.extend(chunk)
+                    self._route_frames(pipe)
+                    await writer.drain()
+                    continue
+                if writer is pipe.client_writer and pipe.frame_buffer:
+                    chunk = bytes(pipe.frame_buffer) + chunk  # a partial frame left when the hold ended
+                    pipe.frame_buffer.clear()
                 if writer is pipe.client_writer and self._hold_seconds is not None:
                     seconds, self._hold_seconds = self._hold_seconds, None
                     self.held_total += 1
@@ -197,6 +239,66 @@ class StoreBounceProxy:
             for end in (pipe.client_writer, pipe.upstream_writer):
                 if not end.is_closing():
                     end.close()
+
+    def _note_sent(self, pipe: _Pipe, size: int) -> None:
+        """Count client-to-store bytes; trigger an armed large-request hold on the pipe that crosses it."""
+        self.to_store_bytes += size
+        if self._large_request_hold is None:
+            return
+        pipe.sent_since_armed += size
+        min_bytes, held_seconds = self._large_request_hold
+        if pipe.sent_since_armed >= min_bytes:
+            self._large_request_hold = None
+            pipe.hold_next_reply = held_seconds
+
+    def _start_frame_hold(self, pipe: _Pipe) -> None:
+        """Begin holding this pipe's server DATA frames; release them ``hold_next_reply`` seconds from now."""
+        seconds, pipe.hold_next_reply = pipe.hold_next_reply or 0.0, None
+        self.held_total += 1
+        pipe.holding_frames = True
+        pipe.frame_buffer.clear()
+        asyncio.get_running_loop().call_later(seconds, self._release_frames, pipe)
+
+    @staticmethod
+    def _frame_length(buffer: bytearray) -> int | None:
+        """The byte length of the complete server WebSocket frame at the head of ``buffer`` (servers never
+        mask), or ``None`` while it is incomplete."""
+        if len(buffer) < 2:
+            return None
+        length, header = buffer[1] & 0x7F, 2
+        if length == 126:
+            if len(buffer) < 4:
+                return None
+            length, header = int.from_bytes(buffer[2:4], "big"), 4
+        elif length == 127:
+            if len(buffer) < 10:
+                return None
+            length, header = int.from_bytes(buffer[2:10], "big"), 10
+        total = header + length
+        return total if len(buffer) >= total else None
+
+    def _route_frames(self, pipe: _Pipe) -> None:
+        """While holding: forward every complete CONTROL frame now, keep every complete DATA frame back."""
+        while (size := self._frame_length(pipe.frame_buffer)) is not None:
+            frame = bytes(pipe.frame_buffer[:size])
+            del pipe.frame_buffer[:size]
+            if frame[0] & 0x08:
+                pipe.client_writer.write(frame)
+            else:
+                pipe.held_frames.append(frame)
+
+    @staticmethod
+    def _release_frames(pipe: _Pipe) -> None:
+        """The hold is over: forward the held data frames in order; later bytes forward as they arrive."""
+        pipe.holding_frames = False
+        if pipe.client_writer.is_closing():
+            return
+        for frame in pipe.held_frames:
+            pipe.client_writer.write(frame)
+        pipe.held_frames.clear()
+        if pipe.frame_buffer:
+            pipe.client_writer.write(bytes(pipe.frame_buffer))
+            pipe.frame_buffer.clear()
 
     @staticmethod
     def _sever(pipe: _Pipe, mode: SeverMode) -> None:

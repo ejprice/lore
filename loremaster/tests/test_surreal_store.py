@@ -125,8 +125,14 @@ from loremaster.symbols import _SCROLL_LIMIT  # the real scroll caller's read ca
 from lorescribe.models import Chunk
 from pydantic import SecretStr, ValidationError
 from surrealdb import AsyncSurreal as _RealAsyncSurreal
-from surrealdb import RecordID
-from surrealdb.errors import ErrorKind, ServerError, SurrealError, parse_query_error
+from surrealdb import AsyncWsSurrealConnection, RecordID
+from surrealdb.errors import (
+    ConnectionUnavailableError,
+    ErrorKind,
+    ServerError,
+    SurrealError,
+    parse_query_error,
+)
 
 if TYPE_CHECKING:
     # 63c-i-a contract a28c (amendment 36): the STATIC reference owning this file's pending pins
@@ -2274,57 +2280,77 @@ class TestDropConnectionCompareAndSwap:
 
 
 # ---------------------------------------------------------------------------
-# P5-C1c, hardening #3 (SurrealDB docs-audit follow-up, ledger #28): a raw
-# ``KeyError`` from the SDK's OWN response-routing must be classified as a
-# connection fault, not propagate untyped.
+# P5-C1c hardening #3, RE-RULED for SDK 3.0 (packet 66, docs/plans/v2/sdk3-rulings.md R6 F10 + R8 F14;
+# drop list row #1 in sdk3-python-sdk-3-migration.md §R3.5).
 #
-# Probe-confirmed live (throwaway 3.1.5 container): when the socket drops
-# with queries IN FLIGHT on one shared connection, the installed SDK (2.0.0)
-# raises a raw ``builtins.KeyError(<request-uuid>)`` from its response
-# routing on EVERY in-flight future (6/6 in the probe) — NOT
-# ``asyncio.CancelledError`` (never reproduced), and NOT anything in
-# ``_CONNECTION_ERRORS`` (``OSError`` / ``SurrealError`` /
-# ``WebSocketException``). Only the NEXT call on the dead connection heals via
-# ``ConnectionClosedError``. Today's ``_query`` except clause only catches
-# ``_CONNECTION_ERRORS``, so this ``KeyError`` propagates completely
-# untyped — never wrapped, never triggering the self-heal.
+# HISTORY: SDK 2.0.0 failed every request in flight at a socket drop with a raw
+# ``builtins.KeyError(<request-uuid>)`` from its response routing (probe-confirmed on a throwaway 3.1.5
+# container), so the seams caught ``KeyError`` as transport. That arm is RETIRED: SDK 3.0.0 raises its own
+# typed ``surrealdb.errors.ConnectionUnavailableError`` (a ``TransportError``) for an in-flight drop
+# (pinned live by ``test_sdk3_workaround_retirement.py::TestAnInFlightDropIsATypedSdkTransportError``).
 #
-# SCOPING NOTE for the GREEN implementer: both try blocks this classification
-# must widen to catch ``KeyError`` in — ``_query``'s
-# ``return await connection.query(statement, params or {})`` and
-# ``_txn_query_raw``'s ``await connection.query_raw(...)`` /
-# ``connection.check_response_for_error(...)`` — contain ONLY the SDK call
-# itself (verified by reading both try bodies), so classifying ANY KeyError
-# raised inside these specific try blocks as a connection fault cannot
-# misclassify a KeyError from our own code — there is no own-code path inside
-# either try block today. Keep the except scoped this tight; do not widen the
-# try block to also cover post-processing logic that might raise its own
-# KeyError.
+# THE PINS BELOW, by behaviour:
+# * an SDK transport error on a request surfaces as ``_txn.SurrealOutcomeUnknownError`` (F14 — a
+#   ``SurrealConnectionError`` subclass: the request was sent and no reply came, so the engine may have
+#   committed it), drops the cached connection, and the NEXT call heals on exactly one new connection;
+# * the DUAL of the retired arm: a ``KeyError`` is now a BUG wherever it comes from — it propagates as
+#   itself, never laundered into a transport error (a transport wrapper would make the caller reconnect
+#   and retry around a programming error).
+# The injected error is ``ConnectionUnavailableError``, which exists on BOTH SDK 2.0.0 (a bare
+# ``SurrealError``) and 3.0.0 (a ``TransportError``), so these pins collect on either.
 # ---------------------------------------------------------------------------
 
-# A realistic SDK request-correlation id — the SDK routes in-flight requests
-# by a UUID4 key, so the raw KeyError this bug raises always carries one.
-_SDK_ROUTING_KEY_ERROR_TOKEN = "3fae6a02-9c1e-4c1b-8f3a-77c2e4a9b001"
+# A realistic SDK request-correlation id, carried in the injected error's text.
+_SDK_INFLIGHT_DROP_TEXT = "socket dropped with request 3fae6a02-9c1e-4c1b-8f3a-77c2e4a9b001 in flight"
 
 
-class TestQuerySeamSdkKeyErrorClassification:
-    """P5-C1c hardening #3: a KeyError raised BY THE SDK CALL ITSELF inside
-    ``_query`` must surface as ``SurrealConnectionError`` and self-heal —
-    mirrors the identical seam on ``SurrealManifest``/``SurrealCodeGraph``
-    (see their own test files' matching section).
+def _outcome_unknown_type() -> type[BaseException]:
+    """``store._txn.SurrealOutcomeUnknownError`` (R5 rider 2 / F14), looked up at CALL time so an unbuilt
+    seam fails the pin's own assertion rather than this module's collection."""
+    from loremaster.store import _txn as txn_module  # noqa: PLC0415
 
-    LOAD-BEARING: must FAIL RED against current code — ``_query``'s except
-    clause is ``except _CONNECTION_ERRORS``; ``KeyError`` is none of those, so
-    it propagates completely untyped today.
+    unknown_type = getattr(txn_module, "SurrealOutcomeUnknownError", None)
+    assert unknown_type is not None, (
+        "store._txn.SurrealOutcomeUnknownError does not exist (R5 rider 2 / F14): an SDK transport "
+        "error on a request has no outcome-unknown type to surface as"
+    )
+    assert issubclass(unknown_type, SurrealConnectionError), (
+        "SurrealOutcomeUnknownError must remain a SurrealConnectionError, so every transport handler "
+        "still sees it"
+    )
+    return cast("type[BaseException]", unknown_type)
+
+
+def _count_sdk_connections(monkeypatch: pytest.MonkeyPatch) -> Callable[[], int]:
+    """Count every SDK websocket connection OBJECT created from here on.
+
+    Counts at the SDK's own class, not at a lore factory NAME, so the count holds whichever factory an
+    owner calls (``AsyncSurreal`` directly at HEAD; the shared connection factory after R5) — and an
+    SDK-internal auto-reconnect, which reuses its own object, is correctly not a NEW connection.
     """
+    created = 0
+    real_init = AsyncWsSurrealConnection.__init__
 
-    async def test_sdk_routing_key_error_surfaces_as_connection_error_and_heals(
+    def _counting_init(self: Any, *args: Any, **kwargs: Any) -> None:
+        nonlocal created
+        created += 1
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncWsSurrealConnection, "__init__", _counting_init)
+    return lambda: created
+
+
+class TestQuerySeamSdkTransportErrorClassification:
+    """P5-C1c hardening #3 (re-ruled, F10/F14): an SDK transport error raised BY THE SDK CALL inside
+    ``SurrealStore``'s single-statement seam surfaces as ``SurrealOutcomeUnknownError`` and self-heals;
+    a ``KeyError`` there propagates as the bug it is. Mirrors the identical seam on
+    ``SurrealManifest`` / ``SurrealCodeGraph`` (their files' matching section)."""
+
+    async def test_an_sdk_transport_error_surfaces_as_outcome_unknown_and_heals(
         self, surreal_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch  # noqa: F811
     ) -> None:
-        # Arrange: a fresh, ready store on a REAL connection (counted, so the
-        # eventual reconnect can be pinned to exactly one NEW connection).
-        factory, get_call_count = _plain_counting_connection_factory()
-        monkeypatch.setattr("loremaster.store.surreal.AsyncSurreal", factory)
+        unknown_type = _outcome_unknown_type()
+        connections = _count_sdk_connections(monkeypatch)
         live_store = SurrealStore(
             url=surreal_env.url,
             namespace=surreal_env.namespace,
@@ -2335,70 +2361,92 @@ class TestQuerySeamSdkKeyErrorClassification:
         )
         try:
             await live_store.ensure_ready()
-            assert get_call_count() == 1
+            assert connections() == 1
             broken_connection = live_store._connection
             assert broken_connection is not None
+            injected = ConnectionUnavailableError(_SDK_INFLIGHT_DROP_TEXT)
 
-            # A deterministic stand-in for the SDK's own response-routing
-            # failure (see the module note above) — patched on the LIVE
-            # connection INSTANCE itself, exactly the technique
-            # ``_counting_connection_factory`` already uses for ``signin``.
-            async def _raise_routing_key_error(*args: object, **kwargs: object) -> Any:
-                raise KeyError(_SDK_ROUTING_KEY_ERROR_TOKEN)
+            async def _raise_transport_error(*args: object, **kwargs: object) -> Any:
+                raise injected
 
-            monkeypatch.setattr(broken_connection, "query", _raise_routing_key_error)
+            monkeypatch.setattr(broken_connection, "query", _raise_transport_error)
 
-            # Act / Assert: the raw KeyError must surface as a typed
-            # SurrealConnectionError (never bare) AND drop the connection.
-            with pytest.raises(SurrealConnectionError):
+            # A READ (count) — F14 holds for every request, not only writes: the seam cannot tell a
+            # read from a write, so a verb-sniffing build fails here.
+            with pytest.raises(SurrealConnectionError) as caught:
                 await live_store.count()
-            assert live_store._connection is None
+            assert isinstance(caught.value, unknown_type), (
+                f"an SDK transport error on a request surfaced as {type(caught.value).__name__}, not "
+                f"SurrealOutcomeUnknownError (F14: the request was sent and no reply came back)"
+            )
+            assert caught.value.__cause__ is injected, "the SDK's own error must stay the cause"
+            assert live_store._connection is None, "a transport fault must drop the cached handle"
 
-            # Recovery: the NEXT call reconnects — exactly one NEW
-            # connection, never a wedge and never a silent reconnect storm.
+            # Recovery: the NEXT call reconnects — exactly one NEW connection, never a wedge and
+            # never a silent reconnect storm.
             assert await live_store.count() == 0
-            assert get_call_count() == 2
+            assert connections() == 2
+        finally:
+            await live_store.close()
+
+    async def test_a_keyerror_propagates_as_a_bug_not_as_transport(
+        self, surreal_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch  # noqa: F811
+    ) -> None:
+        live_store = SurrealStore(
+            url=surreal_env.url,
+            namespace=surreal_env.namespace,
+            database=surreal_env.database,
+            dim=surreal_env.dim,
+            user=surreal_env.user,
+            password=surreal_env.password,
+        )
+        try:
+            await live_store.ensure_ready()
+            connection = live_store._connection
+            assert connection is not None
+            bug = KeyError("a lookup lore got wrong")
+
+            async def _raise_bug(*args: object, **kwargs: object) -> Any:
+                raise bug
+
+            monkeypatch.setattr(connection, "query", _raise_bug)
+            with pytest.raises(BaseException) as caught:
+                await live_store.count()
+            assert caught.value is bug, (
+                f"a KeyError surfaced as {type(caught.value).__name__}: {caught.value!r} — the "
+                f"KeyError-as-transport arm is RETIRED (R6 F10, drop row #1); a KeyError is a bug and "
+                f"must propagate as itself, never be laundered into a transport error"
+            )
         finally:
             await live_store.close()
 
 
-class _FakeSdkRoutingKeyErrorConnection:
-    """A minimal stand-in for a live SDK connection whose ``query_raw`` raises
-    the SDK's own raw response-routing ``KeyError`` (see the module note
-    above) — deterministic, no live server or socket kill needed, since
-    :func:`~loremaster.store._txn.execute_transaction` is fully
-    dependency-injected (``acquire``/``drop``), unlike the single-statement
-    ``_query`` seam above which needs a real connected instance.
-    """
+class _FakeTransportErrorConnection:
+    """A minimal stand-in for a live SDK connection whose ``query_raw`` raises ``error`` —
+    deterministic, no live server or socket kill needed, since
+    :func:`~loremaster.store._txn.execute_transaction` is fully dependency-injected
+    (``acquire``/``drop``)."""
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
 
     async def query_raw(self, statement: str, params: dict[str, Any]) -> dict[str, Any]:
-        raise KeyError(_SDK_ROUTING_KEY_ERROR_TOKEN)
+        raise self._error
 
     def check_response_for_error(self, response: Any, method: str) -> None:  # pragma: no cover
         raise AssertionError("query_raw must raise before this is ever reached")
 
 
-class TestTxnSdkKeyErrorClassification:
-    """P5-C1c hardening #3, shared seam: :func:`~loremaster.store._txn.
-    execute_transaction`'s ``query_raw`` call must classify the SAME SDK
-    routing ``KeyError`` the single-statement ``_query`` seams do — the
-    identical gap lives in the SHARED ``_txn_query_raw`` (used by
-    ``replace_file`` / ``replace`` / ``build_file_graph`` /
-    ``delete_file_graph`` across all three ported classes), so this pins it
-    ONCE against the shared function directly rather than duplicating the
-    probe through all three callers (the classification logic is not
-    per-class code, unlike the compare-and-swap hardening above).
+class TestTxnSdkTransportErrorClassification:
+    """P5-C1c hardening #3, shared seam (re-ruled, F10/F14): :func:`~loremaster.store._txn.
+    execute_transaction`'s ``query_raw`` call classifies the SAME SDK transport error the
+    single-statement seams do — pinned ONCE against the shared function (used by ``replace_file`` /
+    ``replace`` / ``build_file_graph`` / ``delete_file_graph``)."""
 
-    LOAD-BEARING: must FAIL RED against current code — ``_txn_query_raw``'s
-    except clause is ``except _CONNECTION_ERRORS`` (same tuple as
-    ``_query``); a raw ``KeyError`` from ``query_raw`` propagates completely
-    untyped, and ``drop`` is never invoked.
-    """
-
-    async def test_sdk_routing_key_error_surfaces_as_connection_error_and_drops(self) -> None:
-        # Arrange: a fake connection whose query_raw call IS the failure —
-        # no live server needed, execute_transaction is fully DI'd.
-        fake_connection = _FakeSdkRoutingKeyErrorConnection()
+    async def test_an_sdk_transport_error_surfaces_as_outcome_unknown_and_drops(self) -> None:
+        unknown_type = _outcome_unknown_type()
+        injected = ConnectionUnavailableError(_SDK_INFLIGHT_DROP_TEXT)
+        fake_connection = _FakeTransportErrorConnection(injected)
         dropped: list[Any] = []
 
         async def _acquire() -> _SurrealConnection:
@@ -2407,9 +2455,7 @@ class TestTxnSdkKeyErrorClassification:
         async def _drop(connection: Any) -> None:
             dropped.append(connection)
 
-        # Act / Assert: the raw KeyError must surface as SurrealConnectionError
-        # and the transaction's connection must be dropped exactly once.
-        with pytest.raises(SurrealConnectionError):
+        with pytest.raises(SurrealConnectionError) as caught:
             await execute_transaction(
                 "BEGIN;\nDELETE chunk;\nCOMMIT;\n",
                 {},
@@ -2417,7 +2463,35 @@ class TestTxnSdkKeyErrorClassification:
                 drop=_drop,
                 url="ws://127.0.0.1:19555/rpc",  # unreachable — never actually dialed
             )
-        assert dropped == [fake_connection]
+        assert isinstance(caught.value, unknown_type), (
+            f"an SDK transport error on a transaction surfaced as {type(caught.value).__name__}, not "
+            f"SurrealOutcomeUnknownError (F14: the COMMIT may have landed with the reply lost)"
+        )
+        assert caught.value.__cause__ is injected, "the SDK's own error must stay the cause"
+        assert dropped == [fake_connection], "the transaction's connection must be dropped exactly once"
+
+    async def test_a_keyerror_propagates_as_a_bug_not_as_transport(self) -> None:
+        bug = KeyError("a lookup lore got wrong")
+        fake_connection = _FakeTransportErrorConnection(bug)
+
+        async def _acquire() -> _SurrealConnection:
+            return cast("_SurrealConnection", fake_connection)
+
+        async def _drop(connection: Any) -> None:
+            del connection
+
+        with pytest.raises(BaseException) as caught:
+            await execute_transaction(
+                "BEGIN;\nDELETE chunk;\nCOMMIT;\n",
+                {},
+                acquire=_acquire,
+                drop=_drop,
+                url="ws://127.0.0.1:19555/rpc",  # unreachable — never actually dialed
+            )
+        assert caught.value is bug, (
+            f"a KeyError surfaced as {type(caught.value).__name__}: {caught.value!r} — the "
+            f"KeyError-as-transport arm is RETIRED (R6 F10, drop row #1); it must propagate as itself"
+        )
 
 
 
@@ -2441,7 +2515,7 @@ class TestTxnSdkKeyErrorClassification:
 #      message is this block's subject.
 #
 # Every case here is fully DI'd against a scripted fake connection (the same
-# pattern as ``TestTxnSdkKeyErrorClassification`` above) — no live server, no
+# pattern as ``TestTxnSdkTransportErrorClassification`` above) — no live server, no
 # genuine write-write race, fully deterministic.
 # ===========================================================================
 

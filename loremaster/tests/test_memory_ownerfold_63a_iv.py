@@ -58,7 +58,14 @@ _OWNER_AGENT_KW = "owner_agent"
 
 
 def _bare_s(value: Any) -> str:
-    """Bare id of a str OR a RecordID (the admin SELECT returns RecordID objects) — §REPRO helper."""
+    """Bare id of a str OR a RecordID (the admin SELECT returns RecordID objects) — §REPRO helper.
+
+    A RecordID's key comes from its PARTS (``.id``), never from ``str(RecordID)``: SDK 3.0 renders a
+    digit-led key bracketed (``principal:⟨3abc⟩``), and an engine-minted principal id is digit-led about
+    one time in four (R7 (d), packet 66)."""
+    key = getattr(value, "id", None)
+    if getattr(value, "table_name", None) is not None and key is not None:
+        return str(key)
     text = str(value)
     return text.partition(":")[2] or text
 
