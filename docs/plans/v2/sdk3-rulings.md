@@ -363,3 +363,27 @@ Consumer Law + Trust Doctrine: a served response is trustworthy iff an agent act
 wrong in a way the response did not name (Leg 1 scope diff; Leg 2 forgery pins by construction). Sharpest here:
 outcome-unknown vs failed (F14/D1/F18), served id text (F15/C9), refused-file naming (R4), retry teaching prose. The
 builder and cold-audit briefs carry this as a numbered first criterion; the design sidecar rules under it.
+
+## R18 — tenacity used NATIVELY, not as a jitter RNG behind hand-rolled loops (lead, 2026-11-08; amends R12-F22; sidecar MAY amend)
+Operator, 2026-11-08: *"I got the sense that we're not fully using Tenacity and instead are plugging it in to satisfy
+the no hand rolling bypassing the spirit of the rule. Is that true?"* — lead's answer: partly yes. `loresigil.backoff`
+drives `wait_random_exponential` through a fake `RetryCallState` while every loop stays hand-written (#202's fence), and
+R12-F22 kept `_txn_conflict_backoff_seconds` + 9 draw-COUNT pins, which forced a `_wait` that pre-checks `stop` and then
+MP-B's "slept == drawn" pin — tests of the old implementation shaping production around tenacity. Under R11's spirit:
+- **`retry_on_conflict` is a native `AsyncRetrying`:** `stop=` composed from `stop_after_attempt`/`stop_after_delay`
+  (per-call deadline), `wait=wait_random_exponential(...)` DIRECTLY (full jitter), `retry=retry_if_exception_type(
+  RetryableConflictSignal)` (classification stays in the seam — sharing, not routing), `retry_error_callback` raising
+  `TxnContentionExhaustedError` with the attempt count and the last cause, `before_sleep`/`after` hooks for logging, an
+  `async def` callable (tenacity never awaits a plain callable's coroutine). `_txn_conflict_backoff_seconds` and its
+  private draw are DELETED; so is the `stop`-peeking `_wait` adapter.
+- **Pins move from implementation to behaviour (and pin it like this):** attempts ≤ budget and deadline honoured; every
+  slept delay lies in `[0, min(cap, base·2^(n-1)))`; ≥8-way racers do NOT sleep identical sequences (decorrelation —
+  T2's 16-way contention stays green); exhaustion = the typed error + exactly one log record with the last cause; a
+  non-conflict error propagates untouched after one attempt; a mutation of the seam's classifier reddens the retry
+  path. The 9 draw-count pins (`_record_shared_jitter`) and MP-B's slept==drawn pin are RETIRED as implementation
+  pins (R9 D3: pins encoding a retired design are contract surface).
+- **Scout's connect loop:** `async for attempt in AsyncRetrying(...)` with native wait/stop — no detached RNG call.
+- **Packet 68 firmed:** the five other loops become native `AsyncRetrying`/`Retrying`, and `loresigil.backoff`'s fake-
+  `RetryCallState` shim is DELETED (not "if no caller needs it"); `additive_jitter` for Retry-After stays only if
+  tenacity has no native form (check `wait_combine`/`wait_chain` against the installed source first).
+Routing: contract round 7 (R16 budget) rewrites the retry pins; round 6 is in flight and is not steered mid-run.
