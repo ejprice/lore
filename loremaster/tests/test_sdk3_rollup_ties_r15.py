@@ -57,7 +57,7 @@ from loremaster.store._txn import SurrealStoreError, parse_served_instant, serve
 from loremaster.store.surreal_schema import FINDING_TABLE, MESSAGE_TABLE, TASK_TABLE
 from surrealdb import RecordID
 from test_rollup_extension import _SESSION, _RollupCtx
-from test_sdk3_retirement_pins_66d import _corrupt_created_at
+from test_sdk3_retirement_pins_66d import _corrupt_stamp
 
 # --- THE SERVED TEXT, pinned ONCE (RULING-15 §3.3; swap the agreed strings here) -------------------
 
@@ -732,7 +732,14 @@ class TestARefusedMessageRowIsNamed:
     ) -> None:
         [seq] = await tie_ctx.forced_messages([_TIE_STAMP])
         key = await tie_ctx.message_record_key(seq)
-        await _corrupt_created_at(tie_ctx._env, MESSAGE_TABLE, _DIRTY_MESSAGE_STAMP)
+        await _corrupt_stamp(
+            tie_ctx._env,
+            table=MESSAGE_TABLE,
+            column="created_at",
+            declared="datetime",
+            value=_DIRTY_MESSAGE_STAMP,
+            row=None,
+        )
 
         with pytest.raises(SurrealStoreError) as raised:
             await tie_ctx.served_rollup(since=_SINCE, limit=None)

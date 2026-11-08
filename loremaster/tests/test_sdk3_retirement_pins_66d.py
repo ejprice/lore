@@ -601,19 +601,23 @@ class TestARequiredDatetimeColumnIsCheckedNeverCoerced:
         assert stored_datetime(None, table=_D4_TABLE, row_id=_D4_ROW_ID, column="expires_at66d") is None
 
 
-async def _corrupt_created_at(env: SurrealEnv, table: str, value: str | list[str]) -> None:
-    """Give every ``table`` row the non-datetime ``created_at`` ``value``, then restore the column's declared
-    type: the engine does not re-validate existing rows on ``DEFINE FIELD OVERWRITE`` (probed on 3.3.5), so
-    the row stays dirty under the current schema — the state a long-lived store can hold and a virgin DB
-    cannot. ``value`` has no default: which type the row holds decides which reads can reach it (a
-    ``stamp > $since`` page admits an array but never a string — see the rollup refusal pin in r15)."""
+async def _corrupt_stamp(
+    env: SurrealEnv, *, table: str, column: str, declared: str, value: str | list[str], row: RecordID | None
+) -> None:
+    """Give ``row`` (every ``table`` row when ``None``) the non-datetime ``column`` value ``value``, then
+    restore the column's ``declared`` type: the engine does not re-validate existing rows on ``DEFINE FIELD
+    OVERWRITE`` (probed on 3.3.5), so the row stays dirty under the current schema — the state a long-lived
+    store can hold and a virgin DB cannot, and the ONE door to it (an admin retype, RULING-17 §1).
+    Nothing defaults: which column, and which type the row holds, decide which reads can reach it (a
+    ``stamp > $since`` page admits an array but never a string — #597)."""
+    where = " WHERE id = $row" if row is not None else ""
     admin = await connect_admin(env)
     try:
-        await admin.query(f"DEFINE FIELD OVERWRITE created_at ON {table} TYPE any")
-        dirty: dict[str, Any] = {"stamp": value}
-        await admin.query(f"UPDATE {table} SET created_at = $stamp RETURN NONE", dirty)
-        await admin.query(f"DEFINE FIELD OVERWRITE created_at ON {table} TYPE datetime")
-        raw = await admin.query(f"SELECT VALUE created_at FROM {table}")
+        await admin.query(f"DEFINE FIELD OVERWRITE {column} ON {table} TYPE any")
+        dirty: dict[str, Any] = {"stamp": value, "row": row}
+        await admin.query(f"UPDATE {table} SET {column} = $stamp{where} RETURN NONE", dirty)
+        await admin.query(f"DEFINE FIELD OVERWRITE {column} ON {table} TYPE {declared}")
+        raw = await admin.query(f"SELECT VALUE {column} FROM {table}{where}", {"row": row})
         assert raw == [[value]], f"the dirty row was not written: {raw!r}"
     finally:
         await admin.close()
@@ -639,7 +643,14 @@ class TestADirtyRowIsRefusedWhereItIsServed:
         try:
             task_id = await ledger.create_task(subject="s66d", description="d66d", created_by="reqd-pins-66")
             assert isinstance((await ledger.get_task(task_id)).created_at, datetime)
-            await _corrupt_created_at(store_env, "task", _LEGACY_STAMP_TEXT)
+            await _corrupt_stamp(
+                store_env,
+                table="task",
+                column="created_at",
+                declared="datetime",
+                value=_LEGACY_STAMP_TEXT,
+                row=None,
+            )
             with pytest.raises(SurrealStoreError) as raised:
                 await ledger.get_task(task_id)
             _assert_served_refusal(raised.value, table="task", row_key=task_id, column="created_at")
@@ -658,9 +669,138 @@ class TestADirtyRowIsRefusedWhereItIsServed:
                 "s66d", "b66d", area="sdk3", category="retirement_pin", created_by="reqd-pins-66"
             )
             assert isinstance((await ledger.get(filed.number)).created_at, datetime)
-            await _corrupt_created_at(store_env, "finding", _LEGACY_STAMP_TEXT)
+            await _corrupt_stamp(
+                store_env,
+                table="finding",
+                column="created_at",
+                declared="datetime",
+                value=_LEGACY_STAMP_TEXT,
+                row=None,
+            )
             with pytest.raises(SurrealStoreError) as raised:
                 await ledger.get(filed.number)
             _assert_served_refusal(raised.value, table="finding", row_key=filed.id, column="created_at")
+        finally:
+            await ledger.close()
+
+
+# ======================================================================================================
+# #597 (RULING-17 / R46) — PIN THE MISS. A non-datetime stamp sits outside every cursor-paged leg.
+# ======================================================================================================
+
+#: The KNOWN BOUND this pin asserts, carried by every assertion that would go red the day it is closed.
+_KNOWN_BOUND_597 = (
+    "this is a KNOWN BOUND (#597) — a non-datetime stamp is writable only by an admin retype of the column "
+    "(store reference §1.4), and it sits outside every cursor-paged leg and its count; if you closed it "
+    "deliberately, delete this pin and say so"
+)
+#: The dirty STRING stamp. Were it a datetime it would sort ABOVE ``_BEFORE_EVERY_ROW``: the TYPE hides it.
+_FUTURE_STAMP_TEXT = "2031-05-06T07:08:09.186697518Z"
+_BEFORE_EVERY_ROW = datetime(2000, 1, 1, tzinfo=UTC)
+_PIN_597_LIMIT = 20
+
+
+async def _leg_or_known_bound[Window](read: Awaitable[Window]) -> Window:
+    """Await a leg read over the string-stamped row. A refusal here means the leg now SEES the row — the
+    hole closed by refusing — so it fails carrying the KNOWN BOUND text, never as a bare store error."""
+    try:
+        return await read
+    except SurrealStoreError as error:
+        pytest.fail(f"{_KNOWN_BOUND_597}\nthe leg refused the string-stamped row: {error}")
+
+
+class TestANonDatetimeStampIsOutsideEveryLeg:
+    """#597 pinned, both stamp-paged ledgers: a STRING stamp written through the admin-retype door is
+    INVISIBLE to the leg (rows AND total; a healthy row beside it stays visible), while the single-row read
+    REFUSES it (R34). Control: an ARRAY stamp (the S6 shape) IS admitted by ``> $since``, so the leg's own
+    read refuses — the pin draws exactly the admit/exclude line the #597 probe measured.
+
+    GREEN at HEAD by design: it asserts the hole. It goes RED the day a leg sees or refuses the string row."""
+
+    async def test_a_string_task_stamp_is_invisible_to_the_leg_while_get_task_refuses(
+        self, store_env: SurrealEnv
+    ) -> None:
+        ledger = TaskLedger(**_ledger_kwargs(store_env))
+        await ledger.ensure_ready()
+        try:
+            healthy = await ledger.create_task(subject="h597", description="d", created_by="pin-597")
+            await ledger.claim_task(healthy, "pin-597")
+            dirty = await ledger.create_task(subject="x597", description="d", created_by="pin-597")
+            await ledger.claim_task(dirty, "pin-597")
+            before = await ledger.updated_since(_BEFORE_EVERY_ROW, limit=_PIN_597_LIMIT)
+            assert {task.id for task in before.rows} == {healthy, dirty} and before.total == 2, before
+
+            await _corrupt_stamp(
+                store_env,
+                table="task",
+                column="updated_at",
+                declared="option<datetime>",
+                value=_FUTURE_STAMP_TEXT,
+                row=RecordID("task", dirty),
+            )
+            window = await _leg_or_known_bound(ledger.updated_since(_BEFORE_EVERY_ROW, limit=_PIN_597_LIMIT))
+            assert [task.id for task in window.rows] == [healthy] and window.total == 1, (
+                f"{_KNOWN_BOUND_597}\n{window!r}"
+            )
+            with pytest.raises(SurrealStoreError) as refused:
+                await ledger.get_task(dirty)
+            _assert_served_refusal(refused.value, table="task", row_key=dirty, column="updated_at")
+
+            # CONTROL: an ARRAY stamp passes ``> $since``, reaches the mapper, and the LEG refuses.
+            await _corrupt_stamp(
+                store_env,
+                table="task",
+                column="updated_at",
+                declared="option<datetime>",
+                value=[_FUTURE_STAMP_TEXT],
+                row=RecordID("task", dirty),
+            )
+            with pytest.raises(SurrealStoreError) as admitted:
+                await ledger.updated_since(_BEFORE_EVERY_ROW, limit=_PIN_597_LIMIT)
+            assert dirty in str(admitted.value) and "column 'updated_at' holds list, " in str(admitted.value)
+        finally:
+            await ledger.close()
+
+    async def test_a_string_finding_stamp_is_invisible_to_the_leg_while_get_refuses(
+        self, store_env: SurrealEnv
+    ) -> None:
+        ledger = FindingLedger(**_ledger_kwargs(store_env))
+        await ledger.ensure_ready()
+        try:
+            healthy = await ledger.report("h597", "b", area="sdk3", category="pin_597", created_by="pin-597")
+            dirty = await ledger.report("x597", "b", area="sdk3", category="pin_597", created_by="pin-597")
+            before = await ledger.filed_since(_BEFORE_EVERY_ROW, limit=_PIN_597_LIMIT)
+            assert {finding.number for finding in before.rows} == {healthy.number, dirty.number}, before
+            assert before.total == 2, before
+
+            await _corrupt_stamp(
+                store_env,
+                table="finding",
+                column="created_at",
+                declared="datetime",
+                value=_FUTURE_STAMP_TEXT,
+                row=RecordID("finding", dirty.id),
+            )
+            window = await _leg_or_known_bound(ledger.filed_since(_BEFORE_EVERY_ROW, limit=_PIN_597_LIMIT))
+            assert [finding.number for finding in window.rows] == [healthy.number] and window.total == 1, (
+                f"{_KNOWN_BOUND_597}\n{window!r}"
+            )
+            with pytest.raises(SurrealStoreError) as refused:
+                await ledger.get(dirty.number)
+            _assert_served_refusal(refused.value, table="finding", row_key=dirty.id, column="created_at")
+
+            await _corrupt_stamp(
+                store_env,
+                table="finding",
+                column="created_at",
+                declared="datetime",
+                value=[_FUTURE_STAMP_TEXT],
+                row=RecordID("finding", dirty.id),
+            )
+            with pytest.raises(SurrealStoreError) as admitted:
+                await ledger.filed_since(_BEFORE_EVERY_ROW, limit=_PIN_597_LIMIT)
+            assert dirty.id in str(admitted.value) and "column 'created_at' holds list, " in str(
+                admitted.value
+            )
         finally:
             await ledger.close()
