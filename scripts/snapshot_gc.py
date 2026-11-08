@@ -120,7 +120,12 @@ class GcPlan:
 
 
 def _to_aware_utc(value: datetime) -> datetime:
-    """Normalise a datetime to timezone-aware UTC (a naive value is UTC)."""
+    """Normalise a datetime to timezone-aware UTC (a naive value is UTC).
+
+    NAMED BOUND (RULING-16 S3, R45): inputs are CLI text and ``SnapshotSummary.created_at`` text (aware by
+    construction); re-open trigger: the day ``SnapshotSummary.created_at`` becomes a ``datetime``, route it
+    through ``required_datetime`` and delete this normaliser's naive branch.
+    """
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
