@@ -247,3 +247,29 @@ withdrawn, and so is #202's "deliberately NOT churned" fence on `_txn.retry_on_c
   deadline, the rollback log per attempt, and the attempt-count/exhaustion fate.
 - **Outside this packet:** the five loops that already use tenacity's wait but loop by hand go to packet **68**
   (INDEX row), after 66 and before 65-cut.
+
+## R12 — round-4 forks (lead, under the autonomy grant, 2026-11-07; operator MAY OVERTURN)
+Contract round 4 committed `b655971` (packet doc §ROUND 4 R4.0–R4.13, Appendix E). Its forks, ruled:
+- **F18 — D1 reaches the `SurrealStoreError` family too (14 sites).** `briefs.BriefLedger.publish` hands back the
+  version it minted when a publish that may have committed fails, so the version can be minted twice. The other ~39
+  broad-catch sites each get a one-line verdict in the inventory; a pin only where the site renders a definite failure.
+- **F19 — packet 58's re-size by rows is pinned at a SHRUNK cap** (monkeypatched, per F21), never a 50,000-row
+  fixture. 58 is dormant: its own contract owner writes those pins; SDK3 states the bound.
+- **F20 — F14 does NOT reach scout or the inbox awaiter.** F13 keeps their raw-error contract.
+- **F21 — the row cap and the row-warn threshold are read live from `_txn`.**
+- **F22 — R11 amended (its "test_retry_seam unchanged" clause contradicted deleting the draw):**
+  `_txn_conflict_backoff_seconds` stays as the ONE conflict-jitter source (9 consumers via `_record_shared_jitter`)
+  but DELEGATES to tenacity `wait_random_exponential` through `loresigil.backoff`; its private `uniform` draw goes.
+  `test_backoff_seam`'s source-text clause (a spelling check) retires; its behaviour clauses stay.
+- **F-a — fakes answer per SDK version for the interim** (so HEAD stays green until the build lands); the SDK-2.0
+  branch is a drop-list row the builder deletes in the same commit that pins `surrealdb==3.0.0`.
+- **F-b — a server-ANSWERED error (e.g. `NotAllowedError`) is a definite failure, never outcome-unknown.** Pinned:
+  F14 covers transport only, and an "unknown" that should be "failed" teaches agents to ignore the label.
+- **F-c — not pinned** (whether a propagating `KeyError` keeps the connection is not a served behaviour).
+- **F-d — C7's KeyError-tuple reach check retires**: after the arm's removal it finds nothing (a vacuous guard).
+- **C9 is an SDK3 REGRESSION, not noise.** `test_fixwave_a28_63c_i_a::TestTheMeasuredCountsAreTypedFields63cIAa28`
+  passes 42/42 ×3 at HEAD on SDK 2.0 (lead, 2026-11-07) and fails nondeterministically on BOTH SDK3 references
+  (`owner_classification 'foreign'`) — round 4's "0 attributable reds" is wrong for it. Contract round 5 pins it
+  deterministically (a digit-led / non-word principal key) and the builder fixes the comparison.
+- **Raised to the operator:** whether reusing the `_catch_sites` walker for D1's catch-site reach pin is a new
+  source scanner (global law: a new scanner needs approval). Kept pending the answer.
