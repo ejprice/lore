@@ -307,3 +307,12 @@ on the round-5 reference (C9 fixed there).
 - Found by round 5, recorded: SDK 2.0 is already wrong at HEAD for NON-WORD principal/agent keys (governed gate
   denies the owner; memory replay revives a predecessor) — latent today (lore mints no non-word keys), live under
   SDK 3.0 for ~28% of principals (digit-led). The round-5 pins cover both.
+
+## R14 — the catch-site reach pins (operator, 2026-11-07: "B")
+Both walker-derived reach pins STAY — `test_sdk3_served_outcome::TestEveryCatchSiteThatNamesTheTransportErrorIsAdjudicated`
+(round 4) and `::TestEveryStoreErrorFamilyCatchSiteIsAdjudicated` (round 5). They reuse the ONE catch-site walker
+(`loremaster/tests/_catch_sites.py`, packet 58 amendment 9) and are approved as scanners. **Round 5's clause that
+checks each "pinned" verdict row names an existing test is REMOVED** (a test about tests). Stated bound: the walker
+sees only handlers that name the class (or its family); a bare `except Exception` site is adjudicated by hand
+(§R5.1's 39-row table) and is not guarded — re-open trigger: a served false "failed" traced to such a site.
+Owner of the removal: contract round 6 if the adversary sends one; otherwise a minimal contract touch before the builder.
