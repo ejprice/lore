@@ -124,6 +124,7 @@ from lorescribe.astroid_parse import clear_resolution_cache, reset_search_path_m
 from lorescribe.models import Chunk, ChunkContext
 from lorescribe.python_ast import PythonAstChunker
 from pydantic import SecretStr
+from sdk3_shape_fakes import route_connections
 from surrealdb import AsyncSurreal as _RealAsyncSurreal
 from surrealdb import RecordID
 from surrealdb.errors import ConnectionUnavailableError, ErrorKind, ServerError
@@ -2774,10 +2775,10 @@ def _plain_counting_connection_factory() -> tuple[Callable[[str], Any], Callable
     """
     call_count = 0
 
-    def factory(url: str) -> Any:
+    def factory(url: str, **options: Any) -> Any:
         nonlocal call_count
         call_count += 1
-        return _RealAsyncSurreal(url)
+        return _RealAsyncSurreal(url, **options)
 
     return factory, lambda: call_count
 
@@ -2795,7 +2796,7 @@ class TestDropConnectionCompareAndSwap:
         self, surreal_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch  # noqa: F811
     ) -> None:
         factory, get_call_count = _plain_counting_connection_factory()
-        monkeypatch.setattr("loremaster.graph_surreal.AsyncSurreal", factory)
+        route_connections(monkeypatch, factory, modules=("loremaster.graph_surreal",))
         fresh_graph = SurrealCodeGraph(
             url=surreal_env.url,
             namespace=surreal_env.namespace,

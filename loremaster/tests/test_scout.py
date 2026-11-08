@@ -120,6 +120,7 @@ from loremaster.store.surreal_schema import (
     SNAPSHOT_TABLE,
 )
 from loresigil.testing import FakeEmbedder
+from sdk3_shape_fakes import one_statement_answer
 from surrealdb.errors import ConnectionUnavailableError
 from test_comms_await import drop_the_sdk_transport_error_from_the_shared_boundary
 
@@ -903,16 +904,16 @@ class _FakeCommandConnection:
             )
         upper = statement.strip().upper()
         if upper.startswith("LIVE SELECT"):
-            return self._live_uuid
+            return one_statement_answer(self._live_uuid)  # R12 F-a: per SDK version
         if upper.startswith("SELECT"):
-            return list(self.pending.values())
+            return one_statement_answer(list(self.pending.values()))
         if upper.startswith(("UPDATE", "DELETE")):
             blob = statement + repr(params)
             for key in list(self.pending):
                 if key in blob:
                     self.pending.pop(key, None)
-            return []
-        return []
+            return one_statement_answer([])
+        return one_statement_answer([])
 
     async def live(self, table: Any, *args: Any, **kwargs: Any) -> Any:
         # Whole-table LIVE — the subscriber must NOT use this (it re-fires on every

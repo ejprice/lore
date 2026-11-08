@@ -46,6 +46,7 @@ from _surreal_harness import (
 from loremaster.keeps import KeepStore
 from loremaster.principals import PrincipalHasKeepsError, PrincipalStore
 from surrealdb import RecordID
+from test_memory_replay_fidelity_63b_ib import dirty_world  # noqa: F401 - the replay fixture
 
 
 # The renderings an SDK release has shipped for a string record key (R7 grounds), applied to EVERY
@@ -482,3 +483,217 @@ class TestTheOwnerClassifierRecognisesTheOperatorWhateverItsKey:
             f"{result.reason!r}"
         )
         assert foreign_key in sample, f"premise: the foreign owner is sampled: {result.reason!r}"
+
+
+# ----------------------------------------------------------------------------------------------------
+# Round 5 — R12 "C9's class is PINNED": one record compared (or served) through two text forms, at the
+# siblings
+# the round-5 sweep found. Each pin forces the SDK renderings (``_rendered``) so it is deterministic, and uses
+# keys of the two shapes that render differently across forms: digit-led (SDK 3.0.0 brackets it in
+# ``str(RecordID)``; the engine does not) and non-word (SDK 2.0 AND 3.0 bracket it with ⟨⟩; the engine renders
+# backticks — measured 2026-11-07 on 3.3.5, packet doc §ROUND 5).
+# ----------------------------------------------------------------------------------------------------
+
+_C9_SIBLING_KEYS: dict[str, tuple[str, str]] = {
+    # (principal key, agent key)
+    "digit_led": ("9c9owner00000000", "7c9agent0000"),
+    "non_word": ("c9-own.er", "c9-ag.ent"),
+}
+
+
+@pytest_asyncio.fixture()
+async def governed_row_world(store_env: SurrealEnv) -> AsyncIterator[tuple[Any, Any]]:
+    """An admin connection and a driver ``StoreHandle`` over the fresh database (no governed DDL needed: the
+    gate's pre-read is a plain ``SELECT owner_principal, owner_agent, scope``)."""
+    from _governed_contract import store_handle  # noqa: PLC0415
+
+    admin = await connect_admin(store_env)
+    try:
+        await run(admin, "DEFINE TABLE c9gov SCHEMALESS")
+        handle, _calls = store_handle(admin, url=store_env.url)
+        yield admin, handle
+    finally:
+        await admin.close()
+
+
+class TestTheGovernedGateRecognisesTheOwnerWhateverItsKey:
+    """R12 C9 sibling 1 (first priority — an ACCESS decision): ``governed.authorize_guarded`` builds
+    ``pdp.Resource.owner_principal`` / ``owner_agent`` from the row's ``record<…>`` links and compares them
+    with
+    the Subject's BARE ids. The round-5 reference took the bare id by splitting ``str(RecordID)`` — under SDK
+    3.0
+    a digit-led key is bracketed (``⟨9c9…⟩``), so the row's own owner is DENIED its own row (and under SDK 2.0
+    a
+    non-word key already was). The owner must be recognised whatever the key shape and the SDK's rendering; a
+    foreign principal must still be denied (the control: the gate is live, not waving everything through)."""
+
+    @pytest.mark.parametrize("rendering", sorted(_RENDERINGS))
+    @pytest.mark.parametrize("key_shape", sorted(_C9_SIBLING_KEYS))
+    async def test_the_rows_owner_may_delete_it_and_a_stranger_may_not(
+        self,
+        governed_row_world: tuple[Any, Any],
+        monkeypatch: pytest.MonkeyPatch,
+        key_shape: str,
+        rendering: str,
+    ) -> None:
+        from _governed_contract import member  # noqa: PLC0415
+
+        from loremaster import governed  # noqa: PLC0415
+        from lorerunes import pdp  # noqa: PLC0415
+
+        admin, handle = governed_row_world
+        principal_key, agent_key = _C9_SIBLING_KEYS[key_shape]
+        await run(
+            admin,
+            "CREATE c9gov:r1 SET owner_principal = $p, owner_agent = $a",
+            {"p": RecordID("principal", principal_key), "a": RecordID("agent", agent_key)},
+        )
+        with _rendered(monkeypatch, rendering):
+            try:
+                await governed.authorize_guarded(
+                    member(principal_key, agent_key), pdp.Action.DELETE,
+                    table="c9gov", row_id="r1", audit=None, store=handle,
+                )
+            except governed.GovernedDenied as denied:
+                pytest.fail(
+                    f"[{key_shape} keys {principal_key!r}/{agent_key!r}, rendering {rendering}] the row's "
+                    f"OWN owner "
+                    f"was denied: {denied} — the gate compared two text forms of the owner record (C9 class)"
+                )
+            with pytest.raises(governed.GovernedDenied):
+                await governed.authorize_guarded(
+                    member("c9stranger", agent_key), pdp.Action.DELETE,
+                    table="c9gov", row_id="r1", audit=None, store=handle,
+                )
+
+
+class TestTheDanglingSenderRefusalServesTheEnginesText:
+    """R12 C9 sibling 2: the migrate refusal for legacy messages with a dangling sender names each message
+    id and
+    sender. Message ids are ULIDs (always digit-led), so ``str(RecordID)`` under SDK 3.0 serves
+    ``message:⟨01…⟩`` —
+    text that names no record when an agent pastes it back. The served ids must be the ENGINE's text (R7 (d) /
+    F15), read here from the engine itself (``<string> id`` / ``<string> sender``)."""
+
+    @pytest.mark.parametrize("rendering", sorted(_RENDERINGS))
+    async def test_each_dangling_message_and_sender_is_named_by_its_engine_text(
+        self, monkeypatch: pytest.MonkeyPatch, rendering: str
+    ) -> None:
+        import test_fixwave_a19_63c_i_a as a19  # noqa: PLC0415
+        from _governed_contract import seed_message_legacy  # noqa: PLC0415
+        from loremaster.store.surreal_schema import MESSAGE_TABLE  # noqa: PLC0415
+
+        async with a19._governed_world() as world:
+            for seq, (message_key, sender_key) in enumerate(
+                (
+                    ("01JC9R5B7XK0000000000000AA", "7c9ghost000a"),
+                    ("01JC9R5B7XK0000000000000BB", "8c9ghost000b"),
+                ),
+                start=1,
+            ):
+                await seed_message_legacy(
+                    world.connection, sender_id=sender_key, session="c9d", seq=seq, row_id=message_key
+                )
+            engine_ids = await run(world.connection, f"SELECT VALUE <string> id FROM {MESSAGE_TABLE}")
+            engine_senders = await run(world.connection, f"SELECT VALUE <string> sender FROM {MESSAGE_TABLE}")
+            with _rendered(monkeypatch, rendering):
+                result = await world.migrate(MESSAGE_TABLE)
+        reason = str(result.reason or "")
+        assert result.refused is True and "dangling" in reason.lower(), (
+            f"premise: the dangling refusal ({reason!r})"
+        )
+        missing = [text for text in (*engine_ids, *engine_senders) if text not in reason]
+        assert not missing, (
+            f"[rendering {rendering}] the refusal does not name {missing} as the engine writes them; it "
+            f"serves "
+            f"{reason!r} (C9 class: str(RecordID) served instead of the engine's text)"
+        )
+        assert "⟨" not in reason, (
+            f"[rendering {rendering}] an SDK-only bracket rendering was served: {reason!r}"
+        )
+
+
+class TestTheMemoryReplayClosesThePredecessorWhateverTheOwnerKey:
+    """R12 C9 sibling 3: ``memory/local.py``'s replay close compares the predecessor's STORED owner pair (two
+    ``record<…>`` links) with the record's stamped BARE pair. It guards with ``getattr(link, "record_id",
+    None)``
+    — measured 2026-11-07: ``RecordID`` has NO ``record_id`` attribute on SDK 2.0.0 or 3.0.0 (attributes:
+    ``id``, ``table_name``, ``parse``), so the guard NEVER applies and every compare falls to
+    ``str(link).split(":")[-1]``. Under SDK 3.0 a digit-led owner key is bracketed, the SAME-owner pair
+    compares
+    unequal, the close is skipped and the superseded predecessor is REVIVED by the boot restore (and under SDK
+    2.0
+    a non-word key already was). The same-owner close must apply whatever the key shape and rendering."""
+
+    @pytest.mark.parametrize("rendering", sorted(_RENDERINGS))
+    @pytest.mark.parametrize("key_shape", sorted(_C9_SIBLING_KEYS))
+    async def test_a_same_owner_orphan_is_closed_by_the_restore(
+        self,
+        dirty_world: Any,  # noqa: F811 - the replay fixture imported above
+        monkeypatch: pytest.MonkeyPatch,
+        key_shape: str,
+        rendering: str,
+    ) -> None:
+        import test_memory_replay_fidelity_63b_ib as replay  # noqa: PLC0415
+        from _governed_contract import admin  # noqa: PLC0415
+
+        backend, _ledger, connection, _env = dirty_world
+        principal_key, agent_key = _C9_SIBLING_KEYS[key_shape]
+        owner = admin(principal_key, agent_key)
+        predecessor = await backend.remember(
+            "c9 pred", kind="fact", subject=owner, scope=replay._SERVER_SCOPE
+        )
+        successor = await backend.remember(
+            "c9 succ", kind="fact", subject=owner, scope=replay._SERVER_SCOPE, supersedes=predecessor
+        )
+        await replay._orphan_the_successor_in_the_store(
+            connection, successor=successor, predecessor=predecessor
+        )
+        with _rendered(monkeypatch, rendering):
+            await backend.restore_from_ledger()
+        post = await replay._governed_row(connection, predecessor)
+        assert post is not None and post.get("valid_until") is not None, (
+            f"[{key_shape} keys {principal_key!r}/{agent_key!r}, rendering {rendering}] the restore did NOT "
+            f"close a "
+            f"SAME-owner predecessor (it is revived): the owner pair was compared through two text forms. "
+            f"{post!r}"
+        )
+        assert str(post.get("superseded_by")) == successor, f"the close must point at the successor: {post!r}"
+
+
+class TestTheAuditAppendServesTheEnginesText:
+    """C4 (round 4 §R4.7; R7 (d) / F15): ``AuditStore.append`` returns the created row's id as a handle.
+    Audit ids
+    are ULIDs (digit-led), so ``str(RecordID)`` under SDK 3.0 hands back ``audit:⟨01…⟩``. The returned handle
+    must
+    be the engine's ``<string> id`` of the row that landed. (The pre-existing routing spy
+    ``test_governed_substrate_64b.py::TestAuditAppendConsumesItsFragment`` reddens on that build only
+    incidentally — its ``endswith`` trips on the trailing bracket — and lives in a dormant 64b file.)"""
+
+    @pytest.mark.parametrize("rendering", sorted(_RENDERINGS))
+    async def test_the_returned_id_is_the_engines_text(
+        self, store_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch, rendering: str
+    ) -> None:
+        from loremaster.audit import AuditStore  # noqa: PLC0415
+
+        audit = AuditStore(
+            url=store_env.url, namespace=store_env.namespace, database=store_env.database,
+            user=store_env.user, password=store_env.password,
+        )
+        admin = await connect_admin(store_env)
+        try:
+            await audit.ensure_ready()
+            with _rendered(monkeypatch, rendering):
+                created = await audit.append(
+                    actor_principal="c4alice", actor_agent="c4agent", actor_email="c4alice@example.com",
+                    actor_agent_name="c4-agent", action="WRITE",
+                    target_table="finding", target_row="finding:c4",
+                )
+            engine_ids = await run(admin, "SELECT VALUE <string> id FROM audit")
+        finally:
+            await admin.close()
+            await audit.close()
+        assert engine_ids == [created], (
+            f"[rendering {rendering}] append returned {created!r}; the engine names the row {engine_ids!r} "
+            f"(C4: str(RecordID) served instead of the engine's text)"
+        )

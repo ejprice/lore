@@ -781,26 +781,11 @@ class TestNoNewHandRolledBackoff:
             "2026-07-25)."
         )
 
-    def test_the_allowlisted_file_still_contains_what_it_was_exempted_for(self) -> None:
-        """POSITIVE CONTROL for the allowlist — an exemption must still be earning itself.
-
-        Without this, ``_POW_ALLOWLIST`` silently becomes a permanent hole: if
-        ``_txn_conflict_backoff_seconds`` were deleted or rewritten, the exemption would
-        keep waving through any FUTURE hand-rolled backoff added to that file. Pairing the
-        deny with proof that the exempted construct is still present and still jittered is
-        the difference between an allowlist and an unexamined blind spot.
-        """
-        for relative in _POW_ALLOWLIST:
-            source = (_REPO_ROOT / relative).read_text(encoding="utf-8")
-            assert "_txn_conflict_backoff_seconds" in source, (
-                f"{relative} is allowlisted from the exponentiation perimeter because it owns "
-                f"the transaction-conflict full-jitter policy — but that function is gone. "
-                f"Re-derive the exemption or drop it; a stale allowlist entry is a hole."
-            )
-            assert "random.uniform(0, window)" in source, (
-                f"{relative}'s exemption rests on it ALREADY drawing full jitter. That draw is "
-                f"no longer there, so the exemption no longer holds (finding #102)."
-            )
+    # SDK3 R12 F22 (2026-11-07): the source-text clause that asserted ``_txn.py`` still SPELLS
+    # ``_txn_conflict_backoff_seconds`` and ``random.uniform(0, window)`` is RETIRED — R11 moves that draw
+    # onto
+    # tenacity's ``wait_random_exponential`` via ``loresigil.backoff``, so the spelling it checked is gone by
+    # ruling. The behaviour clauses stay (every declared site draws from the mutated policy; the perimeter).
 
     def test_the_scan_can_actually_see_an_offender(self, tmp_path: Path) -> None:
         """POSITIVE CONTROL for the scan itself — prove it fires on a known-bad input.

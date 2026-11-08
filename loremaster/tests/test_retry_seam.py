@@ -199,6 +199,7 @@ from loremaster.store._txn import (
 from loremaster.store.surreal import SurrealStore
 from loremaster.store.surreal_schema import AGENT_TABLE, BRIEF_TABLE, BRIEFED_RELATION
 from pydantic import SecretStr
+from sdk3_shape_fakes import one_statement_answer, route_connections
 from surrealdb import (
     AsyncHttpSurrealConnection,
     AsyncWsSurrealConnection,
@@ -590,7 +591,7 @@ class _ScriptedConnection:
             raise AssertionError("unbounded retry")
         if self.failures is None or self.calls <= self.failures:
             raise self.error
-        return self.rows
+        return one_statement_answer(self.rows)  # R12 F-a: per SDK version
 
     async def close(self) -> None:
         return None
@@ -4723,7 +4724,8 @@ def _point_at(monkeypatch: pytest.MonkeyPatch, module_path: str, connection: Any
     freshly-constructed, NEVER-connected seam from that module.
     """
     module = importlib.import_module(module_path)
-    monkeypatch.setattr(module, "AsyncSurreal", lambda url: connection)
+    routed = route_connections(monkeypatch, lambda url, **_options: connection, modules=(module_path,))
+    assert routed, f"no connection constructor is bound in {module_path} (C2: the route reached nothing)"
     return module
 
 

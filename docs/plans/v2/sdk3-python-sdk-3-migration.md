@@ -1,6 +1,6 @@
 # Packet SDK3 — Python SDK `surrealdb` 2.0.0 → 3.0.0 (on the 3.3.5 stores)
 
-Status: CONTRACT ROUND 4 (adversary round 1's MP1–MP3 + R9 D1–D3 + residuals closed — §ROUND 4, newest first). Previously: CONTRACT ROUND 3 (rulings R2–R7 pinned; §ROUND 3 below supersedes the round-1/2 forks — the round-1/2 sections stay as history). Round 1: DISCOVERY + CONTRACT (tdd Phase 0 + Phase 1), written 2026-11-07 by the SDK3 contract author
+Status: CONTRACT ROUND 5 (R11 tenacity + R12 F18/C9-class/F-a/F-b/F-d/F22/X18/X19/RS7 — §ROUND 5, newest first). Previously: CONTRACT ROUND 4 (adversary round 1's MP1–MP3 + R9 D1–D3 + residuals closed — §ROUND 4, newest first). Previously: CONTRACT ROUND 3 (rulings R2–R7 pinned; §ROUND 3 below supersedes the round-1/2 forks — the round-1/2 sections stay as history). Round 1: DISCOVERY + CONTRACT (tdd Phase 0 + Phase 1), written 2026-11-07 by the SDK3 contract author
 against HEAD `4624daf` (branch `feat/surreal-unification`; the brief named `c05bf3f`, HEAD moved
 under another builder's commit while this ran), SDK 2.0.0 in lore's venv, SDK 3.0.0 in the
 research40 scratch venv. Operator approved the packet 2026-11-07. **This contract STOPS for operator
@@ -8,6 +8,322 @@ review** (§5 forks); then `contract-adversary` grades it, then a builder implem
 
 Inputs: `docs/research/2026-11-07-surrealdb-3.3-4.0-for-lore.md` (SUMMARY, §B4–B6/B18, §C, §D-4/D-10,
 §E 7/11/12), finding #576, `docs/reference/surrealdb-31-capabilities.md` §0a/§2/§3/§6.5.
+
+## ROUND 5 — R11/R12 pinned (contract-sdk3-r5 item 1; contract-sdk3-r5b items 2–12; 2026-11-07, graded tree HEAD `80d2323`)
+
+Answers rulings R11 (tenacity) and R12 (round-4 forks F18–F22, F-a…F-d, C9 class, RS7, X18/X19) in
+`docs/plans/v2/sdk3-rulings.md`. Everything below is dated 2026-11-07 and measured at HEAD `80d2323` (SDK 2.0.0, main
+venv) and on a ROUND-5 REFERENCE (SDK 3.0.0, `scratchpad/sdk3r5/ref`, `scripts/scratch_copy.sh --verify-only` VERIFIED,
+`loremaster.__file__` inside it in every log header). lore MCP was DOWN all round (`lore_lore` ECONNREFUSED): every
+structure question used grep/Read and THE ONE catch-site walker (`_catch_sites`); no friction filed (no lore tools).
+Two authors: `contract-sdk3-r5` did item 1 (the C9 pin, committed `0ac1434`) and stopped; `contract-sdk3-r5b` did
+items 2–12. Round 1–4 sections below are history and are not rewritten.
+
+### R5.0 Summary
+
+- **New pins: 37 nodes in 3 new files + 2 extended files**, plus the round-5a C9 pin (12 nodes, `0ac1434`). 23 are RED
+  at HEAD for their intended reason (declared from `--collect-only` before the run = observed, diffed both ways); the
+  14 GREEN at HEAD pin behaviours HEAD already has (X18/X19, the retry driver's fate/deadline, the
+  digit-led/installed legs of the C9 siblings) and are shown failing by **16 declared mutation proofs** on the r5b
+  reference (§R5.9).
+- **The r5b reference** = the r5a reference (r4 reference + the C9 fix) + the deltas of §R5.8 (F18 fixes, C9-sibling
+  fixes, C4, R11 tenacity port). Satisfiability over the targeted set: §R5.9.
+- **Forks: F-r5-1…F-r5-4 (§R5.10).** Decisions needed: RS7's 90 fixture call sites; the `_surreal_harness.run` /
+  `_sdk_guard` SDK-3 adaptations that live only in the reference tree (C10).
+
+| item | pin node id(s) | wrong build it kills | mutation receipt (§R5.9) |
+|---|---|---|---|
+| 1 C9 (r5a, `0ac1434`) | `test_sdk3_record_ids::TestTheOwnerClassifierRecognisesTheOperatorWhateverItsKey` ×12 | owner classifier comparing two text forms of one record | unfixed r4 code 12/12 RED (r5a report) |
+| 2 F18 publish | `test_sdk3_outcome_reach::TestAnUnknownPublishNeverReleasesItsVersion::{test_a_committed_publish_whose_reply_was_lost_keeps_its_version, test_control_a_refused_create_still_releases_its_version}` | `publish` releasing the minted version on an unknown outcome (re-mints a landed version) | f18pub |
+| 2 F18 indexer | `::TestAnUnknownIndexCommitIsNotServedAsFailed::{test_a_committed_file_whose_reply_was_lost_keeps_the_committed_manifest, test_the_batch_sweep_keeps_the_committed_manifest_too, test_control_a_reply_lost_before_the_commit_is_not_served_indexed}` | `_index_chunks` / `_commit_batch_file` marking a landed commit `failed` with the purged prior chunk ids; and the opposite wrong build that answers every unknown with "indexed" | f18idx, f18lie |
+| 2 F18 broad (calibration) | `::TestAnUnknownDriftFilingIsServedAsUnknown::test_the_note_names_the_outcome_unknown_not_failed` | `status()` serving "drift finding filing failed" for an unknown filing | f18cal |
+| 2 F18 reach | `test_sdk3_served_outcome::TestEveryStoreErrorFamilyCatchSiteIsAdjudicated` ×3 (derived set; 14 sites at HEAD-shape, 13 on r5b where `publish` is shielded) | a NEW `SurrealStoreError`-family catch site an unknown outcome reaches, with no adjudication; a stale verdict row; a pin row naming no test | derived-set pin (the walker's own reach); see §R5.1 |
+| 3 C9 sibling: governed `_bare` | `test_sdk3_record_ids::TestTheGovernedGateRecognisesTheOwnerWhateverItsKey` ×6 | the gate splitting `str(RecordID)` — the row's own owner DENIED (access decision) | c9gov |
+| 3 C9 sibling: refusal text | `::TestTheDanglingSenderRefusalServesTheEnginesText` ×3 | served message/sender ids `message:⟨01…⟩` instead of the engine's text | c9refusal |
+| 3 C9 sibling: memory replay | `::TestTheMemoryReplayClosesThePredecessorWhateverTheOwnerKey` ×6 | the replay close comparing split rendered text — a superseded predecessor REVIVED by restore | c9mem |
+| 4 F-b | `test_sdk3_outcome_reach::TestAServerAnsweredErrorIsADefiniteFailure::{test_the_single_statement_seam, test_the_transaction_seam}` | every connection-classified error (incl. a server-ANSWERED `NotAllowedError`) mapped to outcome-unknown | fb |
+| 5 F-a | `sdk3_shape_fakes.one_statement_answer` in the 3 C1 doubles (`test_retry_seam._ScriptedConnection`, `test_scout._FakeCommandConnection`, `test_comms_await._FakeLiveConnection`) + drop-list row #37 | HEAD reddened by SDK-3-shaped fakes, or the reference graded by SDK-2-shaped ones | satisfiability (§R5.9) |
+| 6 F-d / F22 | retired: `test_comms_await::…::test_no_inline_sdk_await_boundary_tuple_survives_in_scout_or_the_awaiter`; `test_backoff_seam::…::test_the_allowlisted_file_still_contains_what_it_was_exempted_for` | — (vacuous / spelling) | — |
+| 7 R11 | `test_sdk3_retry_policy::TestTheExhaustionFateIsTheSeamsTypedError` ×3, `::TestTheDeadlineIsReadPerCall` ×2; T1/T2/RP3/`test_retry_seam` UNCHANGED on the tenacity reference | a leaked `RetryError`; a frozen/shared deadline; a per-attempt exhaustion log; a `retry=` that bypasses the seam's classifier | r11leak, r11frozen, r11perattempt, r11classifier |
+| 8 X18/X19 | `test_sdk3_nested_lifecycle::TestAComposingStoreClosesItsNestedPrincipalStore` ×2, `::TestARecallDuringARebuildWaitsForIt` ×1 | a `close()` that forgets the nested `PrincipalStore`; a recall not serialised against the rebuild | x18a, x18b, x19 |
+| 9 RS7 | drop-list row #38 (no pin: a deletion) | — | grep receipt §R5.6 |
+| 10 C2/C3/C8/C4 | C2 `sdk3_shape_fakes.route_connections` (`test_retry_seam._point_at`, 6 counting-factory sites); C3 deleted; C8 `bare_record_key`; C4 `test_sdk3_record_ids::TestTheAuditAppendServesTheEnginesText` ×3 | C4: `append` handing back `audit:⟨01…⟩` | c4 |
+
+### R5.1 Item 2 — F18: D1 over the `SurrealStoreError` family (14 sites) and the 39 broad sites
+
+**Instrument:** THE ONE walker (`_catch_sites.production_catch_sites`); the round-5a census (`scratchpad/sdk3r5/census_broad.py`,
+output `census_r5.tsv`: 6 NAMED, 14 STOREERR, 39 BROAD — matches R12's 14). The family derivation is now a standing pin
+(`TestEveryStoreErrorFamilyCatchSiteIsAdjudicated`, beside D1's): a caught class in the family that
+`SurrealOutcomeUnknownError` subclasses, reachable (no earlier clause catches it), excluding D1's transport-naming sites.
+A PIN row may leave the derived set (a fix shielding it with `except SurrealOutcomeUnknownError: raise` makes it
+unreachable — the behaviour pin still guards it); a VERDICT row whose site is gone is RED. ⚠ The scanner-approval
+question R12 raised for D1's walker reuse applies to this widening too (operator pending).
+
+**The 14 family sites — verdicts (r5b, each from reading the handler):**
+
+| site | verdict |
+|---|---|
+| `briefs.py::publish` | **DEFECT → PINNED.** Releases the minted version on any store error; an unknown-but-landed CREATE leaves the counter one behind the row, the next publish re-mints that version and its `uuid5` CREATE collides. Reference fix: `except SurrealOutcomeUnknownError: raise` before the family catch. Pin reading per the brief: the error PROPAGATES as unknown (fork F-r5-2 names the alternative). |
+| `index/indexer.py::_index_chunks` | **DEFECT → PINNED.** Marks the file `failed` with the PRIOR chunk ids after a commit that may have landed (and purged them). Reference fix: `_landed_after_unknown` re-reads the manifest; landed ⇒ `indexed`, else the existing failure path. |
+| `index/indexer.py::_commit_batch_file` | **DEFECT → PINNED** (same as above, batch arm, through `index_all` two-pass). |
+| `index/indexer.py::_resolve_all_extension_edges` | label-only: the scope lands in `IndexSummary.scopes_failed`, which no served surface renders (grep: only tests read it); the purge-then-RELATE re-runs idempotently on the next productive sweep; state never wrong. Not pinned; residual R5-r1. |
+| `briefs.py::_relate_briefed` | re-reads the edge: a landed unknown write reports `already_acked=True` (true state, imprecise label). Not pinned. |
+| `briefs.py::_release_version` | log-only, possibly false; reached only on a definite rejection once `publish` is shielded. Not pinned. |
+| `floor_calibration/store.py::_fence_verdict` | wraps a READ, re-raises the original error. Not pinned. |
+| `principals.py::_dispatch` | lore-adm prints the error's own message (an unknown error says so). Not pinned. |
+| `store/lease.py::get` | READ → the library's non-404 "lock unavailable"; nothing created this tick. Not pinned. |
+| `store/lease.py::create` | `False` = "did not win this tick", never served; a landed create is observed by the next `get()` (this identity as holder) and renewed — safe direction (no second leader). Not pinned. |
+| `store/lease.py::update` | as `create`. Not pinned. |
+| `store/lease.py::release_if_held` | `False` leaves the lease held until expiry (one `lease_duration` of stalled handoff) — safe direction. Not pinned. |
+| `tasks.py::_reject_unusable_blockers` | READ pre-check: "NOTHING was created" is true; retry safe. Wording residual R5-r2: it says the read was "REJECTED by the store" for a transport fault too. Not pinned. |
+| `tasks.py::transitive_blockers` | READ: serves no answer and says retry — honest. Same wording residual. Not pinned. |
+
+**The 39 broad sites — my one-line verdicts** (spans extracted verbatim by `scratchpad/sdk3r5/extract_handlers.py` into
+`broad39_handlers.txt`; the round-5a Sonnet draft `broad39_verdicts.tsv` agreed with these on 35/39 categories — its 4
+UNSURE rows are resolved below):
+
+| site | verdict |
+|---|---|
+| calibration/engine.py::_count_live_total:395 | READ (HTTP token count) → retryable `_ProbeUnavailableError`; no store write |
+| calibration/engine.py::_count_live_total:398 | cleanup (`suppress` around `aclose`) |
+| calibration/engine.py::_file_drift_finding_deduped:552 | **RENDERS DEFINITE → PINNED** ("drift finding filing failed" in `status()` / `index_status`) |
+| calibration/engine.py::_probe_loop:354 | log-only crash guard |
+| index/indexer.py::index_file:603 | the try body is the CHUNKER (no store call) — no outcome-unknown reaches it |
+| index/indexer.py::_walk_and_index:1278 | same (chunker) |
+| index/indexer.py::_walk_collect_tier:1650 | same (chunker) |
+| index/reconcile.py::_maybe_stamp_snapshot:255 | advisory log after a successful sweep; not served |
+| index/watcher.py::read_events:258 | inotify degrade; no store |
+| memory/local.py::remember:707 | pass-through; compensates ONLY on `TxnDomainRejectionError`, keeps the ledger row on transport/unknown (#441) — honest |
+| principal_keys.py::mint:485 | pass-through + `_mint_fault_note` ("unconfirmed" for transport) — the prior art |
+| scout.py::aclose:954 | cleanup |
+| scout.py::_dispatch:397 | marks the COMMAND failed with the error text — true of the command (it raised before completing); scout commands are idempotent sweeps; F20 keeps scout's raw contract. Not pinned (draft UNSURE → resolved) |
+| scout.py::_open_command_connection:236 | pass-through (close, re-raise) |
+| scout.py::_periodic_reconcile:900 | log-only backstop |
+| scout.py::run:979 | cleanup (signal-handler `suppress`) |
+| scout.py::run:986 | cleanup |
+| scout.py::start:862 | pass-through (close readied, re-raise) |
+| scout.py::start:865 | cleanup |
+| search.py::_enrichment_lines:1415 | READ: annotates "enrichment unavailable" — honest |
+| server.py::aclose:9091 | cleanup |
+| server.py::aclose:9119 | cleanup |
+| server.py::build_app_context:10120 | pass-through (teardown, re-raise) |
+| server.py::build_app_context:10132 | cleanup |
+| server.py::build_app_context:10140 | cleanup |
+| server.py::build_app_context:9878 | pass-through |
+| server.py::build_app_context:9882 | cleanup |
+| server.py::_eager_build_or_operator_safe_error:10580 | fail-closed startup refusal; the build is idempotent at the next start; not a served write-outcome claim. Not pinned (draft UNSURE → resolved) |
+| server.py::_eager_build_with_retry:10496 | pass-through (whole idempotent build retried, last error raised) |
+| server.py::on_call_tool:10681 | log-only (trace emit) |
+| server.py::_periodic_reconcile:10441 | log-only backstop |
+| server.py::run_probe_gate:2287 | READ (embedding probe) |
+| server.py::_run_schema_rebuild:10415 | `mark_rebuild_failed` for a rebuild that RAISED before finishing — true of the rebuild process; fingerprint unstamped ⇒ re-runs next start. Not pinned (draft UNSURE → resolved); residual R5-r3: if the raise was an unknown outcome on the LAST write, the status says failed for work that may be complete (self-heals by re-run) |
+| server.py::run_startup_hooks:972 | pass-through |
+| server.py::run_startup_hooks:979 | cleanup |
+| testing/loopback.py::_loud_teardown:456 | test infrastructure, pass-through |
+| testing/loopback.py::_loud_teardown:461 | test infrastructure, cleanup |
+| testing/loopback.py::_run:321 | test infrastructure (crash recorded for `start()`) |
+| testing/loopback.py::start:341 | test infrastructure, pass-through |
+
+### R5.2 Item 3 — C9's class at its siblings (R12)
+
+Probed 2026-11-07 on the 3.3.5 TEST store (`probe_engine_text.py`, Appendix F): the ENGINE renders a digit-led
+alphanumeric key bare (`t:01JCXZ…`, `t:9c9operator…`) and a non-word or all-digit STRING key in backticks
+(``t:`c9-op.erator` ``, ``t:`1234` ``); SDK 3.0.0 `str(RecordID)` brackets digit-led AND non-word keys with ⟨⟩; SDK
+2.0.0 brackets non-word keys with ⟨⟩ (digit-led bare). Array keys (`code_node`) render identically in all three
+(`probe_array_key.py`). **Consequence found by the pins: two of the siblings are ALREADY wrong at HEAD on SDK 2.0 for
+non-word keys** (`non_word-installed` RED at HEAD: the governed gate denies the owner; the replay revives the
+predecessor). Lore's mints never produce non-word principal/agent keys today (engine ids, uuid5 hex), so it is latent
+at HEAD and becomes live for ~28 % of principals (digit-led) under SDK 3.0.
+
+- **`governed.py` `_bare` (access decision, first priority).** Pinned; reference fix takes `.id` from a RecordID.
+- **`principals.py` dangling-sender refusal text.** Pinned against the engine's own `<string> id` / `<string> sender`
+  (read in-test, never restated); reference fix `record_text`. ⚠ Bound (C6): `record_text` is the parts-join, which
+  equals the engine form for WORD keys only; message ids (ULIDs) and agent ids (uuid5 hex) are word keys, so it holds
+  for this surface. A non-word key would need the engine's `<string>` projection (RS4's form).
+- **`memory/local.py` two owner compares.** Proven by EXECUTION that the `getattr(…, "record_id", None)` guard never
+  applies: `RecordID` attributes on SDK 2.0.0 = `['_escape_identifier', 'id', 'parse', 'table_name']`, on 3.0.0 =
+  `['_unchecked', 'id', 'parse', 'table_name']` — no `record_id`. Every compare falls to `str(link).split(":")[-1]`.
+  Pinned; reference fix takes `.id`.
+- **C4 `AuditStore.append`** (item 10, same class): pinned against the engine's `<string> id`; reference fix
+  `record_text`. The pre-existing 64b spy reddens on that build only incidentally (`endswith` trips on `⟩`).
+- **Sibling-sweep spot check** (`c9_siblings_verdicts.tsv`, Sonnet draft, 97 rows): I checked **27 of 97** — all 4
+  AT-RISK (each confirmed and pinned), all 11 SAFE rows (read; the one served array-key row probed equal), and a random
+  12 of the 82 NOT-A-RECORD rows (each re-read at its line). **0 wrong.** 70 rows unchecked.
+
+### R5.3 Item 4 — F-b
+
+An anonymous connection (connected, `use()`d, never signed in) has every write ANSWERED by the server with
+`NotAllowedError` ("Anonymous access not allowed", measured on SDK 2.0.0 and 3.0.0, `probe_notallowed.py`). At both
+seams (`run_query`, `execute_transaction`) the raised error must be a `SurrealStoreError` that is NOT
+`SurrealOutcomeUnknownError`. The existing THROW pins (`test_sdk3_txn_classification::TestADomainRefusalIsNotRetried…`)
+already cover the domain-rejection door; F-b's door is the connection-CLASSIFIED server answer, which the "every
+`is_connection_error` → unknown" wrong build (mutation fb) maps to unknown.
+
+### R5.4 Item 5 — F-a: the doubles answer per SDK version
+
+`loremaster/tests/sdk3_shape_fakes.py` (new, test-side): `SDK_MAJOR` from `importlib.metadata`, and
+`one_statement_answer(result)` = `[result]` on SDK ≥ 3 (R2: the seam selects its one statement), `result` bare on 2.0.
+Applied at the C1 doubles' return points only (`test_retry_seam._ScriptedConnection.query`,
+`test_scout._FakeCommandConnection.query` ×4, `test_comms_await._FakeLiveConnection.query` ×2).
+
+| # | what | where | fate |
+|---|---|---|---|
+| 37 | the SDK-2.0 branch of `sdk3_shape_fakes.one_statement_answer` (and `SDK_MAJOR`) | `loremaster/tests/sdk3_shape_fakes.py` | **R — the builder deletes it in the commit that pins `surrealdb==3.0.0`** (R12 F-a); the helper's callers stay |
+
+### R5.5 Item 6 — F-d and F22 retirements
+
+- **F-d:** `test_comms_await.py::TestAwaitSharesTheSdkBoundaryConstantByMutation::test_no_inline_sdk_await_boundary_tuple_survives_in_scout_or_the_awaiter`
+  DELETED (its pattern — a bare `KeyError` inside `(*_CONNECTION_ERRORS, KeyError)` — cannot occur after R6 F10); the
+  section comment now says so. The runtime-mutation sharing pin beside it stays. Other C7 prose (test_comms_await.py
+  module docstring lines naming the KeyError arm, test_scout, test_retry_seam `_MARKER_NAME`, …) is NOT edited
+  (outside this item; residual R5-r4).
+- **F22:** `test_backoff_seam.py::TestNoNewHandRolledBackoff::test_the_allowlisted_file_still_contains_what_it_was_exempted_for`
+  DELETED (a source-text check of `_txn.py`'s spelling), with a comment at its place. Behaviour clauses kept (every
+  declared site draws from the mutated policy; the perimeter scan; its positive control). Fork F-r5-1: `_POW_ALLOWLIST`
+  still exempts `_txn.py`, which needs no exemption once the draw delegates.
+
+### R5.6 Items 7–9 — R11 tenacity, X18/X19, RS7
+
+**R11 (with F22) — the tenacity REFERENCE** (`build_ref_r5b_tenacity.py`, Appendix F; read: installed tenacity 9.1.4
+`stop.py`, `wait.py`, `retry.py`, `__init__.py`, `asyncio/__init__.py`):
+- `retry_on_conflict` = a per-call `AsyncRetrying(stop=stop_any(stop_after_attempt(CEILING), stop_all(stop_after_delay(deadline),
+  stop_after_attempt(FLOOR))), wait=_conflict_wait, retry=retry_if_exception_type(RetryableConflictSignal),
+  sleep=_conflict_sleep)`; `RetryError` caught and translated into the unchanged exhaustion disposition (one
+  `store.retry.exhausted` record with label/url/last cause; `TxnContentionExhaustedError`). Classification stays in
+  `_raise_attempt_failure` / `_rollback_verdict` — `retry=` matches only the signal type (sharing, not routing).
+- `_txn_conflict_backoff_seconds` stays the ONE conflict-jitter source and delegates to
+  `loresigil.backoff.jittered_backoff_delay(attempt_number - 1, base_s=…, cap_s=…)` (tenacity
+  `wait_random_exponential`); its private `random.uniform` draw is gone. `_conflict_wait` / `_conflict_sleep` look up
+  the jitter source and `asyncio.sleep` at CALL time, so `test_retry_seam`'s recorder and sleep silencer still reach them.
+- `scout`: the connect half of the reconnect ladder runs on `AsyncRetrying` (`_connect_with_backoff`, stop when
+  `_running` is False, `wait` = `_backoff_delay(first_attempt + n - 1)` — the identical attempt indices the hand ladder
+  used); `_backoff` stays the shared-policy site `test_backoff_seam` drives.
+- **Pins:** `test_sdk3_retry_policy` (5 nodes, GREEN at HEAD and on the reference — behaviour preserved; RED by
+  r11leak / r11frozen / r11perattempt). **Sharing by mutation:** r11classifier makes the seam's classifier
+  (`_is_retryable_conflict_kind`) answer False → T1/T2 RED. **No "uses tenacity" pin.**
+- **Removed-behaviour inventory (R11 rider), preserved-with-pin:** X21 deadline (floor 5, ceiling 64, per call, default
+  read at call time) → `TestTheDeadlineIsReadPerCall` ×2 + `test_retry_seam` deadline/floor pins; X22 one exhaustion
+  record with the LAST cause, nothing on a resolved conflict → `test_exhaustion_raises_the_typed_error_and_logs_only_the_last_cause`,
+  `test_a_conflict_that_resolves_returns_the_value_and_logs_nothing`; the per-attempt `_log_rollback` on the
+  transactional path is untouched (it lives in `_run_verified_transaction`'s attempt body, outside the driver) and stays
+  pinned by `test_retry_seam`'s rollback-log pins; X23 exhaustion fate/attempt count → `type(error) is
+  TxnContentionExhaustedError`, `error.attempts == calls made`.
+
+**X18/X19** (`test_sdk3_nested_lifecycle.py`): X18 observed at the SDK's own connection class
+(`AsyncWsSurrealConnection.__init__`/`close` wrapped — factory-blind); X19 name-blind (bounded settle time; no branch
+on the `_rebuild_lock` attribute, unlike `test_schema_rebuild`'s race pins). GREEN at HEAD and on the reference; RED by
+x18a/x18b/x19.
+
+**RS7 — `SurrealStore.upsert` (grep, lore down):** `grep -rn '\.upsert(' loremaster/loremaster lorerunes loresigil
+lorescribe scripts skills` (185 non-test `.py` files scanned) → ONE hit, `indexer.py` `self._manifest.upsert(` =
+`SurrealManifest.upsert`, a different method. **0 production callers.** Test call sites of a store `.upsert(`: 90 in 7
+files (test_surreal_store 51, test_surreal_fakes 25, test_symbols 6, test_floor_calibration_store 4, test_search 2,
+test_extension 1, test_startup_divergence_reconcile 1); tests that pin the door itself:
+`test_surreal_store::{test_reupsert_same_records_is_idempotent, test_wrong_dim_vector_rejected_loudly_at_upsert,
+test_upsert_scroll_round_trips_production_shaped_metadata_top_level}` plus `FakeSurrealStore.upsert` (`_surreal_fakes`)
+and its tests in test_surreal_fakes. NOT rewritten this round, and the reference keeps `upsert` (decision needed §R5.10).
+
+| # | what | where | fate |
+|---|---|---|---|
+| 38 | `SurrealStore.upsert` (RS7, R12: a dead door, 0 production callers, outside batching and the row cap) | `store/surreal.py` | **R (delete)** — blocked on the 90 test seeding sites (decision needed): their behaviour pins (wrong-dim rejection, metadata round trip, idempotence) must move to `apply([replace_file_fragment(...)])` first |
+
+### R5.7 Item 10 — test-side contradictions
+
+- **C2:** `sdk3_shape_fakes.route_connections(monkeypatch, factory, modules=…)` rebinds every name in the named
+  loremaster module(s) that is bound to `surrealdb.AsyncSurreal` or to `_txn.open_surreal_connection` — DERIVED from
+  the live module objects, so it holds at HEAD (per-module `AsyncSurreal`) and after R5 (the shared factory), and it
+  returns the bindings it replaced (`_point_at` asserts non-empty). Applied: `test_retry_seam._point_at`; the counting
+  factories (`factory(url, **options)` → `_RealAsyncSurreal(url, **options)`) and their 6 call sites in
+  test_surreal_store (4) / _manifest (1) / _graph (1). ⚠ NOT applied (same class, outside the lines C2 named): 
+  `test_retry_seam` lines patching `scout_module`/`surreal_module` `AsyncSurreal` directly (≈7 sites near
+  `TestScout…` / bootstrap sections), `test_comms_cli`, `test_ingest_entity_seam`, `test_surreal_harness` (residual R5-r5,
+  exact edit: the same one-line `route_connections(..., modules=(<module>,))`).
+- **C3:** `test_surreal_store.py`'s `if TYPE_CHECKING:` import of `_RETRYABLE_CONFLICT_KIND` and `_ruled_a28c_store`
+  deleted (grep: no reference anywhere, incl. `scripts/pending_contracts.yaml`); `TYPE_CHECKING` import dropped.
+- **C8:** `sdk3_shape_fakes.bare_record_key` is the one helper; both `_bare_s` definitions became
+  `_bare_s = bare_record_key` (call sites untouched).
+- **C4:** pinned (§R5.2).
+- **C5** (`test_exhaustion_fates` "store/lease.py … FATE CHANGED ['logs-error-class']" on the reference only):
+  the lease HANDLERS are byte-identical at HEAD and on the reference (`diff`: only the factory call and the
+  `ensure_ready_operation` decorator changed), so the changed fate is not a lease-code change; adjudicated from the
+  satisfiability run (§R5.9).
+- **C6:** CONFIRMED by probe — the engine renders non-word / all-digit string keys in backticks and `record_text`
+  (parts-join) does not; `record_text` is therefore a COMPARISON form (key equality), and an engine-form SERVED text for a
+  key that can be non-word must come from the engine's `<string>` projection (RS4). Every surface this round fixed with
+  `record_text` serves word keys only (stated bound, §R5.2).
+- **C10 (new, outside the writable set):** the reference tree carries SDK-3 adaptations of two shared test helpers that
+  the main tree does not — `_surreal_harness.run` selects the one statement's result (R2) and drops
+  `AsyncEmbeddedSurrealConnection`; `_sdk_guard` drops it and carries an `_is_door` predicate. After the build, every
+  test calling `run()` receives a per-statement list. Exact edit: make `run()` answer through
+  `sdk3_shape_fakes.one_statement_answer`'s rule (version-aware), and guard the embedded-connection import.
+
+### R5.8 The r5b reference (a satisfiability instrument, not the build)
+
+Delta over r5a (`scratchpad/sdk3r5/reference_r5b_delta.diff`, 9 files; instruments `build_ref_r5b.py` +
+`build_ref_r5b_tenacity.py`, Appendix F): `briefs.publish` shields the unknown outcome; indexer `_landed_after_unknown`
++ its two call sites; calibration unknown note; `governed._bare` from parts; principals refusal `record_text`;
+memory/local owner keys from `.id`; `audit.append` `record_text`; `_txn` tenacity port + jitter delegation; scout
+`_connect_with_backoff`. NOT done: RS7 deletion (keeps `upsert`), C10, the D1/F18 residuals above.
+
+### R5.9 Receipts
+
+Logs: `scratchpad/sdk3r5/logs/`; each opens with `tree_id.sh` and (pytest logs) `loremaster.__file__` + `surrealdb=`.
+
+| gate | log | EXIT | count | TREE |
+|---|---|---|---|---|
+| RED at HEAD, the 37 new nodes (SDK 2.0.0; declared `head_declared_red.txt` from `--collect-only` BEFORE the run) | `r5_head_red.log` | 1 | **23 failed, 14 passed**; observed FAILED set == the 23 declared, diffed both ways; 0 import/collection errors | `35f7ffcb…3c92` |
+| 16 mutation proofs on the r5b reference (`run_mutations.sh`, `scripts/mutation_proof.py`) | `r5_mutation_proofs.log` | 0 each | **16/16 PROOF HELD**; prod tree vs pre-run content backup: no diff | `3fdcb608…3588` (r5b ref) |
+| targeted set, HEAD (129 files = r4's 73 + 56: every file touched + grep-derived covering tests of every changed symbol, `target_set.txt`) | `r5_target_head.log` | 1 | 597 failed, 8357 passed, 44 skipped, 3 xfailed, 4 errors | `35f7ffcb…3c92` |
+| targeted set, r4 baseline (r4 production + THIS round's test tree, `scratch_copy.sh`-verified `base_r4`) | `r5_target_base_r4.log` | 1 | 734 failed, 8210 passed, 47 skipped, 3 xfailed, 5 errors | `a668a8d6…b4cb` |
+| targeted set, r5b reference | `r5_target_ref.log` | IN FLIGHT at hand-back (99 %) | — attribution (`attribute.sh`) owed | `3fdcb608…3588` |
+| a28 class ×3, r4 reference | `a28_r4ref_{1,2,3}.log` | 0/0/1 | 42/42/40 passed (2 failed, `owner_classification 'foreign'`) — the C9 flake reproduced | `a9108e3e…af43` |
+| a28 class ×3, HEAD | `a28_head_{1,2,3}.log` | 0/0/0 | 42 passed ×3 | `35f7ffcb…3c92` |
+| a28 class ×3, r5b reference | `a28_r5bref_{1,2,3}.log` | queued after the ref target run | — | — |
+| currency `--legs typecheck,ruff` | `r5_currency.log` | 1 | ruff GREEN; typecheck RED_ORPHANED 1 (`test_sdk3_outcome_reach.py`: `connect()` call-arg) → FIXED (`connect(env.url)`) after the run; currency NOT re-run; pytest NOT_RUN (quirk) | stale (pre-fix) |
+
+⚠ The one-line typing fix in `test_sdk3_outcome_reach.py` (`connection.connect(env.url)`) and this doc changed AFTER the HEAD/RED/mutation runs started; behaviour is identical (both SDKs' `connect(url=None)` accept the URL) but those TREE ids are formally void for the final tree.
+
+### R5.10 Forks and decisions needed
+
+- **F-r5-1 (F22 reach):** R12 retires `test_backoff_seam`'s source-text clause; its `_POW_ALLOWLIST` still exempts
+  `_txn.py`, which needs no exemption once the draw delegates (the reference has no variable power left in it). (a) leave
+  the allowlist (a standing hole for a future hand-rolled exponent in `_txn.py`, the hazard the retired clause guarded);
+  (b) empty it — the perimeter then goes RED at HEAD until the build deletes the draw (an R11 pin). I implemented (a), the
+  literal reading; **recommend (b) in the build commit.**
+- **F-r5-2 (publish fate):** the brief and the pin say an unknown publish PROPAGATES the unknown error. A build could
+  instead VERIFY (re-read the row) and return the published version. Both are D1-honest; the pin admits only the
+  first. Recommend keeping propagation (the caller learns the outcome is unknown; the version is safe either way).
+- **F-r5-3 (indexer verify):** the pin admits a build that either verifies (my reference) or raises the unknown error
+  out of `index_file` / `index_all`; it rejects only "failed with prior ids" and "indexed without the commit". A raised
+  error out of `index_all` would abort the sweep — the operator may want that ruled out.
+- **F-r5-4 (scanner):** the F18 reach pin widens the D1 walker reuse R12 already raised to the operator.
+- **Decision needed — RS7's 90 test seeding sites** (7 files, outside the writable set except the 3 door-pinning
+  tests): R9 D3 makes them contract surface; the brief limits this round to tests that pin the door. Recommend a round-6
+  item: one shared seeding helper over `apply(...)`, the 3 door pins re-keyed to `apply`, then the deletion.
+- **Decision needed — C10** (shared harness helpers adapted only in the reference).
+
+### R5.11 Routing, DRY ledger, bounds
+
+- **Routing (written before the first sweep; the report-file write was refused by the harness, so it is carried in the
+  hand-back):** test runs → haiku-runner ×7 (RED@HEAD, mutation proofs, three target-set runs, a28 ×3 ×3); the 14 + 39
+  site verdicts and the sibling spot check → me (spans extracted by a script, read in full); every pin and the reference
+  → me. Fan-out: haiku 7 · sonnet 0 · peak 5.
+- **DRY ledger (all test-side):** `sdk3_shape_fakes.one_statement_answer` (C1/F-a; looked: grep `one_statement|SDK_MAJOR`
+  in tests → only r4-d3's scratch probe → NEW, the one home); `route_connections` (C2; looked: `_count_sdk_connections`
+  counts at the SDK class but cannot hand back a double → NEW, complements it); `bare_record_key` (C8; REPLACES the two
+  `_bare_s` copies); `test_sdk3_outcome_reach._lose_the_reply` (looked: `test_sdk3_served_outcome._RaisingOnSecondCall`,
+  `test_mcp_server._LedgerRaisingOnSecondCall` raise WITHOUT running the call — no commit-then-raise exists → NEW);
+  `_UnknownFilingPort` (EXTENDS `test_calibration_engine._FakeFindingsPort`); `test_sdk3_nested_lifecycle._watch_sdk_connections`
+  (near `test_surreal_store._count_sdk_connections`, which counts creations only — this also records closes; candidate to
+  merge into one helper); reused as-is: `a19._governed_world`, `_governed_contract.{store_handle, member, admin,
+  seed_message_legacy}`, `test_memory_replay_fidelity_63b_ib.{dirty_world, _orphan_the_successor_in_the_store, _governed_row}`,
+  `test_schema_rebuild.{_WindowBarrierMemoryBackend, _make_memory_backend}`, `test_indexer(_bulk_sweep)` builders,
+  `_rendered` / `_RENDERINGS` (round 4/5a).
+- **Packages considered:** retry/backoff — tenacity 9.1.4 (read above) → replace_with_adapter (R11); everything else
+  reuses repo instruments.
+- **Bounds:** X19's unserialised leg relies on one local recall finishing within 1.5 s (measured in ms); the F-b pin
+  covers the anonymous-write `NotAllowedError` door, not every server-answered class (THROW is pinned elsewhere); the
+  C9-sibling pins use word keys for served text (C6).
 
 ## ROUND 4 — adversary round 1 closed (contract-sdk3-r4, 2026-11-07, graded tree HEAD `00dc152`, report-time HEAD `ee4d754`)
 
@@ -1919,3 +2235,471 @@ for name in "$@"; do
 done
 echo "--- tree after (must be clean vs pre-run):"; git -C "$B" diff --stat | tail -1
 ```
+
+## Appendix F — round-5 instruments (verbatim; run with the SDK under test)
+
+### `probe_engine_text.py` (engine `<string>` vs SDK `str(RecordID)`, run from `loremaster/tests`)
+
+```python
+"""Probe: the engine's <string> form of record ids with lore's key shapes (TEST store only)."""
+import asyncio, sys
+sys.path.insert(0, ".")
+from _surreal_harness import make_env, unique_database, connect_admin, drop_database, run, PRODUCTION_DIM
+from surrealdb import RecordID
+import importlib.metadata as md
+KEYS = ["01JCXZ3Q9V8M2T5K7R4N6P1W0Y", "9c9operator0000000000", "c9-op.erator", "7ghostsender", "z0ysb7r5es9z0ysb7r5e", "1234"]
+async def main():
+    env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+    assert ":18000" in env.url, env.url
+    conn = await connect_admin(env)
+    try:
+        for key in KEYS:
+            rid = RecordID("t", key)
+            await run(conn, "CREATE $id", {"id": rid})
+            text = await run(conn, "RETURN <string> $id", {"id": rid})
+            print(f"sdk={md.version('surrealdb')} key={key!r} engine={text!r} sdk_str={str(rid)!r}")
+    finally:
+        await conn.close(); await drop_database(env)
+asyncio.run(main())
+```
+
+### `probe_array_key.py`
+
+```python
+"""Probe: SDK str() vs engine <string> for an ARRAY record key (code_node shape), TEST store only."""
+import asyncio, sys, importlib.metadata as md
+sys.path.insert(0, ".")
+from _surreal_harness import make_env, unique_database, connect_admin, drop_database, run, PRODUCTION_DIM
+from surrealdb import RecordID
+async def main():
+    env = make_env(database=unique_database(), dim=PRODUCTION_DIM); assert ":18000" in env.url
+    conn = await connect_admin(env)
+    try:
+        for key in (["custom", "src/a.py", "mod.func"], ["custom", "9dir/x-y.py", "Q"]):
+            rid = RecordID("code_node", key)
+            await conn.query("CREATE $id", {"id": rid})
+            text = await run(conn, "RETURN <string> $id", {"id": rid})
+            print(f"sdk={md.version('surrealdb')} engine={text!r} sdk_str={str(rid)!r} same={text == str(rid)}")
+    finally:
+        await conn.close(); await drop_database(env)
+asyncio.run(main())
+```
+
+### `probe_notallowed.py` (F-b: what an anonymous write raises)
+
+```python
+"""Probe: what an UNAUTHENTICATED connection's query raises (TEST store :18000 only), per SDK."""
+import asyncio, sys, importlib.metadata as md
+sys.path.insert(0, ".")
+from _surreal_harness import make_env, unique_database, connect_admin, drop_database, PRODUCTION_DIM
+from surrealdb import AsyncSurreal
+async def main():
+    env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+    assert ":18000" in env.url
+    admin = await connect_admin(env); await admin.close()
+    conn = AsyncSurreal(env.url)
+    await conn.connect()
+    try:
+        try:
+            await conn.use(env.namespace, env.database)
+            print("use ok")
+        except Exception as e:
+            print("use raised", type(e).__mro__[:4], e)
+        for stmt in ("SELECT * FROM t", "CREATE t:1"):
+            try:
+                r = await conn.query(stmt); print(stmt, "->", r)
+            except Exception as e:
+                print(f"sdk={md.version('surrealdb')} {stmt} raised", [c.__name__ for c in type(e).__mro__[:5]], str(e)[:120])
+    finally:
+        await conn.close(); await drop_database(env)
+asyncio.run(main())
+```
+
+### `extract_handlers.py` (the 39 broad spans)
+
+```python
+"""Print each listed except-handler's source (first 14 lines) from the reference tree. Args: root tsv"""
+import ast, sys
+from pathlib import Path
+root = Path(sys.argv[1]); rows = [l.split("\t") for l in Path(sys.argv[2]).read_text().splitlines() if l.strip()]
+opened = 0
+for row in rows:
+    key, line = row[0], int(row[1])
+    rel = key.split("::")[0]
+    src = (root / rel).read_text(); tree = ast.parse(src); opened += 1
+    found = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ExceptHandler) and node.lineno == line:
+            found = node
+        if isinstance(node, ast.Try) and found is None:
+            for fb in node.finalbody:
+                pass
+    if found is None:
+        seg = "\n".join(src.splitlines()[line-1:line+8])
+    else:
+        seg = ast.get_source_segment(src, found) or ""
+    lines = seg.splitlines()
+    print(f"### {key}:{line} [{row[2]}]")
+    print("\n".join(lines[:14]) + ("\n   …" if len(lines) > 14 else ""))
+print(f"COVERAGE rows={len(rows)} files_opened={opened}", file=sys.stderr)
+```
+
+### `build_ref_r5b.py` (reference deltas: F18, C9 siblings, C4)
+
+```python
+"""SDK3 round-5 (r5b) REFERENCE deltas over the r5a reference (= r4 reference + C9 fix).
+
+A satisfiability instrument, never the build. Every replacement asserts it matched exactly once, so a
+re-run on an already-patched tree fails loud instead of silently no-opping.
+usage: build_ref_r5b.py <ref-root> <group>   groups: f18 | c9sib | c4 | tenacity | all
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+ROOT = Path(sys.argv[1])
+GROUP = sys.argv[2]
+PKG = ROOT / "loremaster" / "loremaster"
+
+
+def patch(relative: str, old: str, new: str) -> None:
+    path = PKG / relative
+    text = path.read_text(encoding="utf-8")
+    count = text.count(old)
+    assert count == 1, f"{relative}: anchor matched {count}x: {old[:80]!r}"
+    path.write_text(text.replace(old, new), encoding="utf-8")
+
+
+def f18() -> None:
+    # briefs.BriefLedger.publish: an UNKNOWN outcome never releases the minted version (D1/F18).
+    patch(
+        "briefs.py",
+        "        try:\n            await self._apply([fragment])\n        except SurrealStoreError:\n",
+        "        try:\n            await self._apply([fragment])\n"
+        "        except SurrealOutcomeUnknownError:\n"
+        "            # F18/D1: the CREATE may have COMMITTED — releasing would re-mint this version.\n"
+        "            raise\n"
+        "        except SurrealStoreError:\n",
+    )
+    patch(
+        "briefs.py",
+        "    SurrealConnectionError,\n    SurrealStoreError,\n    TxnContentionExhaustedError,\n",
+        "    SurrealConnectionError,\n    SurrealOutcomeUnknownError,\n    SurrealStoreError,\n"
+        "    TxnContentionExhaustedError,\n",
+    )
+    # indexer: an UNKNOWN apply outcome is VERIFIED against the manifest before anything is marked failed.
+    verify = (
+        "        except SurrealStoreError as store_error:\n"
+        "            from loremaster.store._txn import TxnRowCapExceededError  # noqa: PLC0415\n"
+        "\n"
+        "            if await self._landed_after_unknown(\n"
+        "                store_error, tier={tier}, path={path}, content_hash={hash}, new_ids={ids}\n"
+        "            ):\n"
+        "                return IndexOutcome(\n"
+        "                    tier={tier}, file_path={path}, state=STATE_INDEXED, n_chunks=len({records})\n"
+        "                )\n"
+    )
+    old = (
+        "        except SurrealStoreError as store_error:\n"
+        "            from loremaster.store._txn import TxnRowCapExceededError  # noqa: PLC0415\n"
+        "\n"
+        "            refused_reason = (\n"
+        "                f\"{_FAILED_STORE_REASON}: {store_error}\"\n"
+        "                if isinstance(store_error, TxnRowCapExceededError)\n"
+        "                else _FAILED_STORE_REASON\n"
+        "            )\n"
+        "            logger.warning(\n"
+        "                \"index.file.store_failed\",\n"
+        "                extra={\"tier\": tier,"
+    )
+    patch(
+        "index/indexer.py",
+        old,
+        verify.format(tier="tier", path="path", hash="content_hash", ids="new_ids", records="records")
+        + old.split("\n", 2)[2],
+    )
+    old_batch = (
+        "        except SurrealStoreError as store_error:\n"
+        "            from loremaster.store._txn import TxnRowCapExceededError  # noqa: PLC0415\n"
+        "\n"
+        "            refused_reason = (\n"
+        "                f\"{_FAILED_STORE_REASON}: {store_error}\"\n"
+        "                if isinstance(store_error, TxnRowCapExceededError)\n"
+        "                else _FAILED_STORE_REASON\n"
+        "            )\n"
+        "            logger.warning(\n"
+        "                \"index.file.store_failed\",\n"
+        "                extra={\n"
+    )
+    patch(
+        "index/indexer.py",
+        old_batch,
+        verify.format(
+            tier="pf.tier", path="pf.path", hash="pf.content_hash", ids="pf.new_ids", records="pf.records"
+        )
+        + old_batch.split("\n", 2)[2],
+    )
+    patch(
+        "index/indexer.py",
+        "    async def _mark_file_failed(\n",
+        "    async def _landed_after_unknown(\n"
+        "        self, error: BaseException, *, tier: str, path: str, content_hash: str, new_ids: list[str]\n"
+        "    ) -> bool:\n"
+        "        \"\"\"F18/D1: after an OUTCOME-UNKNOWN apply, read the manifest back — True iff the commit landed.\"\"\"\n"
+        "        from loremaster.store._txn import SurrealOutcomeUnknownError  # noqa: PLC0415\n"
+        "\n"
+        "        if not isinstance(error, SurrealOutcomeUnknownError):\n"
+        "            return False\n"
+        "        row = await self._manifest.get(tier, path)\n"
+        "        return (\n"
+        "            row is not None\n"
+        "            and row.state == STATE_INDEXED\n"
+        "            and row.sha512 == content_hash\n"
+        "            and list(row.chunk_ids) == list(new_ids)\n"
+        "        )\n"
+        "\n"
+        "    async def _mark_file_failed(\n",
+    )
+    # calibration: an unknown filing outcome is served as UNKNOWN, never "filing failed".
+    patch(
+        "calibration/engine.py",
+        "        try:\n            await self._report_drift(live_total, baseline_total, ratio_shift, served)\n"
+        "            return None\n",
+        "        from loremaster.store._txn import SurrealOutcomeUnknownError  # noqa: PLC0415\n\n"
+        "        try:\n            await self._report_drift(live_total, baseline_total, ratio_shift, served)\n"
+        "            return None\n"
+        "        except SurrealOutcomeUnknownError as exc:\n"
+        "            logger.error(\"calibration drift finding outcome unknown\", exc_info=True)\n"
+        "            return (\n"
+        "                f\"drift finding outcome UNKNOWN (the write was sent; no answer came) — verify with \"\n"
+        "                f\"lore_findings before re-filing: {exc}\"\n"
+        "            )\n",
+    )
+
+
+def c9_siblings() -> None:
+    # governed._bare: a record id's KEY from its parts, never a split of its rendered text.
+    patch(
+        "governed.py",
+        "    text = str(record_id)\n    return text.split(\":\", 1)[-1] if \":\" in text else text\n",
+        "    key = getattr(record_id, \"id\", None)\n"
+        "    if key is not None and getattr(record_id, \"table_name\", None) is not None:\n"
+        "        return str(key)\n"
+        "    text = str(record_id)\n    return text.split(\":\", 1)[-1] if \":\" in text else text\n",
+    )
+    # principals: the dangling-sender refusal serves the engine's text for each id.
+    patch(
+        "principals.py",
+        "            f\"{sanitise_line(str(message_id))} (sender {sanitise_line(str(sender))})\"\n",
+        "            f\"{sanitise_line(record_text(message_id))} (sender {sanitise_line(record_text(sender))})\"\n",
+    )
+    # memory/local: the replay close compares the predecessor's owner KEYS, not split rendered text.
+    for column in ("stored_owner_principal", "stored_owner_agent"):
+        patch(
+            "memory/local.py",
+            f"            {column} = getattr({column}, \"record_id\", None) or (\n"
+            f"                str({column}).split(\":\")[-1]\n"
+            f"                if {column} is not None\n"
+            f"                else None\n"
+            f"            )\n",
+            f"            {column} = (\n"
+            f"                None if {column} is None\n"
+            f"                else str(getattr({column}, \"id\", None) or str({column}).split(\":\")[-1])\n"
+            f"            )\n",
+        )
+
+
+def c4() -> None:
+    patch(
+        "audit.py",
+        "        return str(RecordID(AUDIT_TABLE, record_id))\n",
+        "        return record_text(RecordID(AUDIT_TABLE, record_id))\n",
+    )
+    audit = PKG / "audit.py"
+    text = audit.read_text(encoding="utf-8")
+    if "record_text" not in text.split("class AuditStoreError")[0]:
+        patch("audit.py", "class AuditStoreError(", "from loremaster.store._txn import record_text  # noqa: E402\n\n\nclass AuditStoreError(")
+
+
+GROUPS = {"f18": [f18], "c9sib": [c9_siblings], "c4": [c4]}
+GROUPS["all"] = [f18, c9_siblings, c4]
+for step in GROUPS[GROUP]:
+    step()
+print(f"applied {GROUP}")
+```
+
+### `build_ref_r5b_tenacity.py` (reference delta: R11/F22)
+
+```python
+"""SDK3 r5b REFERENCE delta, R11 (+F22): retry_on_conflict on tenacity; the ONE jitter source delegates to
+loresigil.backoff (tenacity wait_random_exponential); scout's connect ladder on tenacity. Satisfiability instrument
+only. usage: build_ref_r5b_tenacity.py <ref-root>"""
+import sys
+from pathlib import Path
+PKG = Path(sys.argv[1]) / "loremaster" / "loremaster"
+def patch(relative, old, new):
+    path = PKG / relative; text = path.read_text(encoding="utf-8"); n = text.count(old)
+    assert n == 1, f"{relative}: anchor matched {n}x: {old[:90]!r}"
+    path.write_text(text.replace(old, new), encoding="utf-8")
+# -- the ONE conflict-jitter source: delegate, no private draw (F22) --------------------------------
+patch("store/_txn.py",
+"""    window = min(
+        _TXN_CONFLICT_BACKOFF_CAP_SECONDS,
+        _TXN_CONFLICT_BACKOFF_BASE_SECONDS * (2 ** (attempt_number - 1)),
+    )
+    return random.uniform(0, window)
+""",
+"""    # R11/F22: the draw is tenacity's wait_random_exponential through the workspace's ONE policy.
+    return backoff.jittered_backoff_delay(
+        attempt_number - 1,
+        base_s=_TXN_CONFLICT_BACKOFF_BASE_SECONDS,
+        cap_s=_TXN_CONFLICT_BACKOFF_CAP_SECONDS,
+    )
+
+
+def _conflict_wait(retry_state: RetryCallState) -> float:
+    \"\"\"tenacity ``wait=``: the seam's ONE jitter source, looked up at CALL time (pins patch it).\"\"\"
+    return _txn_conflict_backoff_seconds(retry_state.attempt_number)
+
+
+async def _conflict_sleep(seconds: float) -> None:
+    \"\"\"tenacity ``sleep=``: ``asyncio.sleep`` looked up at CALL time (pins silence it).\"\"\"
+    await asyncio.sleep(seconds)
+""")
+patch("store/_txn.py", "import random\n",
+      "from loresigil import backoff\nfrom tenacity import (\n    AsyncRetrying,\n    RetryCallState,\n    RetryError,\n"
+      "    retry_if_exception_type,\n    stop_after_attempt,\n    stop_after_delay,\n    stop_all,\n    stop_any,\n)\n")
+# -- retry_on_conflict on tenacity AsyncRetrying ---------------------------------------------------
+old_loop_start = "    last_conflict_cause: BaseException | None = None\n    while True:\n        try:\n            return await attempt()\n        except RetryableConflictSignal as signal:\n            last_conflict_cause = signal.__cause__\n        attempts += 1\n        elapsed = time.monotonic() - started\n"
+new_loop_start = """    retrying = AsyncRetrying(
+        stop=stop_any(
+            stop_after_attempt(_TXN_CONFLICT_ATTEMPT_CEILING),
+            stop_all(stop_after_delay(deadline), stop_after_attempt(_MAX_TXN_CONFLICT_ATTEMPTS)),
+        ),
+        wait=_conflict_wait,
+        retry=retry_if_exception_type(RetryableConflictSignal),
+        sleep=_conflict_sleep,
+    )
+    try:
+        return await retrying(attempt)
+    except RetryError as exhausted:
+        attempts = exhausted.last_attempt.attempt_number
+        final_signal = exhausted.last_attempt.exception()
+        last_conflict_cause = final_signal.__cause__ if final_signal is not None else None
+    elapsed = time.monotonic() - started
+    if True:  # the exhaustion disposition (X22/X23) — tenacity's RetryError is translated, never leaked
+"""
+patch("store/_txn.py", old_loop_start, new_loop_start)
+patch("store/_txn.py", "    started = time.monotonic()\n    attempts = 0\n", "    started = time.monotonic()\n")
+patch("store/_txn.py",
+"""                attempts=attempts,
+                elapsed_seconds=elapsed,
+            )
+        await asyncio.sleep(_txn_conflict_backoff_seconds(attempts))
+""",
+"""                attempts=attempts,
+                elapsed_seconds=elapsed,
+            ) from None
+""")
+# -- scout: the connect half of the reconnect ladder on tenacity -----------------------------------
+patch("scout.py",
+"""                try:
+                    connection = await self._ensure_connection()
+                except _SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION:
+                    # The connect itself failed — back off (bounded) and retry.
+                    logger.debug("command_subscriber.connect_failed", exc_info=True)
+                    await self._backoff(attempt)
+                    attempt += 1
+                    continue
+                attempt = 0  # a live connection resets the backoff ladder
+""",
+"""                try:
+                    connection = await self._connect_with_backoff(attempt)
+                except _SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION:
+                    break  # stopped while the store was unreachable
+                attempt = 0  # a live connection resets the backoff ladder
+""")
+patch("scout.py",
+"""    async def _backoff(self, attempt: int) -> None:
+""",
+"""    async def _connect_with_backoff(self, first_attempt: int) -> Any:
+        \"\"\"R11: connect, retrying a failed connect on tenacity with the shared full-jitter policy.\"\"\"
+
+        def _wait(retry_state: RetryCallState) -> float:
+            logger.debug("command_subscriber.connect_failed")
+            return self._backoff_delay(first_attempt + retry_state.attempt_number - 1)
+
+        retrying = AsyncRetrying(
+            retry=retry_if_exception_type(_SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION),
+            wait=_wait,
+            sleep=self._sleep,
+            stop=lambda _state: not self._running,
+            reraise=True,
+        )
+        return await retrying(self._ensure_connection)
+
+    def _backoff_delay(self, attempt: int) -> float:
+        \"\"\"The shared policy's draw for a zero-based ``attempt`` (finding #207).\"\"\"
+        return backoff.jittered_backoff_delay(
+            attempt, base_s=self._backoff_base_s, cap_s=self._max_backoff_s
+        )
+
+    async def _backoff(self, attempt: int) -> None:
+""")
+patch("scout.py",
+"""        delay = backoff.jittered_backoff_delay(
+            attempt, base_s=self._backoff_base_s, cap_s=self._max_backoff_s
+        )
+        await self._sleep(delay)
+""",
+"""        await self._sleep(self._backoff_delay(attempt))
+""")
+text = (PKG / "scout.py").read_text()
+anchor = "from loresigil import backoff\n"
+assert text.count(anchor) == 1, "scout backoff import"
+(PKG / "scout.py").write_text(text.replace(anchor, anchor + "from tenacity import AsyncRetrying, RetryCallState, retry_if_exception_type\n"))
+print("applied tenacity")
+```
+
+### `run_mutations.sh` (16 proofs; specs in `scratchpad/sdk3r5/mut/<name>.{file,anchor,repl,tests,pattern,expect}`)
+
+```bash
+#!/usr/bin/env bash
+# SDK3 r5b mutation proofs on the round-5 (r5b) reference. Declared reds: $M/<name>.expect (pytest --collect-only,
+# filtered by $M/<name>.pattern, written BEFORE the run); anchor/replacement/file/tests beside it.
+set -u
+S=/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/d68febab-e1d4-4ed2-95a0-0ded042fa32c/scratchpad/sdk3r5
+M=$S/mut; B=$S/ref
+cd "$B"
+~/.claude/orchestration/tree_id.sh "$B"
+.venv/bin/python -c "import importlib.metadata as m, loremaster; print('loremaster.__file__=' + loremaster.__file__, 'surrealdb=' + m.version('surrealdb'))" 2>&1 | grep -v Warning
+PYTEST=(systemd-run --user --scope -q -p MemoryMax=16G -p MemorySwapMax=0 .venv/bin/python -m pytest -q -rfE -p no:cacheprovider --timeout=400 -n 6)
+for name in "$@"; do
+  expects=(); while read -r id; do expects+=(--expect-red "$id"); done < "$M/$name.expect"
+  echo "=== MUTATION $name on $(cat $M/$name.file) (declared ${#expects[@]})"
+  .venv/bin/python scripts/mutation_proof.py --file "$(cat $M/$name.file)" --anchor-file "$M/$name.anchor" --replacement-file "$M/$name.repl" "${expects[@]}" -- "${PYTEST[@]}" $(cat $M/$name.tests) 2>&1 | grep -v 'RuntimeWarning\|frozen site' | tail -12
+  echo "MUTATION_EXIT $name=${PIPESTATUS[0]}"
+done
+echo "--- prod tree vs pre-run content backup (must be empty):"
+for d in loremaster/loremaster lorerunes/lorerunes loresigil/loresigil lorescribe/lorescribe; do diff -rq --exclude=__pycache__ "$B/$d" "$S/ref_prod_r5b/$d"; done
+echo "BACKUP_DIFF_DONE"
+```
+
+### `attribute.sh` (satisfiability attribution)
+
+```bash
+#!/usr/bin/env bash
+# r5b attribution: FAILED/ERROR node ids on the r5b reference vs the r4 baseline (SAME test tree, r4 production) vs HEAD.
+set -u
+S=/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/d68febab-e1d4-4ed2-95a0-0ded042fa32c/scratchpad/sdk3r5
+ids() { grep -E '^(FAILED|ERROR) ' "$1" | sed -E 's/^(FAILED|ERROR) //; s/ - .*//' | sort -u; }
+ids $S/logs/r5_target_ref.log > $S/red_ref.ids; ids $S/logs/r5_target_base_r4.log > $S/red_base.ids; ids $S/logs/r5_target_head.log > $S/red_head.ids
+echo "red: ref=$(wc -l < $S/red_ref.ids) base_r4=$(wc -l < $S/red_base.ids) head=$(wc -l < $S/red_head.ids)"
+echo "== red on r5b ref, NOT on r4 baseline (candidates; HEAD state after each):"
+comm -23 $S/red_ref.ids $S/red_base.ids | while read id; do if grep -qxF "$id" $S/red_head.ids; then h=RED; else h=green; fi; echo "$id  [HEAD $h]"; done
+echo "== red on r4 baseline, fixed on r5b ref: $(comm -13 $S/red_ref.ids $S/red_base.ids | wc -l)"
+comm -13 $S/red_ref.ids $S/red_base.ids | awk -F'::' '{print $1}' | sort | uniq -c
+```
+

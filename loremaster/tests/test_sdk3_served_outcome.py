@@ -59,6 +59,14 @@ _ADJUDICATED_RENDERING_SITES: dict[str, str] = {
     "server.py::_resolve_or_acknowledge_many": "TestTheBatchVerbNeverServesAnUnknownOutcomeAsAborted",
 }
 
+# Rendering sites whose behaviour pin lives in ``test_sdk3_outcome_reach`` (round 5, R12 F18). A fix may route
+# the unknown outcome through a NAMED catch (then the site appears here) or an ``isinstance`` dispatch inside
+# a
+# broad handler (then it does not): the behaviour pin guards the outcome either way, so absence is not stale.
+_PINNED_IN_OUTCOME_REACH: dict[str, str] = {
+    "calibration/engine.py::_file_drift_finding_deduped": "TestAnUnknownDriftFilingIsServedAsUnknown",
+}
+
 
 class _RaisingOnSecondCall:
     """The finding ledger with its SECOND ``resolve`` / ``acknowledge`` call raising ``error``.
@@ -131,7 +139,7 @@ class TestEveryCatchSiteThatNamesTheTransportErrorIsAdjudicated:
 
     def test_every_rendering_site_is_adjudicated_and_every_adjudication_has_its_site(self) -> None:
         rendering = {site.key for site in _sites_an_unknown_outcome_reaches() if not _is_bare_reraise(site)}
-        unadjudicated = sorted(rendering - set(_ADJUDICATED_RENDERING_SITES))
+        unadjudicated = sorted(rendering - set(_ADJUDICATED_RENDERING_SITES) - set(_PINNED_IN_OUTCOME_REACH))
         assert not unadjudicated, (
             f"catch sites that NAME SurrealConnectionError, are reachable by SurrealOutcomeUnknownError, and "
             f"serve something other than a bare re-raise, with no behaviour pin proving they never serve an "
@@ -144,6 +152,145 @@ class TestEveryCatchSiteThatNamesTheTransportErrorIsAdjudicated:
             f"with "
             f"the site (or the site moved, and its pin with it)"
         )
+
+
+# R12 F18 — the ``SurrealStoreError``-FAMILY catch sites an outcome-unknown error reaches (14 at the round-5
+# reference), each adjudicated. ``("pin", "<module>::<Class>")`` names the behaviour pin proving the site
+# never
+# serves an unknown outcome as a definite failure; ``("verdict", "...")`` is the packet doc §ROUND 5 one-line
+# verdict for a site that serves nothing an agent could act on wrongly (a read, a self-healing tick, an honest
+# re-raise). A pinned site may LEAVE the derived set (a fix that shields it with an earlier
+# ``except SurrealOutcomeUnknownError`` makes it unreachable) — its behaviour pin still guards it; a VERDICT
+# row
+# whose site is gone is stale and RED.
+_FAMILY_ADJUDICATION: dict[str, tuple[str, str]] = {
+    "briefs.py::publish": ("pin", "test_sdk3_outcome_reach::TestAnUnknownPublishNeverReleasesItsVersion"),
+    "index/indexer.py::_index_chunks": (
+        "pin",
+        "test_sdk3_outcome_reach::TestAnUnknownIndexCommitIsNotServedAsFailed",
+    ),
+    "index/indexer.py::_commit_batch_file": (
+        "pin",
+        "test_sdk3_outcome_reach::TestAnUnknownIndexCommitIsNotServedAsFailed",
+    ),
+    "index/indexer.py::_resolve_all_extension_edges": (
+        "verdict",
+        "label-only: the scope lands in IndexSummary.scopes_failed, which no served surface renders; the "
+        "purge-then-RELATE re-runs idempotently on the next productive sweep, so no state is wrong",
+    ),
+    "briefs.py::_relate_briefed": (
+        "verdict",
+        "re-reads the edge it wrote: if the unknown write landed it reports already_acked (true state, "
+        "imprecise label); nothing is released or rolled back",
+    ),
+    "briefs.py::_release_version": (
+        "verdict",
+        "log-only (brief.publish.version_not_released, possibly false); reached only on a DEFINITE "
+        "rejection once publish shields the unknown outcome",
+    ),
+    "floor_calibration/store.py::_fence_verdict": (
+        "verdict",
+        "wraps a READ and re-raises the original error: nothing written, nothing re-labelled",
+    ),
+    "principals.py::_dispatch": (
+        "verdict",
+        "lore-adm prints the error's own message (an unknown error says so); no state decision",
+    ),
+    "store/lease.py::get": (
+        "verdict",
+        "a READ: reported as the library's non-404 'lock unavailable' — the election creates nothing this "
+        "tick and re-reads next tick",
+    ),
+    "store/lease.py::create": (
+        "verdict",
+        "False = 'did not win this tick' to the election library, never served; if the create landed the "
+        "next get() observes this identity as holder and renews — the safe direction (no second leader)",
+    ),
+    "store/lease.py::update": (
+        "verdict",
+        "as create: a landed renew is re-observed by the next get(); False only delays leadership",
+    ),
+    "store/lease.py::release_if_held": (
+        "verdict",
+        "False leaves the lease held until it expires (one lease_duration of stalled handoff) — the safe "
+        "direction; never served",
+    ),
+    "tasks.py::_reject_unusable_blockers": (
+        "verdict",
+        "a READ pre-check: 'NOTHING was created' is true (the create never ran); retry is safe",
+    ),
+    "tasks.py::transitive_blockers": (
+        "verdict",
+        "a READ: serves no answer and says retry — honest for an unknown read",
+    ),
+}
+
+
+def _names_the_store_error_family_only(site: CatchSite) -> bool:
+    """A caught class in the ``SurrealStoreError`` family ABOVE the transport error (D1 owns those)."""
+    return any(
+        isinstance(cls, type)
+        and issubclass(cls, _txn.SurrealStoreError)
+        and not issubclass(cls, SurrealConnectionError)
+        for cls in site.caught
+    )
+
+
+def _family_sites_an_unknown_outcome_reaches() -> list[CatchSite]:
+    unknown = _unknown_type()
+    return [
+        site
+        for site in production_catch_sites()
+        if _names_the_store_error_family_only(site)
+        and not _names_the_transport_error(site)
+        and any(issubclass(unknown, cls) for cls in site.caught)
+        and not any(issubclass(unknown, cls) for cls in site.earlier)
+    ]
+
+
+class TestEveryStoreErrorFamilyCatchSiteIsAdjudicated:
+    """R12 F18, the reach half: the SET is derived by THE ONE walker (as D1's), never hand-listed — every
+    production catch site whose caught classes include a ``SurrealStoreError``-family class that
+    ``SurrealOutcomeUnknownError`` subclasses (and no earlier clause of its ``try`` catches it first). Each is
+    adjudicated: a behaviour pin, or a one-line verdict. A new family site with no row is RED; a verdict row
+    whose site is gone is RED; a pin row must name a test class that exists."""
+
+    def test_the_family_derivation_is_not_vacuous(self) -> None:
+        sites = _family_sites_an_unknown_outcome_reaches()
+        verdicts = [key for key, (kind, _why) in _FAMILY_ADJUDICATION.items() if kind == "verdict"]
+        assert len(sites) >= len(verdicts), (
+            f"the derived family set holds {len(sites)} sites ({[site.key for site in sites]}) — fewer than "
+            f"the "
+            f"{len(verdicts)} verdict rows: the walker or the class resolution is broken"
+        )
+
+    def test_every_family_site_is_adjudicated_and_no_verdict_is_stale(self) -> None:
+        derived = {site.key for site in _family_sites_an_unknown_outcome_reaches()}
+        unadjudicated = sorted(derived - set(_FAMILY_ADJUDICATION))
+        assert not unadjudicated, (
+            f"SurrealStoreError-family catch sites an outcome-unknown error reaches, with no adjudication "
+            f"(R12 F18): {unadjudicated}. Pin the site's rendering by behaviour (test_sdk3_outcome_reach), "
+            f"or "
+            f"give it a verdict row naming why it serves nothing an agent could act on wrongly."
+        )
+        stale = sorted(
+            key
+            for key, (kind, _why) in _FAMILY_ADJUDICATION.items()
+            if kind == "verdict" and key not in derived
+        )
+        assert not stale, f"verdict rows whose site no longer exists in the derived set: {stale}"
+
+    def test_every_pin_row_names_a_real_behaviour_pin(self) -> None:
+        import importlib  # noqa: PLC0415
+
+        missing = []
+        for key, (kind, target) in _FAMILY_ADJUDICATION.items():
+            if kind != "pin":
+                continue
+            module_name, _, class_name = target.partition("::")
+            if not isinstance(getattr(importlib.import_module(module_name), class_name, None), type):
+                missing.append(f"{key} -> {target}")
+        assert not missing, f"pin rows naming no test class: {missing}"
 
 
 class TestTheBatchVerbNeverServesAnUnknownOutcomeAsAborted:

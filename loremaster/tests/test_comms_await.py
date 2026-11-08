@@ -64,6 +64,7 @@ from uuid import NAMESPACE_URL, uuid5
 import pytest
 from loremaster.sanitise import max_backtick_run
 from loremaster.server import AppContext
+from sdk3_shape_fakes import one_statement_answer
 from surrealdb.errors import ConnectionUnavailableError
 from test_comms_tool import (  # noqa: F401 - _governed_ambient_token is an autouse fixture
     _03b_fleet,
@@ -471,8 +472,8 @@ class _FakeLiveConnection:
         if self._dead:
             raise ConnectionUnavailableError(_SDK_INFLIGHT_DROP_TEXT)
         if statement.strip().upper().startswith("LIVE SELECT"):
-            return self._live_uuid
-        return []
+            return one_statement_answer(self._live_uuid)  # R12 F-a: per SDK version
+        return one_statement_answer([])
 
     async def subscribe_live(self, query_uuid: Any) -> Any:
         if self._die_on_subscribe or self._dead:
@@ -738,12 +739,12 @@ class TestSocketDropNonLoss:
 
 # =========================================================================== #
 # R-2 (adversary §4.1 BLOCKER) — SHARING is proven by RUNTIME MUTATION of the ONE
-# symbol, not by a behaviour pin (a private inline tuple recovers a KeyError drop
-# just as well). The await leg is here; the scout leg is in
-# test_scout.py::TestDroppingKeyErrorFromTheSharedConstantBreaksScoutRecovery. An
-# AST reach-check belt (coverage a CHECKED, DERIVED variable) forbids ANY surviving
-# inline clone. Together they redden BOTH routing-≠-sharing builds: 7a (scout inline)
-# + 7b (await inline).
+# symbol, not by a behaviour pin (a private inline tuple recovers a transport drop
+# just as well). The await leg is here; the scout leg is in test_scout.py. SDK3 R12 F-d
+# (2026-11-07): the AST reach-check belt that keyed on a bare ``KeyError`` inside an inline
+# ``(*_CONNECTION_ERRORS, KeyError)`` tuple is RETIRED — R6 F10 removed the KeyError arm, so
+# that pattern can no longer occur and the check found nothing (a vacuous guard). The
+# runtime mutation below is the sharing proof.
 # =========================================================================== #
 class TestAwaitSharesTheSdkBoundaryConstantByMutation:
     async def test_dropping_the_transport_error_from_the_shared_constant_breaks_await_recovery(
@@ -764,43 +765,6 @@ class TestAwaitSharesTheSdkBoundaryConstantByMutation:
 
         with pytest.raises(ConnectionUnavailableError):
             await _drive_awaiter(chooser=chooser, connection=_FakeLiveConnection(dead=True))
-
-    def test_no_inline_sdk_await_boundary_tuple_survives_in_scout_or_the_awaiter(self) -> None:
-        """AST REACH-CHECK belt (P1c reach-attack + the DRY directive). Reach is DERIVED
-        by scanning the PATTERN, never a hand-list of line numbers: every ``except``
-        whose type is a TUPLE containing BOTH a ``*_CONNECTION_ERRORS`` spread AND a bare
-        ``KeyError`` is an inline SDK-await-boundary clone that must instead NAME the
-        shared constant. Asserts NONE remain in scout.py OR the awaiter's module — a
-        build leaving any private clone (7a keeps scout's; 7b keeps await's) reddens here
-        even if every behaviour pin passes."""
-        import ast  # noqa: PLC0415
-        import inspect  # noqa: PLC0415
-        import sys  # noqa: PLC0415
-
-        from loremaster import scout  # noqa: PLC0415
-
-        awaiter_module = sys.modules[_awaiter_cls().__module__]  # RED until built
-        offenders: list[str] = []
-        for module in (scout, awaiter_module):
-            tree = ast.parse(inspect.getsource(module))
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.ExceptHandler) or not isinstance(node.type, ast.Tuple):
-                    continue
-                elts = node.type.elts
-                spread = any(
-                    isinstance(elt, ast.Starred)
-                    and isinstance(elt.value, ast.Name)
-                    and elt.value.id == "_CONNECTION_ERRORS"
-                    for elt in elts
-                )
-                keyerror = any(isinstance(elt, ast.Name) and elt.id == "KeyError" for elt in elts)
-                if spread and keyerror:
-                    offenders.append(f"{module.__name__}:{node.lineno}")
-        assert not offenders, (
-            f"inline SDK-await-boundary tuples survive (must NAME the shared "
-            f"_SDK_AWAIT_BOUNDARY_ERRORS[_WITH_CONTENTION], not clone it): {offenders} — a private "
-            f"clone passes every behaviour pin (routing ≠ sharing) but is caught here"
-        )
 
 
 # =========================================================================== #

@@ -128,6 +128,7 @@ from loremaster.store.surreal import (
 )
 from loremaster.store.surreal_schema import FILE_STATES, FILE_TABLE, generate_manifest_ddl
 from pydantic import SecretStr
+from sdk3_shape_fakes import route_connections
 from surrealdb import AsyncSurreal as _RealAsyncSurreal
 from surrealdb.errors import ConnectionUnavailableError, ErrorKind, ServerError
 from test_surreal_store import (
@@ -1131,10 +1132,10 @@ def _plain_counting_connection_factory() -> tuple[Callable[[str], Any], Callable
     """
     call_count = 0
 
-    def factory(url: str) -> Any:
+    def factory(url: str, **options: Any) -> Any:
         nonlocal call_count
         call_count += 1
-        return _RealAsyncSurreal(url)
+        return _RealAsyncSurreal(url, **options)
 
     return factory, lambda: call_count
 
@@ -1152,7 +1153,7 @@ class TestDropConnectionCompareAndSwap:
         self, surreal_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch  # noqa: F811
     ) -> None:
         factory, get_call_count = _plain_counting_connection_factory()
-        monkeypatch.setattr("loremaster.index.surreal_manifest.AsyncSurreal", factory)
+        route_connections(monkeypatch, factory, modules=("loremaster.index.surreal_manifest",))
         fresh_manifest = SurrealManifest(
             url=surreal_env.url,
             namespace=surreal_env.namespace,

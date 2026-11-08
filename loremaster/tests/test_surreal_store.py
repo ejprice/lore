@@ -48,7 +48,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 import pytest
 import pytest_asyncio
@@ -124,6 +124,7 @@ from loremaster.store.surreal_schema import (
 from loremaster.symbols import _SCROLL_LIMIT  # the real scroll caller's read cap
 from lorescribe.models import Chunk
 from pydantic import SecretStr, ValidationError
+from sdk3_shape_fakes import route_connections
 from surrealdb import AsyncSurreal as _RealAsyncSurreal
 from surrealdb import AsyncWsSurrealConnection, RecordID
 from surrealdb.errors import (
@@ -133,14 +134,6 @@ from surrealdb.errors import (
     SurrealError,
     parse_query_error,
 )
-
-if TYPE_CHECKING:
-    # 63c-i-a contract a28c (amendment 36): the STATIC reference owning this file's pending pins
-    # (scripts/pending_contracts.yaml, #461's shape) — the typed conflict kind the build lands. Runtime-inert.
-    from loremaster.store._txn import _RETRYABLE_CONFLICT_KIND
-
-    def _ruled_a28c_store() -> object:
-        return _RETRYABLE_CONFLICT_KIND
 
 # A factory (yielded by the ``two_stores`` fixture) that builds one more ready
 # store on the SAME database — a second live connection for the isolation test.
@@ -1701,10 +1694,10 @@ def _counting_connection_factory() -> tuple[Callable[[str], Any], Callable[[], i
     """
     call_count = 0
 
-    def factory(url: str) -> Any:
+    def factory(url: str, **options: Any) -> Any:
         nonlocal call_count
         call_count += 1
-        connection = _RealAsyncSurreal(url)
+        connection = _RealAsyncSurreal(url, **options)
         original_signin = connection.signin
 
         async def delayed_signin(credentials: dict[str, Any]) -> Any:
@@ -1737,7 +1730,7 @@ class TestConnectionRaceSingleConnect:
         # factory it will call wrapped to count + deterministically widen
         # the race window.
         factory, get_call_count = _counting_connection_factory()
-        monkeypatch.setattr("loremaster.store.surreal.AsyncSurreal", factory)
+        route_connections(monkeypatch, factory, modules=("loremaster.store.surreal",))
         fresh_store = SurrealStore(
             url=surreal_env.url,
             namespace=surreal_env.namespace,
@@ -1768,7 +1761,7 @@ class TestConnectionRaceSingleConnect:
         self, surreal_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch  # noqa: F811
     ) -> None:
         factory, get_call_count = _counting_connection_factory()
-        monkeypatch.setattr("loremaster.index.surreal_manifest.AsyncSurreal", factory)
+        route_connections(monkeypatch, factory, modules=("loremaster.index.surreal_manifest",))
         fresh_manifest = SurrealManifest(
             url=surreal_env.url,
             namespace=surreal_env.namespace,
@@ -1794,7 +1787,7 @@ class TestConnectionRaceSingleConnect:
         self, surreal_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch  # noqa: F811
     ) -> None:
         factory, get_call_count = _counting_connection_factory()
-        monkeypatch.setattr("loremaster.graph_surreal.AsyncSurreal", factory)
+        route_connections(monkeypatch, factory, modules=("loremaster.graph_surreal",))
         fresh_graph = SurrealCodeGraph(
             url=surreal_env.url,
             namespace=surreal_env.namespace,
@@ -2214,10 +2207,10 @@ def _plain_counting_connection_factory() -> tuple[Callable[[str], Any], Callable
     """
     call_count = 0
 
-    def factory(url: str) -> Any:
+    def factory(url: str, **options: Any) -> Any:
         nonlocal call_count
         call_count += 1
-        return _RealAsyncSurreal(url)
+        return _RealAsyncSurreal(url, **options)
 
     return factory, lambda: call_count
 
@@ -2237,7 +2230,7 @@ class TestDropConnectionCompareAndSwap:
     ) -> None:
         # Arrange: a fresh store; count every real connection opened.
         factory, get_call_count = _plain_counting_connection_factory()
-        monkeypatch.setattr("loremaster.store.surreal.AsyncSurreal", factory)
+        route_connections(monkeypatch, factory, modules=("loremaster.store.surreal",))
         fresh_store = SurrealStore(
             url=surreal_env.url,
             namespace=surreal_env.namespace,

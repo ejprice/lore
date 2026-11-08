@@ -26,6 +26,7 @@ from loremaster.memory.backend import RecalledMemory
 from loremaster.memory.local import LocalMemoryBackend
 from loresigil.testing import FakeEmbedder
 from pydantic import SecretStr
+from sdk3_shape_fakes import bare_record_key
 from test_memory_retrofit_63a import (  # noqa: F401 (fixtures used by name)
     _EMAIL_ALICE,
     _exercise_recall,
@@ -42,14 +43,7 @@ _ISOLATION_COLS = ("owner_principal", "owner_agent", "scope")
 _VALIDITY_COL = "valid_until"
 
 
-def _bare_s(value: Any) -> str:
-    """Bare id of a str OR a RecordID — from a RecordID's PARTS (``.id``), never ``str(RecordID)``, which
-    SDK 3.0 renders bracketed for a digit-led key (R7 (d), packet 66)."""
-    key = getattr(value, "id", None)
-    if getattr(value, "table_name", None) is not None and key is not None:
-        return str(key)
-    text = str(value)
-    return text.partition(":")[2] or text
+_bare_s = bare_record_key  # C8: the ONE shared helper (sdk3_shape_fakes)
 
 
 async def _importance(admin_conn: Any, memory_id: str) -> float:
