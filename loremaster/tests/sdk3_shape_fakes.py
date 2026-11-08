@@ -45,7 +45,16 @@ class SdkRequestTimeoutMixin:
     ``nullcontext`` that RECORDS the budget for the block's duration (``request_budget_s``), so a double
     whose request parks (:meth:`park_like_the_sdk`) can do what the SDK does: wait out the budget and raise
     its typed ``TransportTimeoutError`` — or, with no budget set, park forever (SDK: until the 30 s
-    default)."""
+    default).
+
+    FAKE HONESTY (R21/R22 F-a; checked against the installed surrealdb 3.0.0,
+    ``surrealdb/connections/async_ws.py`` ``kill`` → ``_await_reconnect``, 2026-11-08): on a dropped socket
+    the SDK's ``kill()`` first waits for the reconnect task for ``_request_timeout()`` — the budget
+    ``connection.timeout(N)`` overrides — and raises ``TransportTimeoutError`` when it is not done; the budget
+    elapses BEFORE the KILL is sent. That is the raise type and elapse point modelled here. NOT modelled
+    (named fake behaviour): the second half of the 2·N worst case (the reply wait once a reconnect completes),
+    and a reconnect that ends closed/failed (``ConnectionUnavailableError``); a ``None`` budget waits forever
+    in both."""
 
     request_budget_s: float | None = None
 
