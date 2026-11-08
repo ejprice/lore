@@ -798,8 +798,9 @@ class TestTheMintWindowNotesTheRevokeRepair:
         self, monkeypatch: pytest.MonkeyPatch, column: str
     ) -> None:
         """GENERATED over the row ``_row_to_key`` reads: each missing column keeps its class (``KeyError``
-        for a subscripted one — §13.3 F-7: our bug stays a bug) and carries the CERTAIN note, which the
-        traceback renderer prints."""
+        for a subscripted one — §13.3 F-7: our bug stays a bug; a missing STAMP is the shared stamp
+        validator's ``SurrealStoreError`` naming the row — packet 66 R34 / RULING-11 rider 3, F1) and carries
+        the CERTAIN note, which the traceback renderer prints."""
         email, name = _PLAIN
         row = _full_row(name)
         del row[column]
@@ -807,7 +808,7 @@ class TestTheMintWindowNotesTheRevokeRepair:
         with pytest.raises(Exception) as caught:  # noqa: PT011 - the class IS the assertion below
             await store.mint(email=email, name=name, secret_hash="0" * 128)
         served = caught.value
-        expected = PrincipalKeyStoreError if column == "created_at" else KeyError
+        expected = SurrealStoreError if column == "created_at" else KeyError
         assert type(served) is expected, type(served)
         assert served.__notes__ == [_certain_note(email, name)]
         assert _certain_note(email, name) in "".join(traceback.format_exception(served))

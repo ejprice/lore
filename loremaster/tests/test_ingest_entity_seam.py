@@ -790,24 +790,35 @@ class TestBatchPathClaimedBranch:
         )
 
     def test_commit_batch_file_delegates_to_compose(self) -> None:
-        """P10b (ONE IMPLEMENTATION): ``_commit_batch_file`` calls ``_compose_file_fragments``.
+        """P10b (ONE IMPLEMENTATION): the batch sweep shares the ONE compose branch.
 
         Guards that the builder does NOT hand-roll a SEPARATE batch compose — both
-        paths must share the one branch. GREEN now and after (a regression guard).
+        paths must share the one branch. Re-keyed under packet 66 R36 (sidecar RULING-12
+        fork 2 (c)): both ``_commit_batch_file`` and ``_index_chunks`` commit through the ONE
+        per-file site ``_commit_or_isolate``, which calls ``_compose_file_fragments``.
         """
         source = (_PACKAGE_DIR / "index" / "indexer.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
-        batch = next(
-            node for node in ast.walk(tree)
-            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_commit_batch_file"
-        )
-        calls = {
-            child.func.attr
-            for child in ast.walk(batch)
-            if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
-        }
-        assert "_compose_file_fragments" in calls, (
-            "_commit_batch_file must delegate to _compose_file_fragments so the "
+
+        def attribute_calls_in(name: str) -> set[str]:
+            function = next(
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)) and node.name == name
+            )
+            return {
+                child.func.attr
+                for child in ast.walk(function)
+                if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
+            }
+
+        for sweep in ("_commit_batch_file", "_index_chunks"):
+            assert "_commit_or_isolate" in attribute_calls_in(sweep), (
+                f"{sweep} must commit through _commit_or_isolate so the claimed-file branch is shared, "
+                "not cloned (ONE IMPLEMENTATION)"
+            )
+        assert "_compose_file_fragments" in attribute_calls_in("_commit_or_isolate"), (
+            "_commit_or_isolate must delegate to _compose_file_fragments so the "
             "claimed-file branch is shared, not cloned (ONE IMPLEMENTATION)"
         )
 
