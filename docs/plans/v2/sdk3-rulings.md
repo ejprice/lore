@@ -522,3 +522,33 @@ Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-4.md`.
 Operator, verbatim: *"Because my changes missed the last round, add another round of each to the allowance."* Rulings
 R17–R24 landed after contract round 6 was briefed. Budget now: contract rounds 7 AND 8, adversary rounds 4 AND 5, each
 only if needed; then BUILD (R16) under R23/R24 (builder never edits tests; a standing contract author services them).
+
+## R26 — design sidecar ruling 5: round-6 forks (design-sidecar-66 on ecae572; recorded by the lead)
+Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-5.md`.
+1. **FORK-R6-1 CONFIRMED (A): `TransactionConflict` is a fourth fate, RETRIED.** No served surface names it: a conflict
+   resolves (value served) or exhausts into `TxnContentionExhaustedError` (proven-no-key). Filing it "unknown" (B)
+   would be a false bound. The fate list is now **created / proven-no-key / unknown / retried** (derived from R11 and
+   drop-list #2). Mirror it into am-37 §15 at the operator's next pass. Riders, all for contract round 7:
+   (a) **FALSE PROSE.** q1b's comment ("SDK 3.0 adds ErrorKind.TRANSACTION_CONFLICT") and §R6.2 ("top level or as a
+   Query detail") are both wrong. The lead verified on the installed 3.0.0: the value exists ONLY in `QueryDetailKind`
+   (`surrealdb/errors.py`, `QueryDetailKind.TRANSACTION_CONFLICT`); `ErrorKind` lacks it. Fix both sentences.
+   (b) **Disjointness pin in q1c:** `_SDK_TOP_KINDS & _SDK_DETAIL_KINDS` must be empty. Otherwise a future top-level
+   kind would leave that door untested while the table reads as covering it.
+   (c) q1b's proven/unknown failure text gains the third word, "retried".
+2. **FORK-R6-2 CONFIRMED (A): no SDK-version branching.** The ruling-table and a19 refusal pins go RED at HEAD as
+   declared pins. A version-branched pin asserts two worlds under one name. The a19 pins are served-surface pins, and
+   branching them would bless `str(RecordID)` on SDK 2.0, which R7(d) forbids. Rider (R22-3/R24-6): register the
+   declared RED@HEAD set under F6 `red_nodeids` and put the count in the round-7 receipt.
+3. **Helper (b): SPLIT.** `digit_led_record_key` moves to `sdk3_shape_fakes`, which is pure and I/O-free;
+   `rekey_principal` stays in `_governed_contract`, because it runs admin DML. **(c): YES.** In
+   `credentialed_app_context(digit_led_principals=)`, change the default to True in ONE line, never a sweep:
+   28% of production principals are digit-led and every ULID is. Discrimination rider: served-id pins keep their
+   letter-led and non-word legs, and any digit-led-only pin gains one letter-led leg.
+4. **B-1: no new pin.** `_RULED_PROVEN_NO_KEY` together with
+   `test_a_fault_during_the_CREATE_call[TxnRowCapExceededError]` already turns a build that omits the class RED.
+   **B-2: ONE store-free pin, in round 7.** Feed the `_id_sample` and `_owned_unscoped_part` renderers a digit-led
+   RecordID and a non-word one. The served text is the bare key or the engine form, with no ⟨⟩ or backtick. a19's
+   live leg stays as the witness. A bare key is acceptable only where the sentence names its table; a sentence that
+   mixes tables serves `record_text`.
+5. **Stale for round 7:** MP-B's slept==drawn pins and the §R6.8 draw-count note are superseded by R18/R20 (a sleep
+   seam with no draws). The §R6.5 citation `final2_*` becomes `final3_*`.
