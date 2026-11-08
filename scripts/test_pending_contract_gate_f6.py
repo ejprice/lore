@@ -966,3 +966,36 @@ def test_D2_EVERY_wave_selector_reaches_the_run_as_its_SELECTION() -> None:
     selectors = [_NODE_FILE, _OTHER_FILE_NODE.split("::", 1)[0]]
     run = _run_selected_gates(_JunitRunner(), manifest, ["pytest"], selectors)["pytest"]  # type: ignore[arg-type]
     assert run.selection == tuple(selectors), run  # type: ignore[union-attr]
+
+
+# ========================================================================================================
+# R30 rider (sidecar RULING-8; landed anyway per lead #19063): the registry REFUSES a listed id whose path
+# prefix names a DIFFERENT file than its entry — an id filed under the wrong file would be adjudicated against
+# the wrong file's collection (stale or owned for a reason that is not about that id). The prefix is the text
+# before the first ``::`` (a bare path is its own prefix — MP-F6-2's FILE-path pin lists one and must load).
+# ========================================================================================================
+
+_NEAR_MISS_FILE = "loremaster/tests/test_f6_contract_ahead_extra.py"
+
+
+@pytest.mark.parametrize(
+    "foreign_id",
+    [_OTHER_FILE_NODE, f"{_NEAR_MISS_FILE}::test_a_near_miss"],
+    ids=["another-file", "a-near-miss-prefix"],
+)
+def test_the_registry_refuses_an_id_whose_path_prefix_names_another_file(
+    tmp_path: Path, foreign_id: str
+) -> None:
+    path = tmp_path / "pending_contracts.yaml"
+    path.write_text(_registry_yaml([_LISTED_CLASS_NODE, foreign_id], with_symbol_bound=False))
+    with pytest.raises(RegistryError) as caught:
+        PendingContractRegistry.load(path)
+    message = str(caught.value)
+    assert foreign_id in message and _NODE_FILE in message, (
+        f"the refusal must name the misfiled id and the entry it was filed under: {message}"
+    )
+
+
+def test_CONTROL_the_registry_admits_ids_whose_path_prefix_is_their_entry(tmp_path: Path) -> None:
+    gate = _gate(tmp_path, [_LISTED_CLASS_NODE, _LISTED_PARAM_NODE, _NODE_FILE], with_symbol_bound=False)
+    assert _NODE_FILE in gate.registry.registered_paths
