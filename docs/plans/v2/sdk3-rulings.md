@@ -569,3 +569,12 @@ Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-6.md`.
    **(c) NOT a concern.** It is a pristine-baseline artefact: `lore.yaml` is gitignored, so it is absent from a git-archive tree. Method rider: copy `lore.yaml` into every pristine baseline, or have the diff script verify every pristine failure that cites `lore.yaml`.
    **(d)** fold `_FactoryMutation` into `_driver_sleeps` in round 8, after adversary 3.
 Sequence: adversary round 3 grades round 7 now. Round 8 then carries: the F6 gate contract, the Q7 re-run plus the raising leg, the (d) fold, the cumulative inventory, and adversary 3's findings. The builder carries R7-2(a), F6 as step 0, and R7-1 as servicing commit 1.
+
+## R28 — adversary round 3: INSUFFICIENT, one missing pin; round 8 routed (lead, 2026-11-08)
+Full report: `docs/plans/v2/receipts/2026-11-08-sdk3/ADVERSARY3.md` (graded 150b85b, TREE 29c56751…).
+- **Replays:** 17 of 18 round-1/round-2 wrong builds are KILLED. They include `wb_f18_abort` (MP-A closed) and `wb_r11_sleepdrift`, which R20-A3's distribution pin kills. `x18_double` still survives (idempotent close, NO ROUND).
+- **Satisfiability spot-check HOLDS.**
+- **MP-1 → contract round 8:** B3 refused-file naming (R4 rider 3 + R17) is pinned for the realtime sweep only; a batch-arm build that drops the bound passes. Fix: parametrise over the sweep shape, pair-proven per arm. A REPEAT CLASS of round-2 MP-A ("both sweep shapes"). Builder chokepoint: ONE helper for the two cloned `except SurrealStoreError` arms.
+- **Residual R18 → round 8:** B-2 lacks a letter-led leg, so R26-3's rider is unmet.
+- **Landmine 1, "tenacity in name only" (R18's operator concern), is BEHAVIOURALLY INVISIBLE:** a hand-rolled loop with the same laws passes 738/738. The adversary proved a one-line runtime instrument (narrow `_driver_sleeps.DRIVER_SLEEP_CALLER_MODULES` to `{"tenacity.asyncio"}`) and a fallback named cold-audit diff check. Neither reaches scout's ladder except the audit check. Round 8 STAGES the narrowing as a patch and writes the audit check. **Whether the narrowing lands is the OPERATOR's decision**; the sidecar is asked to classify it (ruling request 7).
+- **Residuals R1–R17:** builder notes, recorded by round 8 in the packet doc; none reopens a round. The four packet-58 files reading `TXN_STATEMENT_HARD_CAP` are registered under packet-58's contract (lead-checked).
