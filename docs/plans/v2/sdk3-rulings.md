@@ -465,3 +465,18 @@ Operator, verbatim: *"Updating, modernizing or removing tests for SDK 2.0 is aut
 - **MP-C's property amended:** every targeted node green at HEAD is green on the SDK-3 reference, OR it encodes SDK-2.0
   behaviour and is rewritten/removed with a named verdict. An SDK-2.0-only test that no correct SDK-3 build can pass
   therefore no longer stops a builder (R16's one remaining blocker narrows to pins of SDK-3 rulings).
+
+## R22 — design sidecar ruling 3: R21's reading CONFIRMED with three riders (design-sidecar-66; recorded by the lead)
+Full text: `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-3.md`. The riders make "listed" and "does not weaken"
+checkable by construction:
+- **Separate commit + both-ways diff.** The builder's SDK-2.0 test edits land in a commit SEPARATE from the production
+  change. Run the targeted set on the pre-edit tree against the build (red set R1) and on the post-edit tree (R2):
+  every node in R1∖R2 must be touched by a LISTED edit (else an unlisted edit hid a red → NO-GO); every listed edit's
+  node must be in R1 (else it had no SDK-2.0 cause → adjudicate); R2∖R1 = ∅. The contract-blind pass reads only the
+  exceptions.
+- **"Encodes SDK 2.0" is a VERDICT with an inventory row, never a label.** Each removed/rewritten test names the
+  behaviour it certified at HEAD and one fate — carried-by <new pin id> · retired-with drop-list row #N · old-bug #… —
+  recorded in the am-37 adjudication table (contract surface per R15). MP-C's escape clause is bounded by that
+  inventory.
+- **Interim reds are owned.** SDK-3-only fakes (F-a) redden HEAD until the build: register those nodes under F6
+  `red_nodeids` (owner: SDK3 builder; trigger: the build commit), so currency never reads RED_ORPHANED in the interim.
