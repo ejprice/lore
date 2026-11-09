@@ -17,8 +17,10 @@ import os
 import sys
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
+from loremaster.store._txn import signin_credentials
 from surrealdb import AsyncSurreal, RecordID
 
 URL = "ws://127.0.0.1:18000/rpc"
@@ -32,11 +34,27 @@ TXN_TIMEOUT_SECONDS = float(os.environ.get("PROBE_TXN_TIMEOUT", "0")) or None
 SETTLE_SECONDS = float(os.environ.get("PROBE_SETTLE", "75"))
 
 
+def _surreal_harness() -> Any:
+    """The suite's real-SurrealDB harness (``loremaster/tests/_surreal_harness.py``), imported the way
+    ``scripts/forgery_door_sweep.py::_harness`` does — the TEST-store credential's one origin."""
+    tests_directory = str(Path(__file__).resolve().parents[1] / "loremaster" / "tests")
+    if tests_directory not in sys.path:
+        sys.path.insert(0, tests_directory)
+    import _surreal_harness
+
+    return _surreal_harness
+
+
 async def run_one(dependents: int) -> None:
     database = f"test_{os.getpid()}_{uuid.uuid4().hex}"
     connection = AsyncSurreal(URL, timeout=REQUEST_TIMEOUT_SECONDS, streaming=True)
     await connection.connect()
-    await connection.signin({"username": "root", "password": os.environ.get("SURREAL_PASSWORD", "spikeroot")})
+    # THE one unwrap seam for the SDK signin payload (``_txn.signin_credentials``), fed by the suite harness's
+    # TEST-store credential (env override, else the spike default) — never a hand-rolled dict or a local mint.
+    harness = _surreal_harness()
+    await connection.signin(
+        signin_credentials(user=harness.surreal_user(), password=harness.surreal_password())
+    )
     await connection.query(f"DEFINE NAMESPACE IF NOT EXISTS {NAMESPACE}")
     await connection.use(NAMESPACE, database)
     await connection.query(f"DEFINE DATABASE IF NOT EXISTS {database}")
