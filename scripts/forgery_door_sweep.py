@@ -751,13 +751,18 @@ async def _blocks_edge_count(connection: Any) -> int:
     that a traversal lists a dangling endpoint as a first-class member, so only the row
     count answers "did an edge land".
     """
+    from loremaster.store._txn import one_statement_result
     from loremaster.store.surreal_schema import BLOCKS_RELATION
 
-    info = await connection.query("INFO FOR DB")
+    # SDK 3.0 answers one list entry per statement; both reads are single-statement, so the
+    # ONE selection rule picks the entry (never a local unwrap — #614).
+    info = one_statement_result(await connection.query("INFO FOR DB"))
     tables = info.get("tables") if isinstance(info, dict) else None
     if not isinstance(tables, dict) or BLOCKS_RELATION not in tables:
         return TABLE_ABSENT
-    rows = await connection.query(f"SELECT count() FROM {BLOCKS_RELATION} GROUP ALL")
+    rows = one_statement_result(
+        await connection.query(f"SELECT count() FROM {BLOCKS_RELATION} GROUP ALL")
+    )
     if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
         return 0
     return int(rows[0].get("count", 0))
