@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """lore-deploy verb dispatcher: idempotent on-demand lifecycle (A1.11).
 
-One entrypoint for the four verbs — ``setup`` / ``start`` / ``stop`` /
-``status`` — each idempotent and safe to re-run (the whole contract). The
+One entrypoint for every verb — ``setup`` / ``start`` / ``stop`` /
+``status`` / ``conform`` (``--help`` lists the live set) — each idempotent and
+safe to re-run (the whole contract). The
 heavy/strict steps delegate to the sibling scripts (``probe_embed.py``,
 ``merge_mcp_json.py``) so the logic lives in one place per concern; the
 SurrealDB store-reachability pre-flight is inline (a stdlib-only ``/health``

@@ -39,7 +39,7 @@ rebuild.
 running `setup` twice is a no-op; `start` on an already-running container is a
 no-op; `stop` on a stopped container is a no-op.
 
-## The four verbs
+## The verbs
 
 Drive everything through the dispatcher script — it encodes the idempotency
 checks so you do not have to re-derive them:
