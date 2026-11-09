@@ -4,6 +4,26 @@ Standing rules for every session in this repo. Distilled from operator rulings a
 audited failure patterns (P7–P8d); the phase resume docs in `~/.claude/plans/` carry
 *phase state only* — process law lives here.
 
+## FIRST ACTION OF EVERY SESSION — load the landmines from lore (operator, 2026-11-09)
+Every session and every spawned agent, before any other work, and again after a context
+compaction. A spawned agent reads brief-base first (its brief's mandated first action),
+then does this. Exception: Haiku agents (`haiku-runner` / `haiku-worker`), whose briefs
+are self-contained and carry any fact they need. Spawned agents used to get the
+landmines from `MEMORY.md`; with auto-memory off, this recall is their only source.
+1. `ToolSearch "+lore", max_results 20` (lore's tools are deferred).
+2. `lore_recall(query="operational landmines", labels=["harness_type=landmine"], k=50)`.
+   If it returns exactly 50, re-run with `k=100`; the render prints no total. If that
+   returns 100, say landmines may be cut off.
+
+These are the facts that break a session in its first minutes: store ports, engine pin,
+deploy safety, test scope. They are NOT in `MEMORY.md` (one immutable line pointing here).
+If lore is unreachable, say so in your first reply and never proceed as if there were no
+landmines. Start it with
+`python3 ~/.claude/skills/lore-deploy/scripts/lore_deploy.py start --project <abs-dir>`,
+then reload the session (`claude --continue`) and recall. A new landmine is saved with
+`lore_remember(..., kind="gotcha", labels=["harness_type=landmine", ...])`; without that
+label this recall does not load it.
+
 ## THE CONSUMER LAW + THE TRUST DOCTRINE (operator, 2026-07-24 — the fixed star)
 - **lore's clients are AGENTS — Sonnet 5, Opus, Fable — never humans.** Every served
   surface (renders, instructions, counts, errors, teaching prose) is read by an LLM that
@@ -249,16 +269,22 @@ scope-grant again.**
 
 ## Project memory is IN LORE, not in MEMORY.md (dogfood, operator 2026-07-22)
 Durable project memory lives in the lore `memory` table — write it with `lore_remember`,
-recall it with `lore_recall`. The harness's auto-loaded `MEMORY.md` is a **thin bootstrap**
-(a pointer + a few second-zero operational landmines), **never a growing store**: it is
-loaded in FULL every session, so accumulating memory there is the exact anti-pattern lore
-exists to kill — and this project hit that file's size ceiling and needed manual compaction
-before the 2026-07-22 migration into lore. So:
+recall it with `lore_recall`. Since 2026-11-09 the harness's `MEMORY.md` is ONE immutable
+(`chattr +i`) pointer line. The landmines moved to lore (see FIRST ACTION above), and
+auto-memory is off for this checkout (`.claude/settings.local.json`), so the harness no
+longer loads that file (MEDIUM, unconfirmed). It is **never a growing store**. While
+auto-memory was on, it was loaded in FULL every session, so accumulating memory there was
+the exact anti-pattern lore exists to kill. This project hit that file's size ceiling and
+needed manual compaction before the 2026-07-22 migration into lore. So:
 - **Do NOT add facts back into `MEMORY.md`.** Learn something durable → `lore_remember` it
   (atomic fact, `kind` fact/decision/gotcha, never `ongoing` — that TTLs out in 7 days).
-- The mechanical half lives in the **lore-deploy skill** ("Project memory" section): it
-  bootstraps `MEMORY.md` and migrates a legacy flat one into lore on setup/start. This rule
-  is the behavioural half that stops the regression when the skill is not in context.
+- The mechanical half lives in the **lore-deploy skill** ("Project memory" section). On
+  every setup/start it classifies the memory state; once the lore tools are in-session, it
+  migrates a legacy flat or old-form `MEMORY.md`. When the lore tools are not in-session
+  (a `setup`, or a `start` that has just deployed lore), it records the migration as a
+  PENDING section in `CLAUDE.md` instead. It then writes, locks and verifies the one-line bootstrap, turns auto-memory
+  off for the checkout and installs the FIRST ACTION rule. This rule is the behavioural
+  half that stops the regression when the skill is not in context.
 - The 2026-07-22 migration moved 51 flat topic files into lore (labelled
   `origin=claude_native_memory`, traceable by `source_file=`); originals archived beside
   `MEMORY.md`. Recall project memory (`lore_recall("<topic>")`), do not expect it in the file.

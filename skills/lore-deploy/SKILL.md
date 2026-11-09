@@ -128,12 +128,15 @@ loaded *in full* every session, so it has a hard size ceiling, and past it you p
 context for memory you may never touch. Storing project memory there is the exact
 anti-pattern lore exists to kill — and a dogfood miss for any project on lore.
 
-So `MEMORY.md` must be a **thin bootstrap**: a one-paragraph pointer plus a handful of
-second-zero operational landmines. Everything else is recalled on demand.
+So `MEMORY.md` is a **one-line bootstrap**: the marker plus a pointer to lore, locked
+immutable (operator, 2026-11-09). The **second-zero operational landmines live in lore
+too**, as memories labelled `harness_type=landmine`. The project's `CLAUDE.md` tells each
+session to recall them first (template below). Lore finding #607 will move that rule into
+lore's served instructions. Everything else is recalled on demand.
 
-**This is a lifecycle responsibility, not just documentation.** When you run this skill
-for a project: once lore is up, locate the native memory dir, and **if `MEMORY.md` is a
-legacy flat store, migrate it** into lore and slim it to the bootstrap.
+**This is a lifecycle responsibility, not just documentation.** Run the checks below on
+**every** `setup` and `start`. Each step is idempotent, and a step already satisfied is a
+no-op.
 
 ### Where the native memory lives
 
@@ -145,91 +148,201 @@ replaced by `-`** (per character — no collapsing of runs, no lowercasing). Exa
 - `/home/u/.config/x_y` → `-home-u--config-x-y` (`.` and `_` both become `-`)
 
 **Derive this path, then assert the directory exists before trusting it.** If it does
-not, do **not** conclude "no memory" — the derivation can be wrong for an edge-case path.
-STOP and find the real dir (`ls ~/.claude/projects/ | grep <project-basename>`), or have
-the operator name it. A wrong derivation silently migrates nothing.
+not, do **not** conclude "no memory"; the derivation can be wrong for an edge-case path.
+Run `ls ~/.claude/projects/ | grep <project-basename>`:
+- **If it finds nothing,** the project has never had memory, so `mkdir -p` the derived path.
+- **If it finds anything else,** have the operator name the right dir. A basename match
+  can belong to a *different* project (`grep lore` matches `-…-dndlorescraper`).
+  Adopting it would migrate that project's memories into this project's lore and lock its
+  `MEMORY.md`. Never adopt a dir on a name match alone.
 
-The dir holds `MEMORY.md` (the auto-loaded index/store) plus one `<slug>.md` topic file
-per memory — each with YAML frontmatter (`name` / `description` / `metadata.type`) and a
-body.
+A wrong derivation silently migrates nothing.
 
-### Detecting a legacy flat `MEMORY.md`
+The dir holds `MEMORY.md` plus one `<slug>.md` topic file per memory, each with YAML
+frontmatter (`name` / `description` / `metadata.type`) and a body. It may also hold
+`archived-*/` subdirectories from earlier migrations. **Those are already migrated:
+every scan below is top-level only.**
 
-`MEMORY.md` is already a thin bootstrap **iff** it carries the marker
-`<!-- LORE-MEMORY-BOOTSTRAP -->` near the top. Absent that marker (and with topic files
-or index entries present), it is **legacy/flat** and must be migrated. The marker makes
-the whole protocol **idempotent** — a re-run on a bootstrapped file is a no-op.
+### Classifying the project's memory state
 
-### The migration protocol (run once lore is up)
+Topic files means `find <memdir> -maxdepth 1 -name '*.md' ! -name MEMORY.md`.
 
-Migration **writes to lore, so lore must be running** (after `start`). On `setup` (lore
-not yet up) do only the file side: write the thin bootstrap if `MEMORY.md` is absent; if
-it is legacy, say so loudly and defer the migration to after `start`.
+**One-line form** means `MEMORY.md` is a single line that starts with the marker and has
+nothing under it.
+- It is **current** when its text equals the template below; the date may differ.
+- It is **stale** when it has the one-line shape but different text. For example, an
+  older pointer with the unlabelled recall.
+
+Each state below lists **what you check**, and then **what you do when the check finds
+work**. Check **Needs migration** first; it takes precedence over Done.
+
+- **Needs migration** (defined below) — if any of its conditions hold, go there.
+- **Done.**
+  - *Checks:* one-line form, current; locked; `.claude/settings.local.json` has
+    `autoMemoryEnabled: false`; the project `CLAUDE.md` carries the landmine rule.
+    - On Linux, `lsattr` shows `i`.
+    - On macOS, `ls -lO` shows `uchg`.
+  - *If any check fails,* run only the part that's missing. There is nothing to
+    migrate, so steps 1–5 do not apply. The one-line *shape* is what makes the protocol
+    idempotent. The marker alone proves nothing.
+    - *Stale text:* unlock, write the current template, then lock it and prove the lock
+      (step 6's commands).
+    - *Unlocked:* step 6's lock and its proof only.
+    - *Settings:* step 7.
+    - *Rule:* step 8.
+- **Absent** (no `MEMORY.md`, no topic files).
+  - *Checks:* none; there is nothing to migrate.
+  - *Do (lore is not needed):* write the one-line template, lock it (step 6's lock and
+    its proof), then run steps 7–8.
+- **Needs migration.** Any one of:
+  - legacy/flat: no marker, with index lines or topic files;
+  - old-form bootstrap: the marker, plus landmine bullets or other lines under it;
+  - stray topic files beside any `MEMORY.md`.
+
+  ⚠ **The marker does NOT mean migrated.** Every entry (defined in step 2) and every
+  topic file is a memory. Migrating needs the lore tools **in this session**. A freshly deployed lore
+  only appears after a session reload (see "Activating it in-session").
+  - *If the lore tools are not loaded:*
+    - do **not** run steps 6–8;
+    - **leave auto-memory on**, so the file keeps loading and its landmines stay in front
+      of the next session;
+    - record the pending migration durably by adding this section at the top of the
+      project's `CLAUDE.md`:
+      `## PENDING — lore memory migration: run the lore-deploy skill's memory protocol (steps 1–8) before any other work.`
+    - tell the operator to reload.
+  - *If the lore tools are loaded:* run steps 1–8, and delete that PENDING section at
+    the end.
+
+### The migration protocol
 
 **Memory loss is unrecoverable — follow every step, skip none:**
 
 1. **Back up first.** `cp -a <memdir> <memdir>.bak-<UTC-stamp>` before touching
    anything. Nothing below ever deletes this backup.
-2. **Build the worklist** — the **union** of (a) every `*.md` topic file except
-   `MEMORY.md`, and (b) every entry line in `MEMORY.md`. Reconcile the two: a topic file
-   with no index entry is *still a memory* (migrate it); an index entry with no file is a
-   one-line memory (migrate its text). This union is your completeness checklist — a file
-   referenced twice, or not at all, is exactly why you enumerate **both** sides.
+2. **Build the worklist** — the **union** of:
+   - (a) every top-level topic file;
+   - (b) every **entry** in `MEMORY.md`. An entry is an index line, or a bullet *together
+     with its continuation lines*. Never split a bullet into its lines: a continuation
+     line stored alone loses its subject. Headings, blank lines, the marker and the
+     bootstrap's pointer prose are not entries.
+
+   Reconcile the two. A topic file with no index entry is *still a memory* (migrate
+   it). An index entry with no file is a one-line memory (migrate its text). Enumerate
+   **both** sides, because one file may be referenced twice or not at all.
+
+   **Mark each item `landmine` or not, now.**
+   - Every bullet in an old-form "Operational landmines" section is a landmine.
+   - In a legacy/flat store, mark the few facts that cause damage or wasted effort if
+     unknown at second zero: store/port topology, "do not run X", forward-only
+     migrations, where the plan of record lives.
+   - List your landmine picks in the report, for the operator to adjust.
 3. **Migrate each item** into lore:
    - Read the topic file and carry its body **verbatim** — a memory records what was true
      when written; do **not** summarise, "improve", or invent.
-   - **Dedup:** `lore_recall(query=<the item's title/description>, k=5)`. If an existing
-     memory (one *without* an `origin=claude_native_memory` label) already states the same
-     fact, record it as "covered by `<id>`" and **skip the write**. When in doubt, **write**
-     — a redundant memory is cheap; a dropped fact violates no-loss.
+   - **Dedup — non-landmine items only.** Run
+     `lore_recall(query=<the item's title/description>, k=5)`. If an existing memory (one
+     *without* an `origin=claude_native_memory` label) already states the same fact,
+     record it as "covered by `<id>`" and **skip the write**. When in doubt, **write**: a
+     redundant memory is cheap, and a dropped fact violates no-loss.
+   - **Landmine items are never dedup-skipped** against memories without the landmine
+     label. Those memories don't load at session start, so skipping would drop the
+     landmine from the second-zero load. Skip one only when a memory that already
+     carries `harness_type=landmine` states it. Old-form landmine bullets often end with
+     a `lore_recall("…")` pointer to a sibling memory; that pointer is exactly the case
+     where you **still write**.
    - **Write:** `lore_remember(text=<verbatim body>, kind=<mapped>, trust=<mapped>,
      labels=["origin=claude_native_memory", "source_file=<name>", "harness_type=<type>"])`.
      Map the frontmatter `type` to a lore `kind`: `reference`→`fact` (`trust=authoritative`)
      · `feedback`→`decision` · `project`→`fact` · `user`→`fact` · anything else→`fact`.
-     **Never `ongoing`** — it carries a 7-day TTL and would silently **expire** the
-     migrated memory. The labels preserve the original type and make every migrated memory
-     traceable back to its source file.
+     **A landmine item** is written with `kind=gotcha` and `harness_type=landmine`
+     (`source_file=MEMORY.md` for an index line). **Never `ongoing`** — it carries a 7-day
+     TTL and would silently **expire** the migrated memory. The labels keep every
+     migrated memory traceable back to its source.
    - **Verify:** `lore_recall` the fact you just wrote and confirm it comes back.
 4. **Account for every item.** Each worklist item is now either *written-and-verified* or
    *covered-by-existing*. No item unaccounted — this is the no-loss gate. Cross-check the
    count against step 2.
-5. **Rewrite `MEMORY.md` as the bootstrap** (template below): the marker, the pointer
-   directive, and a **small curated set** of second-zero operational landmines — the facts
-   an agent needs before it can even work safely, **not** a table of contents. Everything
-   else now recalls from lore.
-6. **Archive, don't delete, the topic files** — move them into
-   `<memdir>/archived-<stamp>/`, only after step 4 passes. The step-1 backup stays
-   regardless. (Archiving over deletion mirrors this repo's report-archival law: an
-   address that resolves beats a clean tree.)
+5. **Check the landmines in lore.** Run
+   `lore_recall(query="operational landmines", labels=["harness_type=landmine"], k=50)`.
+   It must return **every item step 2 marked `landmine`**; count against the worklist,
+   not against what you wrote. **Bound:** the render prints no total match count. If it
+   returns exactly 50, re-run with `k=100` (the maximum). If it still returns 100, say
+   so: landmines past that are silently cut.
+6. **Archive, don't delete — only after steps 4 AND 5 pass.**
+   - Move the topic files into `<memdir>/archived-<stamp>/`. The step-1 backup stays
+     regardless. (Archiving over deletion mirrors this repo's report-archival law: an
+     address that resolves beats a clean tree.)
+   - **If `MEMORY.md` is already the locked one-line form** (the stray-topic-files case),
+     leave it in place and locked; you are done with this step.
+   - **Otherwise:**
+     - if the file is locked, unlock it first:
+       - Linux: `lsattr` shows `i`, so run `sudo -n chattr -i <memdir>/MEMORY.md`;
+       - macOS: `ls -lO` shows `uchg`, so run `sudo chflags nouchg <memdir>/MEMORY.md`;
+     - move the old file in as `MEMORY.md.pre-oneline`;
+     - write the one-line template;
+     - lock it: `sudo -n chattr +i <memdir>/MEMORY.md`.
+   - **Prove the lock:** `lsattr` shows `i`, and `: >> <memdir>/MEMORY.md` fails with
+     "Operation not permitted". That command opens the file for append but writes
+     nothing, so if the lock silently failed it does not add a junk line. Undo is
+     `sudo chattr -i`.
+   - **macOS:** lock with `sudo chflags uchg`, check with `ls -lO` (shows `uchg`), and
+     undo with `sudo chflags nouchg`.
+   - **If `sudo -n` is refused,** give the operator the exact command and report the file
+     as **unlocked**. Never skip the step silently.
+7. **Turn off the harness's file memory for this project, never globally:**
+   ```bash
+   f=<project>/.claude/settings.local.json; mkdir -p "$(dirname "$f")"; [ -f "$f" ] || echo '{}' > "$f"
+   cp -a "$f" "$f.bak-<UTC-stamp>" && jq '.autoMemoryEnabled = false' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+   ```
+   Never touch `~/.claude/settings.json`. `settings.local.json` is per-checkout, so other
+   clones keep auto-memory until they run this skill. That is by design.
 
-### The bootstrap `MEMORY.md` template
+   **Why (MEDIUM — from the harness's own memory prompt, not tested):** while auto-memory
+   is on, each session carries a built-in instruction to save memories as topic files in
+   `<memdir>` and index them in `MEMORY.md`. The locked file cannot be indexed, so those
+   files would sit where nothing reads them. **Expected effect (MEDIUM; confirm in a fresh
+   session and report what you observed):** the built-in memory prompt goes away and
+   `MEMORY.md` stops loading. Step 8 replaces both.
+8. **Install the landmine rule** (template below) near the top of the project's
+   `CLAUDE.md`. Create the file with just this section if there is none, and delete any
+   PENDING migration section. `CLAUDE.md` is a tracked file: tell the operator it
+   changed, and commit only when they ask. When #607 ships, this section is removed from
+   **every** project that has it, not only lore.
+
+### The bootstrap `MEMORY.md` template (one line, exactly)
 
 ```markdown
-# Project Memory — <project>
-
-<!-- LORE-MEMORY-BOOTSTRAP -->
-
-**Durable project memory lives in LORE, not in this file.** Call
-`lore_recall("<topic>")` to retrieve it; write new durable facts with `lore_remember(...)`.
-Do NOT accumulate memory here — this file is auto-loaded into every session, so it must
-stay small. It holds only this pointer plus the second-zero landmines below.
-
-## Operational landmines (know these before you touch anything)
-- <curated fact 1>
-- <curated fact 2>
+<!-- LORE-MEMORY-BOOTSTRAP --> Project memory lives in lore, not here: recall with lore_recall("<topic>"), landmines with lore_recall(query="operational landmines", labels=["harness_type=landmine"], k=50); save with lore_remember; this file is immutable (chattr +i) by operator order, <YYYY-MM-DD>.
 ```
 
-Curate the landmines **per project**: the pointer, plus the few facts that cause damage
-or wasted effort if unknown at second zero — store/port topology, "do not run X",
-forward-only migrations, where the plan of record lives. Keep it under a page.
+### The `CLAUDE.md` landmine rule template
+
+```markdown
+## FIRST ACTION OF EVERY SESSION — load the landmines from lore
+Every session and every spawned agent, before any other work, and again after a context
+compaction. A spawned agent does its brief's mandated first action (e.g. reading
+brief-base) first, then this. Exception: Haiku agents (`haiku-runner` / `haiku-worker`),
+whose briefs are self-contained.
+1. `ToolSearch "+lore", max_results 20` (lore's tools are deferred).
+2. `lore_recall(query="operational landmines", labels=["harness_type=landmine"], k=50)`.
+   If it returns exactly 50, re-run with `k=100`; the render prints no total. If that
+   returns 100, say landmines may be cut off.
+
+If lore is unreachable, say so in your first reply and never proceed as if there were no
+landmines. Start it with
+`python3 ~/.claude/skills/lore-deploy/scripts/lore_deploy.py start --project <abs-dir>`,
+then reload the session (`claude --continue`) and recall. Save a new landmine with
+`lore_remember(..., kind="gotcha", labels=["harness_type=landmine", ...])`; without that
+label this recall does not load it.
+```
 
 ### Writing memory going forward
 
-Once bootstrapped, **do not add facts back into `MEMORY.md`.** Write durable project
-memory with `lore_remember`; recall it with `lore_recall`. The bootstrap's own directive
-says this — honor it, and so should every other agent on the project (the project's
-`CLAUDE.md` should carry the same instruction so it is not lost when this skill is not in
-context).
+Once bootstrapped, **do not add facts back into `MEMORY.md`**. The lock enforces this
+where step 6 proved it. Write durable project memory with `lore_remember`, and recall it
+with `lore_recall`. A new second-zero fact is a landmine: save it with
+`harness_type=landmine` so the session-start recall loads it. The project's `CLAUDE.md`
+carries this rule (step 8), so it survives when this skill is not in context.
 
 ## Hard rules (why they matter)
 
