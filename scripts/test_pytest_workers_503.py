@@ -7,7 +7,8 @@ recs"), item 3: the currency gate's pytest leg runs ``-n 12`` when another lore 
 WHY (``docs/plans/v2/receipts/2026-09-26-466-503/REPORT-measure-503.md``, 388c604, §Side answer): every
 ``pending_contract_gate.py --currency``
 close-out spawned a full suite at ``-n auto`` = 64 workers on this box, outside the measured envelope and
-against the MEMORY.md fleet rule (cap a FULL suite at ``-n 12`` when another lore suite is live).
+against the fleet rule (CLAUDE.md § Quality gates "TEST SCOPE"): cap a FULL suite at ``-n 12`` when
+another lore suite is live.
 
 CLASS: the worker count of EVERY manifested pytest-reader gate is decided by ONE policy function at the
 moment the gate runs, and that policy's "is another session live?" answer comes from the ONE detector
@@ -88,7 +89,8 @@ REPO_ROOT = SCRIPTS_DIR.parent
 SHARED_SESSIONS_MODULE = "_pytest_sessions"
 DETECTOR_NAME = "other_pytest_sessions"
 
-# The operator's ruling (2026-09-26, item 3) and MEMORY.md's fleet rule — INDEPENDENT expected values.
+# The operator's ruling (2026-09-26, item 3) and the fleet rule (CLAUDE.md § Quality gates
+# "TEST SCOPE") — INDEPENDENT expected values.
 RULED_WORKERS_WHEN_ANOTHER_SESSION_IS_LIVE = "12"
 RULED_WORKERS_WHEN_ALONE = "auto"
 XDIST_WORKERS_FLAG = "-n"

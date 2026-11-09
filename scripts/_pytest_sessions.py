@@ -23,7 +23,8 @@ PROC_ROOT = Path("/proc")
 PYTEST_ARGV_MARKER = "pytest"
 
 # The xdist worker count when another pytest session is live on the box (operator ruling
-# 2026-09-26, item 3; the MEMORY.md fleet rule: cap a FULL suite at -n 12 — RAM, not ports).
+# 2026-09-26, item 3; the fleet rule in CLAUDE.md § Quality gates "TEST SCOPE": cap a FULL suite
+# at -n 12 — RAM, not ports).
 FLEET_CAPPED_PYTEST_WORKERS = "12"
 # The xdist worker count when this is the only pytest session on the box (CLAUDE.md's measured
 # 9.6x for -n auto on this box).
