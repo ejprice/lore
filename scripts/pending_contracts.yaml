@@ -100,29 +100,156 @@ bounds:
     the ruled TxnCasLostError
   files:
   - path: loremaster/tests/test_supersede_reanchor_58.py
+    red_nodeids:
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestAConcurrentCreateIsRefusedNotStranded::test_the_supersede_is_REFUSED_byte_inert_and_TEACHES_retry"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestACycleClosingRewireIsRefusedWhole::test_CONTROL_a_legacy_cycle_ELSEWHERE_does_not_refuse_a_reanchor"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestACycleClosingRewireIsRefusedWhole::test_CONTROL_the_same_shape_without_the_closing_dependency_succeeds"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestACycleClosingRewireIsRefusedWhole::test_refused_as_a_cycle_naming_it_and_NOTHING_changed"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestEachDependentCarriesTheReanchorNote::test_exactly_ONE_new_event_per_dependent_naming_X_X_prime_and_the_SUPERSEDER"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestEachDependentCarriesTheReanchorNote::test_updated_at_is_stamped_on_every_rewired_dependent"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestEveryDependentFollowsTheWorkToTheSuccessor::test_direct_dependents_of_X_is_EMPTY_and_of_the_successor_is_the_whole_set"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestEveryDependentFollowsTheWorkToTheSuccessor::test_every_dependent_names_the_successor_and_NOT_the_superseded_task"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestEveryDependentFollowsTheWorkToTheSuccessor::test_only_the_X_entry_is_rewritten_order_and_other_blockers_kept"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestEveryDependentFollowsTheWorkToTheSuccessor::test_the_edge_mirrors_the_column_for_EVERY_row_and_no_edge_leaves_X"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestRequiredGreen::test_ZERO_dependents_reanchors_nothing"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestRequiredGreen::test_a_DOUBLE_supersede_race_reanchors_EXACTLY_ONCE_to_the_WINNER"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestRequiredGreen::test_a_loser_that_PASSED_its_pre_read_rolls_back_WHOLE_via_the_in_txn_CAS"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestRequiredGreen::test_the_174_sentinel_still_resolves_the_SUCCESSOR_while_dependents_are_rewired[clear]"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestRequiredGreen::test_the_174_sentinel_still_resolves_the_SUCCESSOR_while_dependents_are_rewired[inherit]"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestRequiredGreen::test_the_174_sentinel_still_resolves_the_SUCCESSOR_while_dependents_are_rewired[replace]"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestSupersedeOfATerminalPredecessorA1::test_a_claim_whose_PRE_READ_predates_the_reanchor_can_NOT_win"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestSupersedeOfATerminalPredecessorA1::test_an_OPEN_predecessor_reblocks_NOTHING"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestSupersedeOfATerminalPredecessorA1::test_every_status_is_rewired_including_claimed"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestSupersedeOfATerminalPredecessorA1::test_reblocked_names_exactly_the_previously_CLAIMABLE_dependents"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheBootBackfillAfterAReanchorIsANoOp::test_after_a_REFUSED_supersede_the_backfill_mints_nothing"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheBootHealReanchorsStragglers::test_a_DONE_head_frees_the_straggler"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheBootHealReanchorsStragglers::test_a_boot_heals_every_straggler_to_its_successor_and_COUNTS_them"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheBootHealReanchorsStragglers::test_a_three_hop_chain_reanchors_to_the_HEAD"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheHubBoundIsDERIVED::test_MUTATION_an_extra_per_dependent_statement_MOVES_the_cap"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheHubBoundIsDERIVED::test_REAL_CAP_a_supersede_past_the_RETIRED_statement_cap_SUCCEEDS"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheHubBoundIsDERIVED::test_at_and_just_below_the_cap_EVERY_dependent_is_reanchored[cap-0]"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheHubBoundIsDERIVED::test_at_and_just_below_the_cap_EVERY_dependent_is_reanchored[cap-1-0]"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheHubBoundIsDERIVED::test_at_and_just_below_the_cap_EVERY_dependent_is_reanchored[cap-1-2]"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheHubBoundIsDERIVED::test_at_and_just_below_the_cap_EVERY_dependent_is_reanchored[cap-2]"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheHubBoundIsDERIVED::test_crossing_the_WARN_threshold_logs_ONE_warning_and_SUCCEEDS"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheHubBoundIsDERIVED::test_one_past_the_cap_is_REFUSED_byte_inert_and_TEACHES[0]"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheHubBoundIsDERIVED::test_one_past_the_cap_is_REFUSED_byte_inert_and_TEACHES[2]"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheHubBoundIsDERIVED::test_the_accessor_equals_the_cap_the_COMPOSED_transaction_implies[0]"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheHubBoundIsDERIVED::test_the_accessor_equals_the_cap_the_COMPOSED_transaction_implies[2]"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheRewireDedupes::test_a_legacy_PHANTOM_entry_is_left_untouched_and_carries_no_edge"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheRewireDedupes::test_a_legacy_duplicate_X_X_becomes_ONE_successor_entry_and_ONE_edge"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheSupersedeIsONETransaction::test_a_failure_at_dependent_k_rolls_back_EVERYTHING[edge_create-k=1]"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheSupersedeIsONETransaction::test_a_failure_at_dependent_k_rolls_back_EVERYTHING[edge_create-k=2]"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheSupersedeIsONETransaction::test_a_failure_at_dependent_k_rolls_back_EVERYTHING[edge_create-k=3]"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheSupersedeIsONETransaction::test_a_failure_at_dependent_k_rolls_back_EVERYTHING[row_update-k=1]"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheSupersedeIsONETransaction::test_a_failure_at_dependent_k_rolls_back_EVERYTHING[row_update-k=2]"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheSupersedeIsONETransaction::test_a_failure_at_dependent_k_rolls_back_EVERYTHING[row_update-k=3]"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheSupersedeItselfIsUnchanged::test_the_result_is_the_typed_carrier"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheSupersedeItselfIsUnchanged::test_the_result_names_exactly_the_reanchored_dependents"
     missing_symbols:
     - TaskLedger.max_reanchor_dependents
     - loremaster.tasks.SupersedeResult
     - type[TaskLedger]._guarded_append_fragment
   - path: loremaster/tests/test_task_guarded_shell_58.py
+    red_nodeids:
+    - "loremaster/tests/test_task_guarded_shell_58.py::TestClaimWinGainsAnEventLossWritesNothing::test_a_WIN_appends_ONE_claim_event_naming_the_owner_and_stamps_updated_at"
+    - "loremaster/tests/test_task_guarded_shell_58.py::TestEachLedgerModuleHasExactlyONEGuardedAppendProducer::test_every_guarded_append_ledger_has_ONE_producer"
+    - "loremaster/tests/test_task_guarded_shell_58.py::TestEachLedgerModuleHasExactlyONEGuardedAppendProducer::test_the_task_ledgers_one_producer_IS_the_shell"
+    - "loremaster/tests/test_task_guarded_shell_58.py::TestParamNamesDoNotCollideAcrossComposedShells::test_three_reanchors_the_stamp_and_two_successor_edges_compose"
+    - "loremaster/tests/test_task_guarded_shell_58.py::TestSharingIsProvenByMutationALWAYSTHROW::test_CLAIM_routes_through_the_shell"
+    - "loremaster/tests/test_task_guarded_shell_58.py::TestSharingIsProvenByMutationALWAYSTHROW::test_CONTROL_an_unperturbed_action_is_untouched"
+    - "loremaster/tests/test_task_guarded_shell_58.py::TestSharingIsProvenByMutationALWAYSTHROW::test_TRANSITION_routes_through_the_shell"
+    - "loremaster/tests/test_task_guarded_shell_58.py::TestSharingIsProvenByMutationALWAYSTHROW::test_the_REANCHOR_routes_through_the_shell"
+    - "loremaster/tests/test_task_guarded_shell_58.py::TestSharingIsProvenByMutationALWAYSTHROW::test_the_SUPERSEDE_STAMP_routes_through_the_shell"
+    - "loremaster/tests/test_task_guarded_shell_58.py::TestSharingIsProvenByMutationTHEAPPEND::test_the_BOOT_HEAL_note_comes_from_the_shell_too"
+    - "loremaster/tests/test_task_guarded_shell_58.py::TestSharingIsProvenByMutationTHEAPPEND::test_transition_stamp_claim_and_reanchor_events_all_come_from_the_shell"
+    - "loremaster/tests/test_task_guarded_shell_58.py::TestTheShellIsTheSeam64aGoverns::test_event_None_appends_NOTHING"
+    - "loremaster/tests/test_task_guarded_shell_58.py::TestTheShellIsTheSeam64aGoverns::test_the_signature_carries_the_keyword_only_extension_points"
+    - "loremaster/tests/test_task_guarded_shell_58.py::TestTheShellIsTheSeam64aGoverns::test_where_conjuncts_are_each_PARENTHESISED_and_AND_joined"
+    - "loremaster/tests/test_task_guarded_shell_58.py::TestUpdatedAtIsStampedByTheShellForEveryCaller::test_transition_claim_stamp_and_reanchor_all_stamp_updated_at"
     missing_symbols:
     - type[TaskLedger]._guarded_append_fragment
   - path: loremaster/tests/test_task_claimable_partition_58.py
+    red_nodeids:
+    - "loremaster/tests/test_task_claimable_partition_58.py::TestASupersededRowIsInNeitherPartition::test_blocked_False_excludes_superseded_rows"
+    - "loremaster/tests/test_task_claimable_partition_58.py::TestASupersededRowIsInNeitherPartition::test_blocked_True_excludes_superseded_rows"
+    - "loremaster/tests/test_task_claimable_partition_58.py::TestASupersededRowMatchesNoStatusFilter::test_no_status_filter_serves_a_superseded_row"
+    - "loremaster/tests/test_task_claimable_partition_58.py::TestEverythingServedAsClaimableIsClaimableAndViceVersa::test_every_row_served_as_claimable_is_WON_by_a_claim"
+    - "loremaster/tests/test_task_claimable_partition_58.py::TestEverythingServedAsClaimableIsClaimableAndViceVersa::test_nothing_the_CAS_refuses_is_served_as_claimable"
     missing_symbols:
     - loremaster.tasks.SupersedeResult
   - path: loremaster/tests/test_reanchor_58_r2_probes.py
+    red_nodeids:
+    - "loremaster/tests/test_reanchor_58_r2_probes.py::test_PR11_production_containment_statements_are_index_served[R1_closing_guard_count]"
+    - "loremaster/tests/test_reanchor_58_r2_probes.py::test_PR11_production_containment_statements_are_index_served[direct_dependents]"
+    - "loremaster/tests/test_reanchor_58_r2_probes.py::test_PR11_production_containment_statements_are_index_served[heal_containsany]"
+    - "loremaster/tests/test_reanchor_58_r2_probes.py::test_PR12_the_note_at_is_the_supersede_time"
+    - "loremaster/tests/test_reanchor_58_r2_probes.py::test_PR13_CONTROL_the_house_policy_DOES_warn_at_that_size"
+    - "loremaster/tests/test_reanchor_58_r2_probes.py::test_PR14_the_accessor_follows_the_shared_hard_cap"
+    - "loremaster/tests/test_reanchor_58_r2_probes.py::test_PR1_a_genuine_store_fault_is_not_laundered_into_the_R1_retry_teaching"
+    - "loremaster/tests/test_reanchor_58_r2_probes.py::test_PR2_the_cap_moves_with_K_across_a_floor_boundary"
+    - "loremaster/tests/test_reanchor_58_r2_probes.py::test_PR3_a_straggler_naming_TWO_superseded_blockers_is_healed_fully_and_counted_once"
+    - "loremaster/tests/test_reanchor_58_r2_probes.py::test_PR4_a_straggler_already_naming_the_head_gets_ONE_entry_and_ONE_edge"
+    - "loremaster/tests/test_reanchor_58_r2_probes.py::test_PR6_status_open_with_a_limit_is_not_short_while_claimable_rows_exist"
+    - "loremaster/tests/test_reanchor_58_r2_probes.py::test_PR7_a_WONTFIX_predecessor_reports_its_reblocked_dependent"
+    - "loremaster/tests/test_reanchor_58_r2_probes.py::test_PR8_a_dependent_on_a_legacy_loop_does_not_block_the_supersede"
     missing_symbols:
     - TaskLedger.max_reanchor_dependents
   - path: loremaster/tests/test_reanchor_58_r2_scale.py
+    red_nodeids:
+    - "loremaster/tests/test_reanchor_58_r2_scale.py::test_L3_REAL_CAP_a_heal_past_the_RETIRED_statement_cap_is_ONE_transaction"
+    - "loremaster/tests/test_reanchor_58_r2_scale.py::test_PR16_a_hub_at_the_accessors_cap_with_K3_is_never_the_bare_compose_error"
+    - "loremaster/tests/test_reanchor_58_r2_scale.py::test_PR17_the_boot_heal_at_scale_does_not_fail_the_boot"
     missing_symbols:
     - TaskLedger.max_reanchor_dependents
   - path: loremaster/tests/test_reanchor_58_r2_am2.py
+    red_nodeids:
+    - "loremaster/tests/test_reanchor_58_r2_am2.py::test_PR18r2_cap_plus_one_of_ONE_blocker_heals_in_the_PACKERS_predicted_chunks"
+    - "loremaster/tests/test_reanchor_58_r2_am2.py::test_PR19_cap_plus_one_stragglers_over_TEN_blockers_all_heal_in_ONE_boot"
+    - "loremaster/tests/test_reanchor_58_r2_am2.py::test_PR20_owner_query_serves_a_held_superseded_row_and_status_excludes_it"
     missing_symbols:
     - TaskLedger.max_reanchor_dependents
   - path: loremaster/tests/test_reanchor_58_r2_rulings.py
+    red_nodeids:
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestAClaimLossIsDEBUGNeverAnAlarm::test_CONTROL_a_lost_TRANSITION_race_still_logs_at_WARNING"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestAClaimLossIsDEBUGNeverAnAlarm::test_an_8_way_race_logs_NO_warning_or_error_for_its_7_losers"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestAClaimLossIsDEBUGNeverAnAlarm::test_the_claim_lost_marker_is_ONE_literal_per_side"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestAClaimLossIsDEBUGNeverAnAlarm::test_the_ledger_catches_the_TYPE_never_the_text"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestAHealStoreFaultIsLOUD::test_a_chunk_DOMAIN_rejection_is_isolated_WARNED_and_healed_next_boot"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestAHealStoreFaultIsLOUD::test_every_heal_door_after_the_backfill_RAISES[store]"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestAHealStoreFaultIsLOUD::test_every_heal_door_after_the_backfill_RAISES[transport]"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestAHealStoreFaultIsLOUD::test_the_heal_READS_what_the_backfill_minted_in_the_SAME_boot"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestAHeldSupersededRowUnderOwnerQueries::test_blocked_False_excludes_it_get_serves_it_and_the_holder_cannot_transition_it"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestAPhantomChainHeadIsSkippedAndRECORDED::test_phantom_head_skipped_recorded_every_boot_sibling_healed_and_hand_fix_heals"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestASupersededByCycleIsBoundedAndRECORDED::test_a_cycle_is_recorded_each_boot_and_never_rewrites_the_straggler"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestEveryComposedGuardedWriteCameFromTheShell::test_every_verb_composes_guarded_writes_only_through_the_shell"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestEveryRELATEComesFromTheSharedFragment::test_the_supersede_composes_only_shared_fragment_RELATEs"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestOnlyACycleThroughXPrimeIsRefused::test_CONTROL_a_successor_explicitly_blocked_by_its_dependent_is_REFUSED_whole"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestOnlyACycleThroughXPrimeIsRefused::test_CONTROL_an_INHERITED_blocker_that_closes_a_loop_through_X_prime_is_REFUSED"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestOnlyACycleThroughXPrimeIsRefused::test_the_legacy_loop_is_untouched_and_Y_follows_the_work"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestTheClaimLostHierarchy::test_the_claim_lost_class_cannot_hold_exhausted_contention"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestTheFakeReanchorsInLockstepWithTheReal::test_a_done_X_reanchors_and_reblocks_on_both[fake]"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestTheFakeReanchorsInLockstepWithTheReal::test_a_done_X_reanchors_and_reblocks_on_both[real]"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestTheHealPacksByItsOwnComposedCount::test_MUTATION_padding_the_shell_moves_the_packer_AND_the_accessor"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestTheHealPacksByItsOwnComposedCount::test_cap_plus_1_stragglers_over_SIX_blockers_all_heal_in_ONE_boot_every_chunk_within_the_cap"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestTheHubCapFollowsKAcrossFloorBoundaries::test_at_K_the_accessor_is_the_composed_cap_cap_succeeds_and_cap_plus_1_teaches[0]"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestTheHubCapFollowsKAcrossFloorBoundaries::test_at_K_the_accessor_is_the_composed_cap_cap_succeeds_and_cap_plus_1_teaches[1]"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestTheHubCapFollowsKAcrossFloorBoundaries::test_at_K_the_accessor_is_the_composed_cap_cap_succeeds_and_cap_plus_1_teaches[2]"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestTheHubCapFollowsKAcrossFloorBoundaries::test_at_K_the_accessor_is_the_composed_cap_cap_succeeds_and_cap_plus_1_teaches[3]"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestTheHubCapFollowsKAcrossFloorBoundaries::test_at_K_the_accessor_is_the_composed_cap_cap_succeeds_and_cap_plus_1_teaches[per+1]"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestTheHubCapFollowsKAcrossFloorBoundaries::test_at_K_the_accessor_is_the_composed_cap_cap_succeeds_and_cap_plus_1_teaches[per]"
     missing_symbols:
     - TaskLedger.max_reanchor_dependents
   - path: loremaster/tests/test_reanchor_58_r3_am6.py
+    red_nodeids:
+    - "loremaster/tests/test_reanchor_58_r3_am6.py::test_P6_E11_a_legacy_duplicate_collapses_WHOLE_column_and_the_claim_then_wins"
+    - "loremaster/tests/test_reanchor_58_r3_am6.py::test_P6_E11_through_the_boot_heal"
+    - "loremaster/tests/test_reanchor_58_r3_am6.py::test_P6_each_ruled_tier_and_the_deny_by_default[cas_lost]"
+    - "loremaster/tests/test_reanchor_58_r3_am6.py::test_P6_each_ruled_tier_and_the_deny_by_default[claim_lost]"
+    - "loremaster/tests/test_reanchor_58_r3_am6.py::test_P6_each_ruled_tier_and_the_deny_by_default[governed_conflict]"
+    - "loremaster/tests/test_reanchor_58_r3_am6.py::test_P6_each_ruled_tier_and_the_deny_by_default[heal_chunk]"
+    - "loremaster/tests/test_reanchor_58_r3_am6.py::test_P6_each_ruled_tier_and_the_deny_by_default[reanchor_straggler]"
+    - "loremaster/tests/test_reanchor_58_r3_am6.py::test_P6_mutation_dropping_ONE_table_entry_moves_ONLY_that_tier"
     missing_symbols:
     - loremaster.store._txn.TxnCasLostError
     unsymboled_codes:
@@ -132,39 +259,157 @@ bounds:
         names no symbol for a module-alias attribute ("Module has no attribute"); the same ruled table the tiers file
         names statically
   - path: loremaster/tests/test_reanchor_58_r3_cas_seam.py
+    red_nodeids:
+    - "loremaster/tests/test_reanchor_58_r3_cas_seam.py::TestExhaustedContentionReachesTheCallerAsTheSAMEInstance::test_the_injected_instance_reaches_the_caller_and_a_real_loss_is_the_ruled_verdict[tasks.py::_reanchor_stragglers]"
+    - "loremaster/tests/test_reanchor_58_r3_cas_seam.py::TestTheCASPopulationIsDrivenBothWays::test_every_static_CAS_member_has_a_driver_and_every_driver_a_static_member[tasks.py::_reanchor_stragglers]"
+    - "loremaster/tests/test_reanchor_58_r3_cas_seam.py::TestTheCASPopulationIsDrivenBothWays::test_every_static_CAS_member_has_a_driver_and_every_driver_a_static_member[tasks.py::claim_task]"
     missing_symbols:
     - type[TaskLedger]._guarded_append_fragment
   - path: loremaster/tests/test_reanchor_58_r3_convergence.py
+    red_nodeids:
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestARowOverTheCapFailsTheBootLOUD::test_a_single_row_over_the_cap_raises_the_typed_packer_error_and_changes_NOTHING"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestAnUnresolvableRowIsSkippedWHOLE::test_a_row_with_a_PHANTOM_and_a_CYCLIC_entry_records_BOTH_and_its_healable_entry_waits"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestAnUnresolvableRowIsSkippedWHOLE::test_the_row_is_the_unit[bad_among_two_healable-bad-first-cyclic]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestAnUnresolvableRowIsSkippedWHOLE::test_the_row_is_the_unit[bad_among_two_healable-bad-first-phantom]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestAnUnresolvableRowIsSkippedWHOLE::test_the_row_is_the_unit[bad_among_two_healable-bad-last-cyclic]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestAnUnresolvableRowIsSkippedWHOLE::test_the_row_is_the_unit[bad_among_two_healable-bad-last-phantom]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestAnUnresolvableRowIsSkippedWHOLE::test_the_row_is_the_unit[bad_among_two_healable-bad-middle-cyclic]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestAnUnresolvableRowIsSkippedWHOLE::test_the_row_is_the_unit[bad_among_two_healable-bad-middle-phantom]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestAnUnresolvableRowIsSkippedWHOLE::test_the_row_is_the_unit[bad_plus_healable-bad-first-cyclic]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestAnUnresolvableRowIsSkippedWHOLE::test_the_row_is_the_unit[bad_plus_healable-bad-first-phantom]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestAnUnresolvableRowIsSkippedWHOLE::test_the_row_is_the_unit[bad_plus_healable-bad-middle-cyclic]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestAnUnresolvableRowIsSkippedWHOLE::test_the_row_is_the_unit[bad_plus_healable-bad-middle-phantom]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestAnUnresolvableRowIsSkippedWHOLE::test_the_row_is_the_unit[healable_plus_healable-bad-first-cyclic]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestAnUnresolvableRowIsSkippedWHOLE::test_the_row_is_the_unit[healable_plus_healable-bad-first-phantom]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestAnUnresolvableRowIsSkippedWHOLE::test_the_row_is_the_unit[one_bad-bad-first-cyclic]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestAnUnresolvableRowIsSkippedWHOLE::test_the_row_is_the_unit[one_bad-bad-first-phantom]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestAnUnresolvableRowIsSkippedWHOLE::test_the_row_is_the_unit[two_bad-bad-first-cyclic]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestAnUnresolvableRowIsSkippedWHOLE::test_the_row_is_the_unit[two_bad-bad-first-phantom]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsAMixedPopulation::test_a_mixed_population_heals_in_one_boot[e1-distinct-absent+e3-distinct-absent]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsAMixedPopulation::test_a_mixed_population_heals_in_one_boot[e2-shared-present+e2-distinct-absent]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e1-distinct-absent-2fit+1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e1-distinct-absent-fit+1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e1-distinct-absent-fit-1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e1-distinct-absent-fit]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e1-distinct-present-2fit+1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e1-distinct-present-fit+1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e1-distinct-present-fit-1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e1-distinct-present-fit]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e2-distinct-absent-2fit+1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e2-distinct-absent-fit+1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e2-distinct-absent-fit-1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e2-distinct-absent-fit]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e2-distinct-present-2fit+1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e2-distinct-present-fit+1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e2-distinct-present-fit-1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e2-distinct-present-fit]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e2-shared-absent-2fit+1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e2-shared-absent-fit+1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e2-shared-absent-fit-1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e2-shared-absent-fit]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e2-shared-present-2fit+1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e2-shared-present-fit+1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e2-shared-present-fit-1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e2-shared-present-fit]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e3-distinct-absent-2fit+1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e3-distinct-absent-fit+1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e3-distinct-absent-fit-1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e3-distinct-absent-fit]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e3-distinct-present-2fit+1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e3-distinct-present-fit+1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e3-distinct-present-fit-1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e3-distinct-present-fit]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e3-shared-absent-2fit+1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e3-shared-absent-fit+1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e3-shared-absent-fit-1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e3-shared-absent-fit]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e3-shared-present-2fit+1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e3-shared-present-fit+1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e3-shared-present-fit-1]"
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestOneBootHealsEveryShapeAtTheCapBoundary::test_one_boot_heals_the_whole_population_in_the_predicted_chunks[e3-shared-present-fit]"
     missing_symbols:
     - loremaster.tasks.StragglerHealPackerError
   - path: loremaster/tests/test_reanchor_58_r3_probes.py
+    red_nodeids:
+    - "loremaster/tests/test_reanchor_58_r3_probes.py::test_PA1_a_lost_SUPERSEDE_race_logs_its_rollback_at_WARNING"
+    - "loremaster/tests/test_reanchor_58_r3_probes.py::test_PA2_an_R1_straggler_rollback_logs_at_WARNING"
+    - "loremaster/tests/test_reanchor_58_r3_probes.py::test_PC_stragglers_naming_TWO_superseded_blockers_at_scale_heal_in_ONE_boot"
+    - "loremaster/tests/test_reanchor_58_r3_probes.py::test_PD1_a_MIXED_row_phantom_head_plus_healable_blocker_is_skipped_WHOLE"
+    - "loremaster/tests/test_reanchor_58_r3_probes.py::test_PD2_a_MIXED_row_cyclic_chain_plus_healable_blocker_is_skipped_WHOLE"
+    - "loremaster/tests/test_reanchor_58_r3_probes.py::test_PE_a_single_straggler_that_alone_exceeds_the_cap_fails_the_boot_LOUD_and_changes_nothing"
     missing_symbols:
     - loremaster.tasks.StragglerHealPackerError
   - path: loremaster/tests/test_reanchor_58_r3_relate.py
+    red_nodeids:
+    - "loremaster/tests/test_reanchor_58_r3_relate.py::TestEveryComposedRELATECameFromTheSharedFragment::test_the_verb_composes_only_RELATEs_the_fragment_produced[_reanchor_stragglers]"
+    - "loremaster/tests/test_reanchor_58_r3_relate.py::TestTheRELATEVerbsAreDerivedAndDriven::test_the_driver_registry_equals_the_derived_RELATE_verbs"
     missing_symbols:
     - type[TaskLedger]._reanchor_stragglers
   - path: loremaster/tests/test_reanchor_58_r3_tiers.py
+    red_nodeids:
+    - "loremaster/tests/test_reanchor_58_r3_tiers.py::TestDroppingOneKeyMovesOnlyThatTier::test_dropping_a_key_sends_its_trigger_to_ERROR_and_leaves_a_sibling_alone[TxnCasLostError]"
+    - "loremaster/tests/test_reanchor_58_r3_tiers.py::TestDroppingOneKeyMovesOnlyThatTier::test_dropping_a_key_sends_its_trigger_to_ERROR_and_leaves_a_sibling_alone[TxnClaimLostError]"
+    - "loremaster/tests/test_reanchor_58_r3_tiers.py::TestDroppingOneKeyMovesOnlyThatTier::test_dropping_a_key_sends_its_trigger_to_ERROR_and_leaves_a_sibling_alone[TxnGovernedConflictError]"
+    - "loremaster/tests/test_reanchor_58_r3_tiers.py::TestDroppingOneKeyMovesOnlyThatTier::test_dropping_a_key_sends_its_trigger_to_ERROR_and_leaves_a_sibling_alone[TxnHealChunkError]"
+    - "loremaster/tests/test_reanchor_58_r3_tiers.py::TestDroppingOneKeyMovesOnlyThatTier::test_dropping_a_key_sends_its_trigger_to_ERROR_and_leaves_a_sibling_alone[TxnReanchorStragglerError]"
+    - "loremaster/tests/test_reanchor_58_r3_tiers.py::TestDroppingOneKeyMovesOnlyThatTier::test_dropping_a_key_sends_its_trigger_to_ERROR_and_leaves_a_sibling_alone[TxnUniqueViolationError]"
+    - "loremaster/tests/test_reanchor_58_r3_tiers.py::TestEachClassRollsBackAtItsTier::test_the_real_trigger_rolls_back_at_the_ruled_tier[TxnCasLostError-lost-finding-transition]"
+    - "loremaster/tests/test_reanchor_58_r3_tiers.py::TestEachClassRollsBackAtItsTier::test_the_real_trigger_rolls_back_at_the_ruled_tier[TxnCasLostError-lost-supersede-PA1]"
+    - "loremaster/tests/test_reanchor_58_r3_tiers.py::TestEachClassRollsBackAtItsTier::test_the_real_trigger_rolls_back_at_the_ruled_tier[TxnCasLostError-lost-transition]"
+    - "loremaster/tests/test_reanchor_58_r3_tiers.py::TestEachClassRollsBackAtItsTier::test_the_real_trigger_rolls_back_at_the_ruled_tier[TxnClaimLostError-claim-race-8-way]"
+    - "loremaster/tests/test_reanchor_58_r3_tiers.py::TestEachClassRollsBackAtItsTier::test_the_real_trigger_rolls_back_at_the_ruled_tier[TxnGovernedConflictError-governed-conflict-throw]"
+    - "loremaster/tests/test_reanchor_58_r3_tiers.py::TestEachClassRollsBackAtItsTier::test_the_real_trigger_rolls_back_at_the_ruled_tier[TxnHealChunkError-heal-chunk-row-moved]"
+    - "loremaster/tests/test_reanchor_58_r3_tiers.py::TestEachClassRollsBackAtItsTier::test_the_real_trigger_rolls_back_at_the_ruled_tier[TxnReanchorStragglerError-r1-straggler-PA2]"
+    - "loremaster/tests/test_reanchor_58_r3_tiers.py::TestEachClassRollsBackAtItsTier::test_the_real_trigger_rolls_back_at_the_ruled_tier[TxnUniqueViolationError-keeps-unique-race]"
+    - "loremaster/tests/test_reanchor_58_r3_tiers.py::TestTheTierTableIsKeyedByCLASSAndComplete::test_every_ruled_class_has_its_ruled_tier"
+    - "loremaster/tests/test_reanchor_58_r3_tiers.py::TestTheTierTableIsKeyedByCLASSAndComplete::test_the_keys_are_classes_and_equal_the_typed_domain_rejection_classes_both_ways"
     missing_symbols:
     - loremaster.store._txn._ROLLBACK_LOG_TIERS
   - path: loremaster/tests/test_reanchor_58_r4_state.py
+    red_nodeids:
+    - "loremaster/tests/test_reanchor_58_r4_state.py::TestTheFiredLedgerEqualsTheDerivedDomain::test_every_root_verb_and_write_index_fires_and_the_caller_gets_the_SAME_instance[tasks.py::_reanchor_stragglers -> tasks.py::_reanchor_stragglers]"
+    - "loremaster/tests/test_reanchor_58_r4_state.py::TestTheFiredLedgerEqualsTheDerivedDomain::test_every_root_verb_and_write_index_fires_and_the_caller_gets_the_SAME_instance[tasks.py::ensure_ready -> tasks.py::_reanchor_stragglers]"
     missing_symbols:
     - type[TaskLedger]._reanchor_stragglers
   - path: loremaster/tests/test_reanchor_58_r5_rows.py
+    red_nodeids:
+    - "loremaster/tests/test_reanchor_58_r5_rows.py::TestFiftyEightsFragmentsAreUnannotated::test_every_supersede_and_heal_transaction_counts_one_row_per_statement"
+    - "loremaster/tests/test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored::test_a_THROW_LED_by_the_marker_raises_the_class_and_an_echoed_marker_does_not[TxnCasLostError]"
+    - "loremaster/tests/test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored::test_a_THROW_LED_by_the_marker_raises_the_class_and_an_echoed_marker_does_not[TxnClaimLostError]"
+    - "loremaster/tests/test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored::test_a_THROW_LED_by_the_marker_raises_the_class_and_an_echoed_marker_does_not[TxnHealChunkError]"
+    - "loremaster/tests/test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored::test_a_THROW_LED_by_the_marker_raises_the_class_and_an_echoed_marker_does_not[TxnReanchorStragglerError]"
+    - "loremaster/tests/test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored::test_the_class_is_recognised_by_construction_and_built_by_the_one_mapping_helper[TxnCasLostError]"
+    - "loremaster/tests/test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored::test_the_class_is_recognised_by_construction_and_built_by_the_one_mapping_helper[TxnClaimLostError]"
+    - "loremaster/tests/test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored::test_the_class_is_recognised_by_construction_and_built_by_the_one_mapping_helper[TxnHealChunkError]"
+    - "loremaster/tests/test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored::test_the_class_is_recognised_by_construction_and_built_by_the_one_mapping_helper[TxnReanchorStragglerError]"
     missing_symbols:
     - loremaster.store._txn.TxnCasLostError
   - path: loremaster/tests/test_reanchor_58_r4_lease_fates.py
+    red_nodeids:
+    - "loremaster/tests/test_reanchor_58_r4_lease_fates.py::TestExhaustionAtTheLeaseStoreIsNamedByEffect::test_the_fail_safe_value_is_served_the_WARNING_names_the_class_and_nothing_follows[create]"
+    - "loremaster/tests/test_reanchor_58_r4_lease_fates.py::TestExhaustionAtTheLeaseStoreIsNamedByEffect::test_the_fail_safe_value_is_served_the_WARNING_names_the_class_and_nothing_follows[get]"
+    - "loremaster/tests/test_reanchor_58_r4_lease_fates.py::TestExhaustionAtTheLeaseStoreIsNamedByEffect::test_the_fail_safe_value_is_served_the_WARNING_names_the_class_and_nothing_follows[release_if_held]"
+    - "loremaster/tests/test_reanchor_58_r4_lease_fates.py::TestExhaustionAtTheLeaseStoreIsNamedByEffect::test_the_fail_safe_value_is_served_the_WARNING_names_the_class_and_nothing_follows[update]"
     missing_symbols:
     - type[TaskLedger]._guarded_append_fragment
   - path: loremaster/tests/test_exhaustion_fates.py
+    red_nodeids:
+    - "loremaster/tests/test_exhaustion_fates.py::TestTheRegistryIsTheAdjudicationBothWays::test_every_row_names_a_ruled_classification_an_owner_and_evidence_that_HOLDS"
     missing_symbols:
     - type[TaskLedger]._guarded_append_fragment
   - path: loremaster/tests/test_blocks_edge.py
+    red_nodeids:
+    - "loremaster/tests/test_blocks_edge.py::TestTheBackfillMirrorsADependencyOnASUPERSEDEDTask::test_a_legacy_dependency_on_a_SUPERSEDED_task_is_STILL_MIRRORED"
     missing_symbols:
     - loremaster.tasks.SupersedeResult
   - path: loremaster/tests/test_task_read_surface.py
+    red_nodeids:
+    - "loremaster/tests/test_task_read_surface.py::TestSupersedeWARNSWhenThePredecessorHasDEPENDENTS::test_superseding_a_task_with_dependents_NAMES_them_and_the_SUCCESSOR"
     missing_symbols:
     - loremaster.tasks.SupersedeResult
   - path: scripts/test_forgery_door_sweep.py
+    red_nodeids:
+    - "scripts/test_forgery_door_sweep.py::TestThisInstrumentIsTYPECHECKED::test_mypy_is_clean_over_the_sweep_and_its_contract"
     missing_symbols:
     - loremaster.tasks.SupersedeResult
 # Packet 64b-i contract r2 (contract-64b-r2, 2026-09-27 — the adversary-64b survivors + packet-64 amendments 7-10 +
