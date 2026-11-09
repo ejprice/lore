@@ -60,6 +60,7 @@ from loremaster.store._txn import (
     bootstrap_session,
     compose,
     execute_transaction,
+    one_statement_result,
     signin_credentials,
 )
 from pydantic import SecretStr
@@ -98,7 +99,7 @@ def _conflict_fragments(witness_id: str, *, match: bool) -> list[TxnFragment]:
 
 
 async def _row_exists(connection: Any, record: str) -> bool:
-    rows = await connection.query(f"SELECT id FROM {record}")
+    rows = one_statement_result(await connection.query(f"SELECT id FROM {record}"))
     return bool(rows)
 
 

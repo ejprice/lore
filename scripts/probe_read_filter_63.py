@@ -120,6 +120,7 @@ from typing import Any
 from loremaster.store._txn import (
     bootstrap_session,
     execute_transaction,
+    one_statement_result,
     signin_credentials,
 )
 from loremaster.store.surreal_schema import (
@@ -657,10 +658,10 @@ async def probe(connection: Any) -> ProbeReport:  # noqa: PLR0915 — a flat, li
         table=MESSAGE_TABLE, where=f"id IN $ids AND ({msg_fragment})",
         params={"ids": inbox_ids, **msg_params}, dump=True, report_only=True,
     )
-    leak_rows = await connection.query(
+    leak_rows = one_statement_result(await connection.query(
         f"SELECT id FROM {MESSAGE_TABLE} WHERE id IN $ids AND ({msg_fragment})",
         {"ids": inbox_ids, **msg_params},
-    )
+    ))
     returned_ids = sorted(_row_ids(leak_rows))
     print(f"  LEAK GATE — id IN [x_ap(admitted), x_other(excluded)] AND (fragment) returned: {returned_ids}")
     if returned_ids != ["message:x_ap"]:
@@ -683,9 +684,9 @@ async def probe(connection: Any) -> ProbeReport:  # noqa: PLR0915 — a flat, li
     )
 
     print("\n=== P6 — keep `key = $k` after SF-63-4 UNIQUE index; >=2 NONE-key keeps COEXIST ===")
-    none_key_count = await connection.query(
+    none_key_count = one_statement_result(await connection.query(
         f"SELECT count() AS n FROM {KEEP_TABLE} WHERE key IS NONE GROUP ALL"
-    )
+    ))
     coexisting = _scalar(none_key_count, "n")
     print(f"  NONE-key keeps present (must be >= 2, §1.8 coexistence): {coexisting}")
     if not isinstance(coexisting, int) or coexisting < 2:

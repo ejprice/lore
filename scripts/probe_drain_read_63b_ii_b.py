@@ -100,7 +100,7 @@ from typing import Any
 # re-cloned here (store-law C1: do not fork a throwaway walker).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from loremaster.messages import MessageBodyError, MessageLedger  # noqa: E402
-from loremaster.store._txn import bootstrap_session, signin_credentials  # noqa: E402
+from loremaster.store._txn import bootstrap_session, one_statement_result, signin_credentials  # noqa: E402
 from loremaster.store.surreal_schema import (  # noqa: E402
     MESSAGE_BODY_MAX_CHARS,
     MESSAGE_TABLE,
@@ -184,11 +184,11 @@ async def _query_raw(connection: Any, surql: str, params: dict[str, Any]) -> Any
 async def _seen_state(connection: Any, agent_id: str) -> list[tuple[str, bool]]:
     """(bare message id, seen_at-IS-set) for every ``to`` edge of ``agent_id``,
     oldest by the message's seq — the ground-truth read-back the verdict rests on."""
-    rows = await connection.query(
+    rows = one_statement_result(await connection.query(
         f"SELECT in.id AS mid, (seen_at IS NOT NONE) AS seen, in.seq AS seq "
         f"FROM {TO_RELATION} WHERE out = $agent ORDER BY seq",
         {"agent": RecordID(AGENT_TABLE, agent_id)},
-    )
+    ))
     out: list[tuple[str, bool]] = []
     if isinstance(rows, list):
         for row in rows:
@@ -198,11 +198,11 @@ async def _seen_state(connection: Any, agent_id: str) -> list[tuple[str, bool]]:
 
 
 async def _ack_note_of(connection: Any, agent_id: str, message_id: str) -> Any:
-    rows = await connection.query(
+    rows = one_statement_result(await connection.query(
         f"SELECT ack_note, (acked_at IS NOT NONE) AS acked FROM {TO_RELATION} "
         f"WHERE out = $agent AND in = $msg",
         {"agent": RecordID(AGENT_TABLE, agent_id), "msg": RecordID(MESSAGE_TABLE, message_id)},
-    )
+    ))
     if isinstance(rows, list) and rows and isinstance(rows[0], dict):
         return rows[0]
     return None
@@ -437,9 +437,9 @@ async def _ack_writer_control(
     ONE ``to.ack_note`` writer): ``ack`` REFUSES an over-cap note with NOTHING written to the edge,
     then ACCEPTS an at-cap note on the same edge (positive control: the refusal is about the length,
     not a writer that refuses everything). Driven through the REAL ledger, never a copy of its check."""
-    seq_of_m_ap = await connection.query(
+    seq_of_m_ap = one_statement_result(await connection.query(
         f"SELECT seq FROM {MESSAGE_TABLE} WHERE id = $mid", {"mid": RecordID(MESSAGE_TABLE, "m_ap")}
-    )
+    ))
     seq = int(seq_of_m_ap[0]["seq"])
     ledger = MessageLedger(
         url=URL, namespace=NAMESPACE, database=database, user=USER, password=SecretStr(PASSWORD)

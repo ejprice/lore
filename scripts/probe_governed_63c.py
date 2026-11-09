@@ -122,7 +122,7 @@ from typing import Any
 # walker). The raw per-statement status helpers are the ii-b DD-3.c instrument.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from loremaster.agents import AgentRegistry, InvalidAgentIdentityError  # noqa: E402
-from loremaster.store._txn import bootstrap_session, signin_credentials  # noqa: E402
+from loremaster.store._txn import bootstrap_session, one_statement_result, signin_credentials  # noqa: E402
 from loremaster.store.surreal_schema import (  # noqa: E402
     BRIEF_TABLE,
     _define_field,
@@ -252,9 +252,9 @@ async def _downgrade(connection: Any, table: str, column: str, type_expr: str) -
 async def _agent_names_present(connection: Any, names: list[str]) -> list[str]:
     """The subset of ``names`` that has an ``agent`` row — the read-back a writer refusal
     is checked against ("nothing was written" is observed, never assumed)."""
-    rows = await connection.query(
+    rows = one_statement_result(await connection.query(
         f"SELECT name FROM {AGENT_TABLE} WHERE name IN $names", {"names": names}
-    )
+    ))
     return sorted(str(row.get("name")) for row in rows or [] if isinstance(row, dict))
 
 
@@ -414,9 +414,9 @@ async def _agent_dd3c(database: str, connection: Any, report: ProbeReport) -> di
         f"UPDATE {AGENT_TABLE} SET owner_principal = $op WHERE owner_principal IS NONE",
         {"op": op},
     )
-    stamped_after = await connection.query(
+    stamped_after = one_statement_result(await connection.query(
         f"SELECT count() AS n FROM {AGENT_TABLE} WHERE owner_principal IS NOT NONE GROUP ALL"
-    )
+    ))
     n_stamped = _scalar(stamped_after, "n") or 0
     findings["agent_backfill_errored"] = _any_err(c2_raw)
     findings["agent_backfill_err"] = _err_texts(c2_raw)
@@ -432,9 +432,9 @@ async def _agent_dd3c(database: str, connection: Any, report: ProbeReport) -> di
         f"UPDATE {AGENT_TABLE} SET owner_principal = $op WHERE owner_principal IS NONE AND id IN $ids",
         {"op": op, "ids": ids_ok},
     )
-    stamped2 = await connection.query(
+    stamped2 = one_statement_result(await connection.query(
         f"SELECT count() AS n FROM {AGENT_TABLE} WHERE owner_principal IS NOT NONE GROUP ALL"
-    )
+    ))
     findings["agent_backfill_control_errored"] = _any_err(c2_ok_raw)
     findings["agent_backfill_control_stamped"] = _scalar(stamped2, "n") or 0
     print(f"  [C2-control backfill over CONFORMING-only ids] errored={_any_err(c2_ok_raw)}, "
@@ -543,9 +543,9 @@ async def _brief_dd3c(connection: Any, report: ProbeReport) -> dict[str, Any]:
     ww_raw = await _query_raw(
         connection, f"UPDATE {BRIEF_TABLE} SET scope = $sc WHERE scope IS NONE", {"sc": server}
     )
-    remaining_none = await connection.query(
+    remaining_none = one_statement_result(await connection.query(
         f"SELECT count() AS n FROM {BRIEF_TABLE} WHERE scope IS NONE GROUP ALL"
-    )
+    ))
     n_none = _scalar(remaining_none, "n") or 0
     findings["brief_backfill_errored"] = _any_err(ww_raw)
     findings["brief_backfill_err"] = _err_texts(ww_raw)

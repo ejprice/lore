@@ -80,7 +80,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from loremaster.store._txn import bootstrap_session, signin_credentials
+from loremaster.store._txn import bootstrap_session, one_statement_result, signin_credentials
 from pydantic import SecretStr
 from surrealdb import AsyncSurreal, RecordID
 
@@ -208,7 +208,7 @@ def _expect_rows(
 
 
 async def _q(connection: Any, statement: str, params: dict[str, Any] | None = None) -> Any:
-    return await connection.query(statement, params or {})
+    return one_statement_result(await connection.query(statement, params or {}))
 
 
 async def _try_ddl(connection: Any, label: str, ddl: str, report: ProbeReport) -> bool:

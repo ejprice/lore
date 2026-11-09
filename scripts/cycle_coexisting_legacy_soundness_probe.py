@@ -48,6 +48,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from loremaster.store._txn import one_statement_result
 from loremaster.store.surreal_schema import BLOCKS_RELATION, TASK_TABLE
 from loremaster.tasks import STATUS_OPEN, TaskCycleError, TaskLedger, TaskSpec
 from surrealdb import RecordID
@@ -144,7 +145,7 @@ async def probe() -> int:
         await edge(connection, legq, legp)  # Q blocks P
         # NO edge for (new_id -> X): new_id has no row (ENFORCED forbids it) — COLUMN only.
 
-        before = len(await connection.query(f"SELECT id FROM {TASK_TABLE}"))
+        before = len(one_statement_result(await connection.query(f"SELECT id FROM {TASK_TABLE}")))
 
         refused = False
         try:
@@ -157,11 +158,13 @@ async def probe() -> int:
             refused = True
             print(f"REFUSED (correct): {exc}")
 
-        after = len(await connection.query(f"SELECT id FROM {TASK_TABLE}"))
+        after = len(one_statement_result(await connection.query(f"SELECT id FROM {TASK_TABLE}")))
         landed = after == before + 1
         served = {
             str(row["id"])
-            for row in await connection.query(f"SELECT record::id(id) AS id FROM {TASK_TABLE}")
+            for row in one_statement_result(
+                await connection.query(f"SELECT record::id(id) AS id FROM {TASK_TABLE}")
+            )
         }
         print(
             f"rows before={before} after={after}  new task landed? {landed}  "
