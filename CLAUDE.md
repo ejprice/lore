@@ -272,10 +272,8 @@ Durable project memory lives in the lore `memory` table — write it with `lore_
 recall it with `lore_recall`. Since 2026-11-09 the harness's `MEMORY.md` is ONE immutable
 (`chattr +i`) pointer line. The landmines moved to lore (see FIRST ACTION above), and
 auto-memory is off for this checkout (`.claude/settings.local.json`), so the harness no
-longer loads that file (MEDIUM, unconfirmed). It is **never a growing store**. While
-auto-memory was on, it was loaded in FULL every session, so accumulating memory there was
-the exact anti-pattern lore exists to kill. This project hit that file's size ceiling and
-needed manual compaction before the 2026-07-22 migration into lore. So:
+longer loads that file (confirmed 2026-11-09: a fresh session reported it "no longer
+present"). It is **never a growing store**. So:
 - **Do NOT add facts back into `MEMORY.md`.** Learn something durable → `lore_remember` it
   (atomic fact, `kind` fact/decision/gotcha, never `ongoing` — that TTLs out in 7 days).
 - The mechanical half lives in the **lore-deploy skill** ("Project memory" section). On

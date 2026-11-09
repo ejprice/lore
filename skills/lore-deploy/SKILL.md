@@ -123,10 +123,16 @@ check.
 lore is a RAG whose whole purpose is preserving context, so a project's **durable
 memory belongs in lore** — the SurrealDB `memory` table, written with `lore_remember`
 and recalled with `lore_recall` — **not** accumulated in the flat `MEMORY.md` that the
-Claude Code harness auto-loads into every session. That flat file does not scale: it is
-loaded *in full* every session, so it has a hard size ceiling, and past it you pay
-context for memory you may never touch. Storing project memory there is the exact
-anti-pattern lore exists to kill — and a dogfood miss for any project on lore.
+Claude Code harness auto-loads at session start. That flat file does not scale.
+- **Only the first 200 lines or 25 KB of `MEMORY.md` load**, whichever comes first.
+  Everything past that is **silently not loaded**.
+- **Topic files beside it are never loaded at startup**; an agent reads them only if it
+  happens to look.
+
+So a growing store loses memory without any error: whatever sits past the limit, which is
+the newest entries when they are appended at the end.
+(Source: code.claude.com/docs/en/memory, checked 2026-11-09.) Storing project memory there
+is the exact anti-pattern lore exists to kill — and a dogfood miss for any project on lore.
 
 So `MEMORY.md` is a **one-line bootstrap**: the marker plus a pointer to lore, locked
 immutable (operator, 2026-11-09). The **second-zero operational landmines live in lore
