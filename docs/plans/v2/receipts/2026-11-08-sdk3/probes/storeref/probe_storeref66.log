@@ -1,0 +1,45 @@
+HEAD=88b06be6d80a2088df8a34f3ca43687a9e441694
+DIRTY_FILES=5
+TREE=408ecd09e2d7951295a1d5f3e3e277431aa2f227962acdec306ecebc273119f5
+d3eb06d7b943e2d21c77e854594379ebf22de9f649bd6cf2560de776ae63a15d  /var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/d68febab-e1d4-4ed2-95a0-0ded042fa32c/scratchpad/closeout66/probe_storeref66.py
+PROVENANCE python=3.14.7 surrealdb=3.0.0 at /home/ejprice/PycharmProjects/lore/.venv/lib/python3.14/site-packages/surrealdb/__init__.py store=ws://127.0.0.1:18000/rpc db=test_storeref66_e10e5f4550784c4985c610ade80c1acd
+PASS O1 fromisoformat truncates 9->6 silently: 2026-11-08T18:17:45.186697+00:00
+PASS O1 control: 6 digits round-trip exact: 2026-11-08T18:17:45.186697+00:00
+PASS O2 parse_instant 1 digit(s): 2026-11-08T18:17:45.100000000Z
+PASS O2 parse_instant 2 digit(s): 2026-11-08T18:17:45.120000000Z
+PASS O2 parse_instant 3 digit(s): 2026-11-08T18:17:45.123000000Z
+PASS O2 parse_instant 4 digit(s): 2026-11-08T18:17:45.123400000Z
+PASS O2 parse_instant 5 digit(s): 2026-11-08T18:17:45.123450000Z
+PASS O2 parse_instant 6 digit(s): 2026-11-08T18:17:45.123456000Z
+PASS O2 parse_instant 7 digit(s): 2026-11-08T18:17:45.123456700Z
+PASS O2 parse_instant 8 digit(s): 2026-11-08T18:17:45.123456780Z
+PASS O2 parse_instant 9 digit(s): 2026-11-08T18:17:45.123456789Z
+PASS O2 codec round-trip keeps ns: 2026-11-08T18:17:45.186697518Z
+PASS O3 PreciseDatetime == ignores ns: ns 1/2: eq=True lt=False
+PASS O3 control: a different microsecond compares: eq=False lt=True
+INFO O4 SDK str(RecordID): {'abc': 'kt:abc', '01JABCDEFGHJKMNPQRSTVWXYZ0': 'kt:⟨01JABCDEFGHJKMNPQRSTVWXYZ0⟩', '42': 'kt:⟨42⟩', 'a-b': 'kt:⟨a-b⟩', 42: 'kt:42'}
+PASS O5 control: a word key round-trips through str/parse: kt:abc
+PASS O5 str(RecordID) does NOT round-trip for digit-led / non-word / int keys: {'01JABCDEFGHJKMNPQRSTVWXYZ0': False, 'a-b': False, 42: False}
+PASS O5 RecordID is hashable on 3.0.0: set of two equal ids has 1 member
+PASS S1 query() answers one entry per statement: two=[1, 2] one=[1]
+PASS S1 seam refuses a two-statement answer: SurrealStoreError
+PASS S1 control: seam selects a one-statement answer: 1
+PASS S2 a later statement's failure RAISES from query(): surrealdb.errors.ThrownError: An error occurred: boom
+INFO S2 rows left (no BEGIN: each statement its own txn): [[1, 2]]
+PASS S2 control: two good statements raise nothing: 2 entries
+PASS S2b in-transaction THROW raises and nothing commits: QueryError kind='Query' details={'kind': 'NotExecuted'}: The query was not executed due to a failed transaction · rows="NotFoundError: The table 'probe_c' does not exist"
+INFO S3 key='abc': engine='kt:abc' record_text='kt:abc' str='kt:abc' equal=True
+INFO S3 key='01JABCDEFGHJKMNPQRSTVWXYZ0': engine='kt:01JABCDEFGHJKMNPQRSTVWXYZ0' record_text='kt:01JABCDEFGHJKMNPQRSTVWXYZ0' str='kt:⟨01JABCDEFGHJKMNPQRSTVWXYZ0⟩' equal=True
+INFO S3 key='4558tc0abc': engine='kt:4558tc0abc' record_text='kt:4558tc0abc' str='kt:⟨4558tc0abc⟩' equal=True
+INFO S3 key='42': engine='kt:`42`' record_text='kt:42' str='kt:⟨42⟩' equal=False
+INFO S3 key='a-b': engine='kt:`a-b`' record_text='kt:a-b' str='kt:⟨a-b⟩' equal=False
+INFO S3 key=42: engine='kt:42' record_text='kt:42' str='kt:42' equal=True
+INFO S4 admitted by `v > $since` (datetime 2020-01-01): ['after', 'array', 'object', 'record', 'uuid']
+PASS S4 control: datetime-after admitted, datetime-before excluded: ['after', 'array', 'object', 'record', 'uuid']
+PASS S4 admits exactly {array, object, record, uuid, after}: ['after', 'array', 'object', 'record', 'uuid']
+INFO S5 outcomes: {'literal NULL': 'rejected (InternalError)', 'string (control)': 'rejected (InternalError)', 'datetime (control)': 'accepted', 'python None': 'accepted'}; sf:pynone stored: {'is_none': True, 'is_null': False}
+PASS S5 literal NULL rejected; None accepted; controls as expected: {'literal NULL': 'rejected (InternalError)', 'string (control)': 'rejected (InternalError)', 'datetime (control)': 'accepted', 'python None': 'accepted'}
+PASS cleanup: throwaway DB removed: test_storeref66_e10e5f4550784c4985c610ade80c1acd
+PASS S6 close() twice raises nothing: ok
+FAILS=[]
+EXIT=0

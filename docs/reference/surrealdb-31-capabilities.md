@@ -4,9 +4,12 @@
 `docker.io/surrealdb/surrealdb:v3.3.5`, image id `d4330a269f11`). History: 3.1.5 → **3.2.1** on
 2026-07-22 ([§0](#0-the-321-migration-receipts)); the floating `v3.2` tag then carried both stores to
 **3.2.4** (finding #336); **3.2.4 → 3.3.5** on 2026-11-07, in place, forward-only (receipts in
-[§0a](#0a-the-335-migration-receipts)). Python SDK `surrealdb>=2.0` (installed: 2.0.0, which no vendor
-statement covers against 3.3; §0a measured it working — the full suite shows no SDK regression). Server
-floor ≥3.1.0 (CVE-2026-49997).
+[§0a](#0a-the-335-migration-receipts)). Python SDK **`surrealdb==3.0.0`** (exact pin, since packet 66,
+2026-11-08 — receipts in [§0b](#0b-sdk-300-receipts-packet-66-2026-11-08); before that `surrealdb>=2.0`, installed
+2.0.0, which no vendor statement covers against 3.3; §0a measured it working, with the full suite showing
+no SDK regression). **Sections below that were measured on SDK 2.0.0 say so
+where they stand; a `(SDK 3.0.0, packet 66: …)` note marks each one 3.0.0 changed.** Server floor ≥3.1.0
+(CVE-2026-49997).
 
 > **FLOATING TAG (finding #336) — CLOSED for the stores by the 3.3.5 migration:** both quadlets now pin
 > `v3.3.5`, so a recreate or `podman pull` can no longer move the engine without a quadlet edit. (While
@@ -16,7 +19,8 @@ floor ≥3.1.0 (CVE-2026-49997).
 > **Version-provenance honesty:** most facts below were `[PROBED]` on **3.1.5** and are dated as such; a
 > set was re-probed on **3.2.1** (§0) and a further set on **3.2.4** (the await build-probe, 2026-08-05 —
 > §3, §8). Each `[PROBED … <version>]` label is KEPT at the version it was run on — a fact is **never**
-> silently relabelled to a newer engine. If you depend on an un-re-probed fact on the live 3.2.4 store,
+> silently relabelled to a newer engine. *(Since 2026-11-07 the live stores run 3.3.5, and §0a re-probed a
+> set on it; the 3.2.4 advice that follows predates that.)* If you depend on an un-re-probed fact on the live 3.2.4 store,
 > re-probe it (3.2.4 is forward within the 3.2 minor, so a 3.2.1 re-probe is a strong but not guaranteed
 > prior).
 
@@ -34,9 +38,12 @@ floor ≥3.1.0 (CVE-2026-49997).
 > 3. **`ALTER` is not the migration verb.** It **cannot create** a field, and
 >    `ALTER … IF EXISTS` on a missing one silently no-ops — adopting it re-commits #107 from
 >    the other side. [§1.3](#13-why-not-alter)
-> 4. **A multi-statement `.query()` validates statement[0] ONLY.** A later statement can fail
->    and roll the whole thing back while `query()` raises *nothing*. Always
->    `execute_transaction`. [§3](#3-transactions)
+> 4. **Multi-statement work never goes through a bare `.query()`. Always `execute_transaction`.**
+>    On SDK 2.0.0 `.query()` validated statement[0] ONLY: a later statement could fail and roll the
+>    whole thing back while `query()` raised *nothing*. *(SDK 3.0.0, packet 66: `query()` now raises
+>    the FIRST failing statement — but without `BEGIN` the statements after it still APPLY, and inside
+>    `BEGIN … COMMIT` the error it raises is a cascade notice, not the cause — [§0b](#0b-sdk-300-receipts-packet-66-2026-11-08).
+>    The rule is unchanged.)* [§3](#3-transactions)
 > 5. **Every test mints a virgin database.** No fixture can see a migration defect — that is
 >    *structurally* why 1040 tests, a cold audit and a contract-adversary all passed #107.
 >    A clean-slate fixture can never test what only happens on a dirty store. [§1.6](#16-the-blind-spot-that-hid-107)
@@ -61,6 +68,207 @@ probe is worthless; that is exactly how we got here.**
 | **[UNVERIFIED]** | We do **not** know. Probe before depending on it. |
 
 ---
+
+## 0b. SDK 3.0.0 receipts (packet 66, 2026-11-08)
+
+lore's Python SDK moved **`surrealdb` 2.0.0 → 3.0.0** on the 3.3.5 stores in packet 66. **The authority is
+the operator rulings, `docs/plans/v2/sdk3-rulings.md` R1–R46** (cite them; do not re-derive them here).
+- The cold audit's verdict at `88b06be` is GO (`docs/plans/v2/receipts/2026-11-08-sdk3/REPORT-coldaudit-66.md`
+  §DELTA-2). That GO rests on reading (b) of finding #598, which is LOW and still open; strict reading (a)
+  would be NO-GO.
+- The in-image conformance run is *"PASS for the SDK-3 artifact, with named holes"*
+  (`…/2026-11-08-sdk3/REPORT-conform-66.md`). `lore_diff` was not exercised, and #604–#606 were filed. Every `[PROBED]` fact in this
+section ran on **SDK 3.0.0 + engine 3.3.5 + Python 3.14.7**. "storeref-66" below means the probe
+`probe_storeref66.py` (28 checked legs plus informational ones, with controls; one throwaway DB on `:18000`, removed afterwards). Its
+source is pasted verbatim in `docs/plans/v2/receipts/2026-11-08-sdk3/REPORT-storeref-66.md`, and the script
+itself is archived at `docs/plans/v2/receipts/2026-11-08-sdk3/probes/storeref/probe_storeref66.py`.
+
+- **⚠ [MEASURED 2026-11-08] The served production container is NOT on SDK 3.0.0 yet.** `lore-lore` runs
+  image `43122071…` (`localhost/lore:latest`, built 2026-08-18), whose venv holds `surrealdb 2.0.0`.
+  Packet 66 shipped no production deploy. By R19 Q1 the conformance image was tagged
+  `sdk3-conform-<sha>`, never `latest`, and `latest`'s id was identical before and after
+  (`REPORT-conform-66.md` §Teardown). So until the next rebuild, the 2.0.0-era facts this file marks as
+  history still describe the RUNNING server, and the 3.0.0 facts describe the REPO and its tests. Re-check
+  before you lean on either one: `podman inspect lore-lore --format '{{.Image}}'` against the image you built.
+- **The pin.** [CODE] `loremaster/pyproject.toml` declares `surrealdb==3.0.0`, and `uv.lock` resolves
+  `surrealdb 3.0.0` (commit `9863c11`). The Containerfile's `RUN uv sync --locked --all-packages`
+  installs exactly the lock. [MEASURED] In-image, `importlib.metadata.version("surrealdb")` is `3.0.0`,
+  from `/app/.venv/lib/python3.14/site-packages` (`REPORT-conform-66.md` §Step 2). ⚠ **`surrealdb.__version__`
+  does not exist in 3.0.0** (an `AttributeError`). Read the version from the distribution metadata.
+  R7 pins it exactly (3.0.1 was unpublished on PyPI as of 2026-11-07). R7 also records that 3.0.1 changes
+  `str(RecordID)`, so re-probe this section on any SDK bump.
+- **Result shapes: one entry per statement, and the FIRST `ERR` raises.** [CODE] SDK 3.0.0
+  `connections/builders.py::_QueryState._statement_values` raises the first statement whose `status` is
+  `ERR`; otherwise it returns every statement's `result`. [PROBED storeref-66 S1/S2/S2b]
+  - `RETURN 1; RETURN 2` → `[1, 2]`, and `RETURN 1` → `[1]`.
+  - **A raise does not mean nothing applied.** With no `BEGIN`, `CREATE a:1; THROW 'boom'; CREATE a:2`
+    raises `ThrownError("boom")`, and BOTH rows exist afterwards: each statement is its own transaction.
+  - **Inside `BEGIN … COMMIT` the raised error is a CASCADE NOTICE, not the cause.**
+    `BEGIN; CREATE c:1; THROW 'boom'; COMMIT;` raises `QueryError` with `kind=Query`,
+    `details.kind=NotExecuted` and the text *"The query was not executed due to a failed transaction"*.
+    The THROW's own text is not in it, and nothing commits. R7 W6 records the same for a conflict. So
+    root-cause selection still needs the per-statement entries: `execute_transaction` still rides
+    `query_raw` and the semantic selector in §3, unchanged. *(SDK 2.0.0 instead returned a later
+    statement's `ERR` silently: §3, §6.5.)*
+  - **The seam rule** (R2; R8 F13): `_txn.one_statement_result` returns exactly ONE entry or raises
+    `SurrealStoreError` (storeref-66 S1: a two-entry answer is refused). `run_query`, scout's command
+    channel and the inbox awaiter all call it. The SDK-3 failure behind R2 was measured: a lost CAS read
+    as the truthy `[[]]`, and 8/8 racers "won".
+  - **The test harness's rule differs, deliberately** (R19 C10; contract surface).
+    `tests/_surreal_harness.run()` answers the FIRST statement's result, because it is also the setup
+    helper for multi-statement generated DDL. It FAILS CLOSED on an empty or non-list answer, because the
+    #486 reaper reads `INFO FOR NS` through it. Pinned by `test_surreal_harness::TestRunAnswersItsFirstStatement`.
+  - The conflict signal is the SDK's own predicate, `QueryError.is_transaction_conflict`. [CODE] SDK
+    3.0.0 also ships `QueryDetailKind.TRANSACTION_CONFLICT`. `_txn._RETRYABLE_CONFLICT_KIND` is deleted
+    (drop list #2, `df84764`).
+- **Outcome UNKNOWN is not failure** (R5 rider 2, R7, R9 D1, R12 F18, R19 Q6).
+  - Every SDK `TransportError` on a request becomes `_txn.SurrealOutcomeUnknownError`, a
+    `SurrealConnectionError` subclass. That covers a timeout, a socket dropped mid-flight, and a request
+    parked on a reconnect that never completed. A server-ANSWERED error is a definite failure and never
+    this class (R12 F-b).
+  - The served advice is ONE constant, `_txn.OUTCOME_UNKNOWN_ADVICE`: *"a write may have landed: verify
+    before retrying; a read is safe to re-run"*. A renderer that knows its request's shape serves only its
+    own half (Q6).
+  - A served catch site must catch this class before it renders a definite failure. R9 D1 rules this for
+    every served `SurrealConnectionError` catch site; R12 F18 extends it to the `SurrealStoreError` family
+    (14 sites, the ruling's count). This reference has NOT counted the pins.
+  - **Why "unknown" is real** ([MEASURED] by scout-40-sdk3 on memory engines 3.3.5 and 4.0; the durable
+    record is **R7** in the rulings, because that scout's own report was not archived):
+    - with streaming (the SDK default, which lore sets EXPLICITLY: `_txn.SURREAL_STREAMING = True`), a
+      timed-out request is cancelled and commits nothing;
+    - a disconnect mid-flight commits nothing;
+    - **with `streaming=False` and a timeout, the ENGINE KEEPS RUNNING AND COMMITS**;
+    - client transactions never stream.
+
+    Bound (R7): SurrealKV and RocksDB are unprobed, and a commit racing the cancel was never constructed.
+- **Connection policy: ONE factory** (R5; `_txn.open_surreal_connection`).
+  - It uses `ReconnectOptions(attempts=-1, retry_delay=0.5, retry_delay_max=2.0)` and a request timeout of
+    `SURREAL_REQUEST_TIMEOUT_SECONDS = 30.0`. That is SDK 3.0's own default, kept until measured (R5 F4b);
+    R19 Q2's conformance grep is the re-open signal.
+  - Named overrides go through `long_operation` (`ENSURE_READY_TIMEOUT_SECONDS`,
+    `INDEX_TRANSACTION_TIMEOUT_SECONDS`, 300 s each). They are applied as `with connection.timeout(N)` at
+    the seam.
+  - [CODE] SDK `async_ws.py::_await_reconnect`: a request made during a reconnect waits, bounded ONLY by
+    the request timeout, then raises `TransportTimeoutError`. A request in flight at a drop fails with
+    `ConnectionUnavailableError` and is NOT re-sent (R5 grounds).
+  - [MEASURED] A first connect to a store that is down raises `ConnectionUnavailableError`: the SDK does
+    not reconnect a connection that never connected. That is why scout keeps its boot ladder (builder C-row
+    #21, `REPORT-builder-66.md` §C-row measurement table).
+  - No `websockets.*` class reached lore in 120 legs (`REPORT-builder-66.md` §FINAL drop-list fate table,
+    row 9; C-row #9 has the 20 × {abort, close-frame} legs). The `WebSocketException` arm and SDK
+    2.0's in-flight `KeyError` arm are both retired (drop list #1, #9).
+- **`kill()` is bounded by the SDK's own timeout** (R41 FORK T, `5e464bc`;
+  `docs/plans/v2/receipts/2026-11-08-sdk3-sidecar/RULING-13.md`).
+  - [MEASURED] `kill()` on a dropped socket PARKS in `_await_reconnect` until the request timeout. It
+    raised `TransportTimeoutError` after 30 s, 40/40. SDK 2.0 failed at once.
+  - Teardown therefore runs `with connection.timeout(_txn.TEARDOWN_KILL_TIMEOUT_SECONDS): await
+    connection.kill(id)`, with the constant at 2.0 s. Re-measured: 2.00 s, against 30.00 s uncapped.
+  - The worst case is **2 × N**: the reconnect wait and the request each get the budget.
+  - Not stdlib `asyncio.timeout`: it injects a `CancelledError` the SDK was not built to receive (RULING-13).
+- **`close()` is idempotent** (R41 FORK S, `6b43b65`).
+  - [CODE] SDK 3.0.0 `AsyncWsSurrealConnection.close` documents itself as *"Idempotent."*
+  - [MEASURED] `close()` over a severed socket never raised, 40/40 (C-row #16).
+  - [PROBED storeref-66 S6] A second `close()` raises nothing.
+  - So the 18 `_safe_close` wrappers are retired. The live close pin is `5fb57fc`: 17 owners × 2 sever
+    modes, plus scout's drop path.
+- **`PreciseDatetime` and THE cursor codec** (R6 S2/F3, R34, R43 B1 `fda1411`, R44).
+  - SDK 3.0.0 decodes every `datetime` column as a tz-aware UTC `PreciseDatetime` (a `datetime`
+    subclass), keeping the engine's nanoseconds (C-row #8/#34).
+  - A stamp an agent may HAND BACK is rendered with `isoformat_with_nanoseconds` and parsed with the SDK's
+    `parse_instant`. Those are `_txn.served_instant_text` and `_txn.parse_served_instant`; the parser adds
+    a zone-presence check, because `parse_instant` reads a zone-less text as UTC.
+    [PROBED storeref-66 O2] `parse_instant` accepts 1–9 fraction digits, and a nine-digit text round-trips
+    exactly. **The pair is THE cursor codec. A second codec is copy #2** (RULING-14).
+  - ⚠ **`PreciseDatetime` `==` and `<` IGNORE nanoseconds** (#593). [PROBED storeref-66 O3] Two stamps
+    differing only in ns compare `eq=True, lt=False`; the control, a different microsecond, compares.
+    **Never compare, sort or take min/max of store stamps in Python.** Use the engine's `ORDER BY`, or
+    `store.stamp_paging.stamp_key` (`(instant, nanosecond)`; R44).
+  - A store-row stamp is CHECKED, never converted: `_txn.required_datetime` / `stored_datetime` (R34).
+- **⚠ Python 3.14's `datetime.fromisoformat` silently truncates nine fraction digits to six.** This was the
+  root of #590. [PROBED RULING-14 on 3.14.7; re-probed storeref-66 O1, control: a six-digit text
+  round-trips exactly] `fromisoformat("…45.186697518+00:00")` returns `…45.186697+00:00` with no error.
+  With `isoformat()` (µs) on the render side, the rollup cursor re-served the row it was read from (#590).
+  Serving more digits alone would not have fixed it, because the parser threw them away.
+- **`db.batch()` reports the cancellation notice instead of a THROW's own error** (#588; drop list #14 = KEEP).
+  - [MEASURED, `REPORT-builder-66.md` §R-9 row #14] For `[CREATE, THROW, CREATE]` through
+    `db.batch().execute()`, where the THROW's text quotes the cascade notice, `db.batch()` raises
+    `QueryError kind=Query "…not executed due to a cancelled transaction"`: the wrong root cause. The
+    control, a plain THROW, raises `ThrownError kind=Thrown`. Nothing commits either way.
+  - `db.batch()` raises ONE error, so no per-statement entries exist for the rollback log.
+  - So lore keeps `compose` + per-statement root-cause selection (§3). The trigger to retire it is an SDK
+    release whose batch result selects by typed kind, not text. Filing upstream waits on the operator (#588).
+- **Record-id TEXT: never `str(RecordID)`** (R7, `d41aa47`; `_txn.record_key` / `record_text`).
+  [PROBED storeref-66 S3/O4/O5; audit `probe_record_text` in `REPORT-coldaudit-66.md` §Instruments]
+
+  | key | engine `<string> id` | SDK 3.0.0 `str(RecordID)` | `RecordID.parse(str(rid)) == rid` |
+  |---|---|---|---|
+  | `'abc'` | `kt:abc` | `kt:abc` | yes |
+  | `'01JABC…'` (ULID, digit-led) | `kt:01JABC…` | `kt:⟨01JABC…⟩` | **no** |
+  | `'42'` (all-digit STRING) | ``kt:`42` `` | `kt:⟨42⟩` | — |
+  | `'a-b'` (non-word) | ``kt:`a-b` `` | `kt:⟨a-b⟩` | **no** |
+  | `42` (int) | `kt:42` | `kt:42` | **no** |
+
+  - The engine renders a word key that holds a letter BARE, and backticks a non-word key or an ALL-DIGIT
+    string key (`d41aa47` corrected the all-digit case).
+  - SDK 3.0.0 brackets; 3.0.1 backticks (R7).
+  - The rules (R7 (a)–(d)):
+    - take the key from the PARTS (`record_key`);
+    - build display text from the parts (`record_text`, which equals the engine form only for
+      letter-holding word keys and composites);
+    - text that is persisted, compared, or expected back from an agent comes from the engine
+      (`<string> id` in the query).
+  - Persisted bare strings needed no migration (R7).
+  - [PROBED storeref-66 O5] `RecordID` is **hashable** on 3.0.0. The 2.0.0 row in §7 is history.
+- **⚠ On 3.3.5, `field > $datetime` ADMITS non-datetime values.** [PROBED] `v > $since`, with `$since` a
+  datetime:
+  - ADMITS array, object, uuid and record values, and later datetimes;
+  - EXCLUDES string, number, float, bool, `NULL`, duration, `NONE` and earlier datetimes.
+
+  Receipts: R45 S6 (servicer); `REPORT-coldaudit-66.md` §DELTA-2 item 4b, with datetime controls on both
+  sides; storeref-66 S4, on a SCHEMALESS table. Consequence: a non-datetime stamp is outside every
+  stamp-paged leg. That is **KNOWN BOUND #597**, pinned (R46: pin-the-miss `de6e116`; the predicate is
+  stated once in `stamp_paging.read_stamp_page`'s docstring, `d2df34c`). Its only door is an admin DDL
+  retype (RULING-17). Why the engine orders these types this way is NOT established here.
+- **`option<datetime>` on a SCHEMAFULL table rejects a literal `NULL`; Python `None` stores `NONE`.**
+  [PROBED `REPORT-coldaudit-66.md` §DELTA-2 item 7; re-probed storeref-66 S5]
+  - `SET t = NULL` → rejected (`InternalError`).
+  - `CONTENT {…, "t": None}` through the SDK → accepted, and `t = NONE` reads true while `t = NULL` reads false.
+  - Controls: a string is rejected and a datetime is accepted.
+- **A BOUND record-id range is index-served and exact. The `name.value` mirror's KEEP basis has fallen**
+  (drop-list row #25 of the packet doc, not finding #25; R43 §ADDENDUM).
+  - [MEASURED, `REPORT-builder-66.md` §R-9 row "#25 cand. 2"] `FROM $r`, with
+    `$r = RecordID('name', Range(BoundIncluded(lo), BoundExcluded(hi)))`, plans as **`RecordIdScan`** and
+    returns 20/20, exact. Two prefixes (`FROM $r1, $r2`) plan as a `Union` of two RecordIdScans, 40/40.
+  - By contrast, `string::starts_with(record::id(id), $p)` and `WHERE id >= $lo AND id < $hi` both
+    TableScan.
+  - **Audit CONFIRMED** (`REPORT-coldaudit-66.md` §DELTA item 5): 303 production-shaped values + 21 traps,
+    set equality both ways, EXPLAIN over a deny-by-default operator allowlist with firing controls.
+  - The fate is RETIRE, owed to a follow-up packet; no schema was touched.
+  - That packet's notes: `INDEX_SCAN_OPERATORS` lacks `RecordIdScan`; a prefix ending in U+10FFFF has no
+    next bound; skip surrogates.
+- **`INSERT … ON DUPLICATE KEY UPDATE` has overwrite parity with per-row `UPSERT … CONTENT`** (R4, R27-2a, `66a9979`).
+  - [PROBED by the builder, `REPORT-builder-66.md` §Progress log + §R-9 row X13] A batched
+    `INSERT INTO chunk $rows ON DUPLICATE KEY UPDATE <every CHUNK_COLUMNS column> = $input.<column>`
+    equals per-row `UPSERT … CONTENT` byte-for-byte:
+    - an overwrite drops an absent optional column;
+    - a duplicate id within one batch → the last row wins;
+    - `$input.<absent>` reads NONE;
+    - control: a plain `INSERT` over an existing id → `AlreadyExistsError`.
+  - This is what retired the statement cap. A file's index write is still ONE transaction, but its rows
+    ride one batched `INSERT` per table. The bound is now `_txn.TXN_ROW_HARD_CAP = 50_000` rows (warn at
+    10,000; R4, R8 F12). `TXN_STATEMENT_HARD_CAP` (5,000) is deleted; R3 measured `test_comms_tool.py`
+    composing to 5,113 statements and being refused.
+- **HTTP `POST /import` caps one request at 4 GiB** (#603). [MEASURED, `REPORT-conform-66.md` §Step 4b]
+  A full prod dump through the single-POST restore driver got *"HTTP 413: 'length limit exceeded'"*.
+  [VENDOR] `manage/instances/connect/via-http.mdx` (request-size table) gives `/import` 4 GiB. At
+  2026-11-08, `snapshot_entry` alone is 6.25 GB of the dump, so no single POST can restore it. The fix
+  shape (chunk the import, or `surreal import`) belongs to packet 65 (#603). See also §6.7.
+- **Q4: drop rows #29 / #30 accepted. lore takes the SDK defaults and sets neither** (R19 Q4).
+  - **Keepalive** [CODE `surrealdb/__init__.py`]: `ping_interval=30.0`, `ping_timeout=10.0`, so a
+    half-open peer is noticed in about 40 s. A reader that holds the stream without reading starves the
+    pong (packet doc `sdk3-python-sdk-3-migration.md`, the whole-stream-hold instrument note).
+  - **Version gate** [CODE `surrealdb/features.py`]: `version_check=True`, with servers from
+    `MINIMUM_VERSION = "2.0.0"` (inclusive) to `MAXIMUM_VERSION = "5.0.0"` (exclusive).
 
 ## 0a. The 3.3.5 migration receipts
 
@@ -162,8 +370,11 @@ indexed counts), `FLEXIBLE` field-propagation fixes, ~8 security advisories we d
 edge record ID` fix (#349) and a cold-start `Session not found` router-race fix (#308) touch our edge +
 bootstrap seams. **These are release-note claims, not our probes — verify before relying on them.**
 
-Corpus note: this repo now indexes the SurrealDB **3.2 docs** and the engine's **CI-verified SurrealQL
-language tests** as lore tiers (`surrealdb-docs`, `surrealql-tests`, pinned at the `v3.2.0` tag). A
+Corpus note: this repo now indexes the SurrealDB docs and the engine's **CI-verified SurrealQL
+language tests** as lore tiers (`surrealdb-docs`, `surrealql-tests`). *(Originally pinned at the `v3.2.0`
+tag; since 2026-11-07, [MEASURED] from each corpus dir's `PROVENANCE.yaml`: `surrealql-tests` at engine
+tag `v3.3.5`, and `surrealdb-docs` at surrealdb/docs commit `9b533d1f` (2026-10-28, the last before the 4.0
+docs; it documents 3.3.4 and has no 3.3.5-specific page).)* A
 claim like the §6.1 falsehood below can now be checked against the vendor's own **executable spec** via
 `lore_search(tier="surrealql-tests", …)` instead of a hand-run probe — that corpus is *why* this
 reference can cite the engine's own tests rather than only our probes.
@@ -444,7 +655,11 @@ The house rules for reading and writing rows. Each one was found the hard way.
     a `SELECT *`, `row["col"]` (may be `None`) after an explicit projection. Cost of learning this the
     hard way: two pins in the 03b telemetry contract. **Corollary for any `option<>` column** — and
     every enrichment column on `trace` is one — **a reader must not assume presence.**
-- **`str(RecordID)` round-trips.** The SDK's `RecordID` stringifies to `table:id` and parses back.
+- ~~**`str(RecordID)` round-trips.**~~ **FALSE on SDK 3.0.0** *(packet 66; the 2.0.0-era claim was "the
+  SDK's `RecordID` stringifies to `table:id` and parses back")*. 3.0.0 brackets a digit-led, non-word or
+  all-digit-string key (`kt:⟨01J…⟩`), and `RecordID.parse(str(rid)) != rid` for those and for an int
+  key ([PROBED] storeref-66 O5; R7). Never build or parse id text from `str(RecordID)`: use `_txn.record_key`
+  / `record_text`, or the engine's `<string> id` ([§0b](#0b-sdk-300-receipts-packet-66-2026-11-08)).
 - **CONTENT datetimes are Python datetimes.** tz-aware stdlib datetimes bind fine (cbor2 tag 0) —
   do not stringify them.
 - **⚠ Use the `time::` family for datetime aggregates under `GROUP BY`.** [PROBED, P8d W3]
@@ -518,10 +733,15 @@ The house rules for reading and writing rows. Each one was found the hard way.
 
 ## 3. TRANSACTIONS
 
-- **⚠ The SDK's `.query()` validates ONLY statement[0].** [CODE, SDK 2.0.0:
+- **⚠ (HISTORY, SDK 2.0.0) The SDK's `.query()` validated ONLY statement[0].** [CODE, SDK 2.0.0:
   `_check_query_result(response["result"][0])`] Any multi-statement string whose **later** statement
-  fails returns a per-statement `ERR` **with no top-level error** → a **silent partial apply**. This
+  failed returned a per-statement `ERR` **with no top-level error**: a **silent partial apply**. This
   bit us as silent-partial-SCHEMA in all three `ensure_ready` DDL paths.
+  *(SDK 3.0.0, packet 66: `query()` answers one entry per statement and RAISES the FIRST `ERR`
+  ([§0b](#0b-sdk-300-receipts-packet-66-2026-11-08)). It is still not a multi-statement tool. Without
+  `BEGIN`, the statements after the failing one still apply. Inside `BEGIN … COMMIT`, what it raises is
+  the first CASCADE notice (`NotExecuted`), not the root cause. Single-statement callers go through
+  `_txn.one_statement_result` (R2).)*
   > **NEVER send multi-statement SurrealQL through `query()`. Use `execute_transaction`, which
   > checks every statement.** (`DEFINE`-in-transaction is allowed on 3.1.5.)
 - **⚠ Classify SEMANTICALLY — POSITION IS WRONG AT BOTH ENDS.** [#93, RESOLVED @ 93a9aab] In a
@@ -550,13 +770,16 @@ The house rules for reading and writing rows. Each one was found the hard way.
 - **[VENDOR] The supported all-statements call is `query_raw()`** —
   [executing-queries](https://surrealdb.com/docs/sdk/python/concepts/executing-queries):
   *"If you need the results from every statement, use `.query_raw()` instead"* (per-statement
-  `status`/`time`/`result`). It is what `execute_transaction` already rides. ⚠ The same page lies
-  about `.query()` itself — see §6.5.
+  `status`/`time`/`result`). It is what `execute_transaction` already rides, and still rides on SDK
+  3.0.0 ([CODE] `_txn._txn_query_raw`). ⚠ The same page lies about `.query()` itself: see §6.5.
 - **Client-side conflict retry is MANDATORY.** [PROBED] The engine does **not** auto-retry user
   transactions. **The retry signal is TYPED** [PROBED 3.2.4, both paths — contract-63c-i-a-a28c §A.2,
   builder-63c-i-a-a28c §REQ-3, blindreader-63c-i-a-3 §7 P2]: `details.kind == "TransactionConflict"`
   (under `kind: Query`) on the per-statement COMMIT entry (transactional path) and on the raised
-  `QueryError` (single-statement path). The code decides by the symbol `_txn._RETRYABLE_CONFLICT_KIND`.
+  `QueryError` (single-statement path). The code decided by the symbol `_txn._RETRYABLE_CONFLICT_KIND`.
+  *(SDK 3.0.0, packet 66: that symbol is DELETED. The decision is the SDK's own
+  `QueryError.is_transaction_conflict` (drop list #2, `df84764`), and retries run on native tenacity
+  `AsyncRetrying` (R11/R18). [§0b](#0b-sdk-300-receipts-packet-66-2026-11-08).)*
   The text *"can be retried"* (live: *"…Transaction conflict: Resource busy. This transaction can be
   retried"*) is EVIDENCE, logged server-side, **never consulted for a decision** — a finding body
   quoting that phrase must not buy engine retries. *(Superseded 2026-09-29: until then this bullet
@@ -569,8 +792,15 @@ The house rules for reading and writing rows. Each one was found the hard way.
     2026-07-19 read found; that read looked one level too high. The SDK ships
     `QueryDetailKind.{NOT_EXECUTED, TIMED_OUT, CANCELLED}` (and the matching `QueryError.is_*`
     predicates) but **NO constant or predicate for `TransactionConflict`** — a bare literal in `_txn`,
-    pinned by the live-shape cells.
-- **[PROBED]** A socket drop with queries **in flight** surfaces a raw `builtins.KeyError(uuid)`
+    pinned by the live-shape cells. *(That was SDK 2.0.0. SDK 3.0.0 ships BOTH:
+    `QueryDetailKind.TRANSACTION_CONFLICT` and `QueryError.is_transaction_conflict` ([CODE]
+    `surrealdb/errors.py`), and the bare literal is retired. [§0b](#0b-sdk-300-receipts-packet-66-2026-11-08).)*
+- *(HISTORY, SDK 2.0.0. SDK 3.0.0, packet 66: an in-flight request at a drop fails with the SDK's typed
+  `ConnectionUnavailableError` and is not re-sent; no `KeyError` and no `websockets.*` class reaches
+  lore. The `KeyError` arm is retired (drop list #1), and the connection reconnects itself through the
+  shared factory's `ReconnectOptions` ([§0b](#0b-sdk-300-receipts-packet-66-2026-11-08)). The bullet
+  below still describes a server running a 2.0.0 image.)*
+  **[PROBED]** A socket drop with queries **in flight** surfaces a raw `builtins.KeyError(uuid)`
   from SDK 2.0.0's response routing (6/6 futures) — *not* `CancelledError`. The next call heals via
   `ConnectionClosedError`. Classify `KeyError` tightly, at the SDK-await boundary only.
   ⚠ **"heals via `ConnectionClosedError`" names the ERROR SHAPE normalizing, not the connection
@@ -767,8 +997,9 @@ table with no `DEFINE TABLE` appeared to commit while an independent read found 
 
 > **The engine was NOT losing committed rows.** [PROBED 2026-07-19] Those "successes" were
 > **retryable conflicts**, invisible because they were issued through the SDK's `.query()`, which
-> validates **statement[0] only** (§3) — with `BEGIN` at index 0, every later `ERR` is discarded and
-> the call reads as success. Under full per-statement checking: **10 OK / 10 readable, ZERO loss**;
+> validated **statement[0] only** on SDK 2.0.0 (§3) — with `BEGIN` at index 0, every later `ERR` was
+> discarded and the call read as success. *(SDK 3.0.0 raises the first `ERR` instead, §0b; the
+> mechanism below is the 2.0.0 history of #124.)* Under full per-statement checking: **10 OK / 10 readable, ZERO loss**;
 > with the retry driver, **160/160 land**. #124 is an **INSTANCE OF THE §3 `query()` GAP**, not a
 > separate engine defect. **Do not cite it as evidence that SurrealDB loses committed data.**
 
@@ -888,6 +1119,13 @@ about a hazard we already carry as #105.
 checks and returns `response["result"][0]`; identical at ~20 `blocking_http.py`/`async_http.py`
 sites.
 
+*(SDK 3.0.0, packet 66: the quoted sentence is false on 3.0.0 TOO, in a third way. `query()` returns
+EVERY statement's result, one entry per statement, and raises the first `ERR`. [CODE]
+`connections/builders.py::_QueryState._statement_values`; [PROBED] `RETURN 1; RETURN 2` → `[1, 2]`
+([§0b](#0b-sdk-300-receipts-packet-66-2026-11-08)). The line numbers above are 2.0.0's. Whether the current
+vendor page still carries the "last statement" sentence was NOT re-checked in packet 66. The analysis
+below is SDK 2.0.0 history, still true of any server running a 2.0.0 image.)*
+
 **Why this one is worth more than the others:** the docs' version is the *reassuring* one. In
 `BEGIN; …; COMMIT;` the LAST statement is the **COMMIT**, so an engineer trusting the doc believes a
 failed transaction surfaces — because the COMMIT errors. The SDK reads index 0, which is the
@@ -929,7 +1167,20 @@ they are the ones an engine upgrade could silently invalidate, with nothing upst
    creation, `OVERWRITE` clause-dropping, `DEFINE TABLE OVERWRITE` on a populated table, analyzer
    re-tokenisation, the `option<>` requirement.
 10. The SDK's **later-statement error swallowing** — undocumented, and the docs actively describe the
-    opposite (§6.5).
+    opposite (§6.5). *(SDK 2.0.0 only. On SDK 3.0.0 `query()` raises the first `ERR`, so nothing is
+    swallowed. What remains ours alone: without `BEGIN` the later statements still APPLY after the raise,
+    and inside `BEGIN … COMMIT` the raised error is the cascade notice, not the cause (§0b, storeref-66
+    S2/S2b). This is the second item on this list an upgrade has invalidated: #4 fell to an engine
+    upgrade, this one to an SDK upgrade.)*
+15. **CANDIDATES, not yet checked against the vendor docs:** SDK 3.0.0 facts that rest only on our own
+    measurement (packet 66, [§0b](#0b-sdk-300-receipts-packet-66-2026-11-08)). Packet 66 ran no
+    documentation sweep. Until one does, treat these as un-swept, not as vendor-silent:
+    - `PreciseDatetime` `==` / `<` ignore nanoseconds (#593);
+    - `db.batch()` reports the cascade notice instead of a THROW's own error (#588);
+    - `kill()` parks in `_await_reconnect` until the request timeout;
+    - on 3.3.5, `> $datetime` admits array/object/uuid/record values (#597);
+    - Python 3.14's `fromisoformat` truncates nine fraction digits silently. That one is a stdlib fact,
+      not a vendor one, and the Python docs were not checked for it.
 11. **`CONTENT` composes with neither `SET` nor `MERGE`** (both parse errors), leaving
     `object::extend($bound, {computed})` as the only shape that mixes a bound payload with a
     store-side mint (§2). [PROBED 2026-07-24, 3.2.1]
@@ -1008,7 +1259,7 @@ Small, sharp, and each one cost somebody an hour. All [PROBED 2026-07-12] unless
 | A **per-entry ASSERT** on an array column [PROBED 2026-07-25, 3.2.1] | TWO field rows — the array and its element path: `DEFINE FIELD refs … TYPE array<string> DEFAULT [] ASSERT array::len($value) <= 20` **plus** `DEFINE FIELD OVERWRITE refs[*] … TYPE string ASSERT string::len($value) <= 256`. The composed `DEFAULT [] ASSERT` clause works; count and per-entry asserts fire independently, and the element error names **`refs.*`** and the offending VALUE. | ⚠ **The element row without `OVERWRITE` → `"The field 'refs.*' already exists"`.** `DEFINE FIELD … TYPE array<T>` **IMPLICITLY DEFINES `<field>.*`**, so the element definition is always a RE-definition — §1.1's `OVERWRITE`-for-fields rule applies to it with no exception. A whole-array `$value.all(\|$x\| …)` closure also works and is a known-good fallback, but loses per-element error ergonomics (it dumps the whole array). |
 | An ASSERT on an **`option<>`** field, when the value is absent [PROBED 2026-07-25, 3.2.1] | write the assert BARE: `TYPE option<string> ASSERT string::len($value) <= 256`. **The ASSERT is NOT evaluated when the field is NONE** — an omitted field is accepted, and the assert still fires on a supplied over-length value. | `ASSERT $value = NONE OR …` — harmless but **pure cruft**, and it teaches the next author that the guard is required. Do not copy the guard onto new `option<>` fields. |
 | Compare `INFO FOR TABLE` output against the DDL you emitted [PROBED 2026-07-25, 3.2.1] | pin the **EMITTED** statement (house idiom) | the stored echo is **NORMALISED and will not match**: a closure `\|$r\|` comes back `\|$r: any\|`, and `option<array<string>>` comes back `none \| array<string>`. Any pin diffing the echo against emitted DDL mismatches on closure- or `option<>`-bearing definitions. |
-| Put a `RecordID` in a `set` or use it as a dict key [PROBED 2026-07-27, SDK 2.0.0] | decode first — `str(record.id)` (the SDK's own rendering) and key on the `str` | **`RecordID` is UNHASHABLE** — `__hash__ is None` on SDK 2.0.0, so a `set()` / dict key raises `TypeError` at runtime. **Two independent agents hit this within one packet** (a probe script raised mid-body; a builder measured it deliberately), which is why it is here. ⚠ And decode with **`str(record.id)`, never `str(row["id"]).split(":", 1)[-1]`** — the split is right for `agent:abc` and **WRONG for a uuid-shaped id**, which the SDK renders `agent:⟨0199c4f1-7d2a-…⟩`. That exact guess cost **130 red pins** across two suites (finding #248: seven hand-rolled copies of this parse exist package-wide). |
+| Put a `RecordID` in a `set` or use it as a dict key [PROBED 2026-07-27, SDK 2.0.0] *(SDK 3.0.0, packet 66: `RecordID` IS hashable, so key on the `RecordID` itself, as graph de-dupe does since `ead3356` ([PROBED] storeref-66 O5; §0b). The row below is 2.0.0 history. Its `str(row["id"]).split` warning still holds; build text with `_txn.record_key`.)* | decode first — `str(record.id)` (the SDK's own rendering) and key on the `str` | **`RecordID` is UNHASHABLE** — `__hash__ is None` on SDK 2.0.0, so a `set()` / dict key raises `TypeError` at runtime. **Two independent agents hit this within one packet** (a probe script raised mid-body; a builder measured it deliberately), which is why it is here. ⚠ And decode with **`str(record.id)`, never `str(row["id"]).split(":", 1)[-1]`** — the split is right for `agent:abc` and **WRONG for a uuid-shaped id**, which the SDK renders `agent:⟨0199c4f1-7d2a-…⟩`. That exact guess cost **130 red pins** across two suites (finding #248: seven hand-rolled copies of this parse exist package-wide). |
 | Decode a record id **SERVER-SIDE** in a `SELECT` whose **FROM is an ARRAY of bound RecordIDs** that may contain a ghost [PROBED 2026-07-28, 3.2.1] | project the **BARE `id`** and decode CLIENT-SIDE (`str(record.id)`): a RecordID naming no row is then **silently dropped** from the result, which is the fail-CLOSED behaviour a bounded read wants — `SELECT id, status FROM array::map([…], \|$v\| type::record('task',$v))` | **`record::id(id)` is an ENGINE ERROR**: *"Incorrect arguments for function `record::id()`. Argument 1 was the wrong type. Expected `record` but found `NONE`"*. The FROM-clause dereference yields `NONE` for the ghost and the function refuses it — **and inside a `BEGIN…COMMIT` this rolls the WHOLE transaction back**, turning the exact phantom-endpoint case the read exists to serve into a failure. ⚠ **Scope, measured:** `record::id()` on a FIELD VALUE (e.g. `record::id(in)` over an edge table holding a dangling endpoint) is **UNAFFECTED** — the value is a RecordID whether or not the row exists; only the FROM-clause dereference produces `NONE`. (#267, cost a rolled-back migration in packet 04b-1.) |
 | Address a row whose id the SDK minted as `RecordID("t", "4")` — a numeric-LOOKING **string** id [PROBED 2026-08-01, 3.2.1] | bind the `RecordID` as a parameter (always sound) — or the documented backtick literal `` t:`4` `` ([VENDOR] `record-ids.mdx`: a number-as-string id is stored backticked **precisely because `article:10` and `` article:`10` `` are DIFFERENT records** — the int-vs-string distinctness is vendor-documented, not ours) | `SELECT * FROM t:4` — that literal names the **INT-id** record, a different row entirely; with only the string-id row present it reads as **`[]`**, no error. And `t:'4'` is a **PARSE ERROR** (*"Unexpected token `a strand`"*) — the single-quote escape does not exist. Corollary: **never mint numeric-looking ids** (levels, CRs, page numbers, editions) — prefer non-numeric slugs or always-bound RecordIDs. This nearly shipped as a false "nested traversal filters return empty" engine bound; only a positive control caught it. |
 
@@ -1104,13 +1355,32 @@ Live defects and things we genuinely do not know. **Nothing here is settled — 
   `WantedBy=default.target` + linger) → they **auto-start on boot**. No manual `podman start`.
   Manage with `systemctl --user {start,stop,restart} {lore-surreal,spike-surreal}.service`
   (after editing a `.container`: `systemctl --user daemon-reload`).
-- **Recovery** (image + both stores gone): image `docker.io/surrealdb/surrealdb:v3.2` (the FLOATING
-  tag the quadlets actually pin — currently 3.2.4, image `6e2f7f0134c7`; a recovery pulls whatever
-  `v3.2` resolves to at that moment — see the header's #336 note),
+- **Recovery** (image + both stores gone): image `docker.io/surrealdb/surrealdb:v3.3.5`. That is the EXACT
+  tag both quadlets pin since 2026-11-07 (header; §0a). [MEASURED 2026-11-08] `lore-surreal.container`
+  reads `Image=docker.io/surrealdb/surrealdb:v3.3.5`. *(Until 2026-11-07 this line named the floating
+  `v3.2` tag, then 3.2.4 / `6e2f7f0134c7`. `v3.2` now resolves to the one-way 3.2.6, so never recover
+  with it; §0a.)*
   `--network=host`, `--userns=keep-id --user 1000:1000` (the `nonroot` image user + a 0700 data dir
   owned by 1000 → `PermissionDenied` without this), `--env-file ~/docker/mcp/lore-secrets/lore.env`,
   `start --bind 127.0.0.1:<port> rocksdb:/data/store.db`. Then rebuild the lore image and
   `lore-deploy start`. Full recipe: memory `surreal-stores-systemd-managed`.
+- **⚠ NEVER run `surreal <subcommand> --help` (or any usage/help output) inside a store container.**
+  ([#601](#601), 2026-11-08.) [MEASURED 2026-11-08] Both store quadlets load
+  `EnvironmentFile=…/lore-secrets/lore.env`, which defines `SURREAL_USER` / `SURREAL_PASS`. The CLI's help renders every env-backed option with its CURRENT value
+  (`[env: NAME=<value>]`). `podman exec lore-surreal /surreal export --help` printed the **production root
+  password** in clear into an agent's transcript (`REPORT-conform-66.md` §INCIDENT). The class is any
+  help/usage/debug output of the `surreal` CLI in an environment that carries `SURREAL_PASS` or
+  `SURREAL_TOKEN`. *Ask: "does this help/usage/debug command echo its environment?"*
+  - **Read flags from the docs, not from `--help`:** `lore_search(tier="surrealdb-docs", …)`, e.g.
+    `cli/surrealdb-cli/commands/export.mdx`. Or run `--help` in a container started WITHOUT the secrets env.
+  - **The safe export recipe** (#601; the one conformance used). Run the subcommand itself, and let the
+    CLI's env fallback supply the credentials, so none appear on any command line, in `ps`, or in a log:
+    ```bash
+    podman exec lore-surreal /surreal export --endpoint http://127.0.0.1:18500 \
+      --namespace lore --database lore - > <dump-file>
+    ```
+    (`-` writes the dump to stdout; redirect it to a file OUTSIDE the repo.) Never pass `--user`/`--pass`
+    on the command line, and never `echo`/`env`/`printenv` inside the container.
 - **Auth split:** DB-level users sign in with namespace + database + user + pass (a *different shape*
   from root signin). A VIEWER cannot `DEFINE` tables and nobody below root creates namespaces → **NS/DB
   creation + schema DDL must be a separate root/owner bootstrap step**; role connections skip it.
@@ -1197,6 +1467,10 @@ guard's missing case; the #497 hazard's in-repo door). Open.*
 
 <a id="146"></a>*#146 — `DEFINE SEQUENCE IF NOT EXISTS` inherits the silent-no-op migration hazard for
 `BATCH`/`START`. Named re-open trigger: the day anyone changes either.*
+
+<a id="601"></a>*#601 — `surreal <subcommand> --help` inside a store container prints `SURREAL_PASS` in clear;
+an agent leaked the production root password into its transcript this way on 2026-11-08 (§9 OPS). Open:
+rotation and transcript purge are operator decisions.*
 
 **Correction pass 2026-07-19/20** (packet 03 kickoff — five live probes, then a documentation-first
 reconciliation against the official docs, operator-ruled). Two of the three biggest results
