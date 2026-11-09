@@ -356,6 +356,56 @@ It becomes §1.4's L4. Same assertion, the live constant's name.
 - **Item 5** — shrunk warn = the fixture's 800; control = crossing − 1.
 - **New item 13** — the ONE fixture (§8.1), with its two riders (explicit request; L-legs assert unpatched).
 
+## 9. Addendum 2 (same day): the am-37 §14 Q1 fate of 58's four classes, and who edits the four landed 63c pins (lore_comms #20006 / #20007)
+
+Rules `REPORT-contract-58-r5.md` §FLAGS F-1 and F-4 (read 2026-11-09). Sources read: 63c amendment 37 §15–§15.3
+(`docs/design/2026-09-29-packet63c-amendment-37.md`); `test_am37_13_3_63c_i_a.py` (`_store_taxonomy`,
+`_RULED_PROVEN_NO_KEY`, `_TYPED_PROVEN_SDK_ERROR`); `_txn.proven_no_key` at `99044d0`.
+
+### 9.1 The fate — PROVEN NO KEY, by am-37 §15.2's own property (no new adjudication)
+- §15.2 ruled the property generally: *a rejection the classifier has RECOGNISED as a refusal of the write is
+  proven no-key whatever its raw kind*, and it names "the governed THROW" as a member. 58's four classes
+  (`TxnClaimLostError`, `TxnCasLostError`, `TxnReanchorStragglerError`, `TxnHealChunkError`) are the same thing: a
+  THROW our own guard authors, recognised by the anchored prefix under `Thrown` (§4.1), which aborts the
+  transaction. Their raw kind `Thrown` is also on `_PROVEN_KINDS` (§15.3), so both halves of the predicate agree.
+- **Fate per class, ∀ four: PROVEN — a fault of that class during the mint's CREATE is translated to "could not
+  mint", no revoke note.** Identical to `TxnGovernedConflictError`'s row. A kind-less instance built by its
+  constructor is classified by construction (its own `_constructed_error_class` label) → also proven.
+- **Scope, stated:** the mint never composes a task shell, so no real mint can raise these; the cells exist
+  because 63c's pins are generated over every `_txn` class. The adjudication is about what the class MEANS (the
+  transaction rolled back), which holds on every path that can raise it.
+- **Does this hold on every member the ruling touches, or only the one I derived it on?** Checked per class: all
+  four are raised only by `_domain_rejection_error` from a recognised label, and all four markers are THROW text
+  in a guarded shell's `IF array::len(…) == 0 { THROW … }` — a zero-row guard, so nothing was written by the
+  statement that threw and the envelope rolls back the rest. No class has a second raise path. If the build adds
+  one (a class raised without a THROW behind it), this row re-opens for that class.
+
+### 9.2 The edits (each a DUAL row: member · this section · test id)
+| file (63c, landed) | edit | rider — pin it like this |
+|---|---|---|
+| `test_am37_13_3_63c_i_a.py` | `_RULED_PROVEN_NO_KEY` += the four class names; `_TYPED_PROVEN_SDK_ERROR` += one `{"kind": "Thrown", "result": "An error occurred: <marker> …"}` entry per class, built from `_txn`'s own marker constant as `_GOVERNED_THROW` is | each class's typed instance goes through the real seam and lands on that class EXACTLY (the file's existing `_typed_proven_instance` assertion) |
+| `test_mint_kind_allowlist_q1c.py` | the recognised-label set += the four labels | the predicate cell is TRUE ∀ kind for each, as for the governed label |
+| `test_mint_kind_carveout_q1b.py` | `_RULED_CLASSIFIED_BY_CONSTRUCTION` += the four class names; `_RULED_CLASSIFIED_LABEL_NAMES` += the four labels | a kind-less instance of each is proven; the kind-less CREATE cell records the "could not mint" outcome |
+| `test_fixwave_a28c_63c_i_a.py` (F-1) | **option (a):** `hosted` += the four labels AND `_ECHO_HOSTS` += one THROW host per marker, in the shape the governed marker's host already has | every echo phrase × the four new hosts is GREEN; a marker anywhere but the anchored start classifies `unspecified rejection` |
+
+- **F-1: (a), not (b).** The governed label is already `hosted`, so a THROW host exists and four more are four
+  dict entries. Option (b) would exempt the labels by pointing at a 58-owned test, splitting one ∀ instrument
+  into two. 58's `TestTheFourClassesAreTypedAndAnchored` then keeps only what the sweep does not do (the class
+  each marker maps to, `proven_no_key`, the mapping helper) and does not re-list echo phrases.
+- These four sets are hand-listed where `vars(_txn)` could derive them. Said, per §4.2; converting them is not
+  58's work. Do you want a finding filed for it? (lead)
+
+### 9.3 Who makes the edits
+- §4.2 stands: they are **contract-author edits, never a builder's**. contract-58-r5 is right not to make them —
+  its brief's writable set is the 58-named files, and a writable set is the lead's to grant, not mine.
+- **For the lead (a scope grant, not a design ruling):** widen contract-58-r5's writable set to these four files,
+  member additions per §9.2 only, plus `scripts/probe_hub_txn_58.py` (fold item 9). The same author holds the
+  measured reds (9 + 49 + 8 + 1) and the reference, so it can show each going GREEN. If you would rather not
+  widen a running agent, the edits are small enough for a suffixed one-shot contract author briefed from §9.2.
+- Until the grant lands, r5's SAT receipt lists these 67 reds as owned by this section, by test id.
+- B-6 (the chain's two-argument `_log_transaction_size` call) and §HELD part 4 (the EXPLAIN walker moved by
+  `c9bc2c6`) are mechanical re-bases in 58's own files: no ruling needed, correctly handled.
+
 ## §INSTRUMENT — `probe_hub_txn_58.py`, pasted verbatim (run 2026-11-09 from the repo root with `uv run python`)
 
 Runs: `… probe_hub_txn_58.py 3 1665 3332`, `… 8000 16665`, `PROBE_TXN_TIMEOUT=30 PROBE_SETTLE=75 … 16665`,
