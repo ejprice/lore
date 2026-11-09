@@ -418,12 +418,6 @@ bounds:
     - "scripts/test_forgery_door_sweep.py::TestTheHealDOORSAreOnTheStragglerPath::test_iv_CONTROL_without_the_straggler_the_sweep_never_reaches_the_heal_APPLY"
     missing_symbols:
     - loremaster.tasks.SupersedeResult
-  # finding #615 (packet 58 amendment 15 §10.2, contract-58-r5 r5.1 step 3(c)): the contract-ahead pin for
-  # "an entry with no red_nodeids owns no pytest red" — RED until a builder removes the file-level fallback in
-  # PendingContractGate.partition_pytest (lead routing: the 58 wave, before the adversary grade).
-  - path: scripts/test_pending_contract_gate_f6.py
-    red_nodeids:
-    - "scripts/test_pending_contract_gate_f6.py::test_615_an_entry_with_no_red_nodeids_owns_NO_pytest_red"
 # Packet 64b-i contract r2 (contract-64b-r2, 2026-09-27 — the adversary-64b survivors + packet-64 amendments 7-10 +
 # 63c amendment 35 §6, the #461 shape, lead #17055). Every file listed below: the 64b-i contract files declare 64b-i's
 # RULED, not-yet-built symbols as TYPED CALLS in a runtime-inert `if TYPE_CHECKING:` block, and the two CONVERTED

@@ -1270,18 +1270,17 @@ class PendingContractGate:
     def partition_pytest(self, run: PytestRun) -> PytestPartition:
         """Split a run's failing tests into EXPECTED (owned by a registry entry) and UNEXPECTED (orphaned).
 
-        A file whose entries list ``red_nodeids`` is adjudicated PER NODE: a failure is expected only if its
-        node id is listed (exact membership — R31), so an unlisted red in it is orphaned. A file registered by
-        mypy claims only keeps the file-level adjudication it had before F6 (packet 58 owns its pytest reds
-        that way). Scope (``run.selection``) plays NO part here (MP-F6-2, MP6-1): a listed red under any
-        selector stays adjudicated (adversary-5 W6).
+        Adjudication is PER NODE, always: a failure is expected only if an entry for its file lists its node
+        id (exact membership — R31), so an unlisted red is orphaned. An entry with no ``red_nodeids`` (a
+        mypy-symbols-only claim) owns NO pytest red — a typing claim never becomes pytest ownership (#615;
+        packet 58 amendment 15 §10.2). Scope (``run.selection``) plays NO part here (MP-F6-2, MP6-1): a listed
+        red under any selector stays adjudicated (adversary-5 W6).
         """
         partition = PytestPartition()
         for outcome in run.outcomes:
             entries = [entry for _bound, entry in self.registry.entries_for(outcome.file)]
-            file_level = any(not entry.red_nodeids for entry in entries)
             listed = any(outcome.node_id in entry.red_nodeids for entry in entries)
-            if entries and (file_level or listed):
+            if listed:
                 partition.expected.append(outcome)
             else:
                 partition.unexpected.append(outcome)
