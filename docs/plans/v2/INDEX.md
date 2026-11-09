@@ -83,8 +83,8 @@ HERE now** — a packet session must not need to read them.
   (step 2) could not run for any of them. Minted 2026-09-24 (`64-governed-retrofit-tasks-findings.md`,
   `65-hosted-write-joint-cutover.md`, `57-task-coordination-substrate.md`, `58-supersede-reanchor.md`,
   `11c-index-boot-reconcile-honesty.md`); each carries its routed findings and its kickoff forks.
-- Engine/store/eval-bar facts below are unchanged from the prior block and still current (both stores
-  3.2.4 on the floating `v3.2` tag — #341 → packet 16).
+- Engine/store/eval-bar facts below are unchanged from the prior block, except the engine: since
+  2026-11-07 both stores run 3.3.5 on an exact tag (see ENGINE below; corrected 2026-11-09).
 
 ### Prior state of record (2026-07-26; SUPERSEDED by the block above — retained for its engine/store/eval-bar facts)
 - Branch `feat/surreal-unification` — **PUSHED through `d5b6ad8`** (upstream exists since the
@@ -152,16 +152,17 @@ HERE now** — a packet session must not need to read them.
   retired. Last receipts: 33/35 · 6.46 calls · 1440.8 tok (2026-07-07).
 - Test store: spike-surreal ws://127.0.0.1:18000; production store :18500 — NEVER
   pointed at by tests. Both systemd/quadlet-managed, auto-start on boot.
-- **ENGINE: SurrealDB 3.2.4 on BOTH stores** (migrated off 3.1.5 → 3.2.1 on 2026-07-22,
-  then carried to 3.2.4 by the quadlets' FLOATING `v3.2` tag; measured host-side 2026-08-08
-  — #336, store-ref header). ⚠ `v3.2` is NOT patch-pinned, so any recreate/pull drifts the
-  version silently; pinning it is an open infra decision on #336. Receipts in the store
-  reference §0 (ff7128e): prod byte-identical (174,161 rows / 20 tables), full suite
-  behaviour-identical across engines, #107 re-probed, SDK 2.0.0 unchanged. Probed facts KEEP
-  their per-version provenance labels — re-probe on contact.
-  Sole rollback: the verified 3.1.5 backup at /backups/lore/surreal-pre-3.2.1-20260721
-  (RocksDB format is forward-only). New static vendor tiers indexed (`surrealdb-docs`,
-  `surrealql-tests` @ v3.2.0 tag) — corpus now 2764 files by design.
+- **ENGINE: SurrealDB 3.3.5 on BOTH stores, since 2026-11-07** (verified live 2026-11-09:
+  both quadlets pin `docker.io/surrealdb/surrealdb:v3.3.5` and both containers run it).
+  It is an EXACT tag: the old floating `v3.2` tag silently re-pointed to the one-way 3.2.6,
+  which is why the pin is exact now. The upgrade is FORWARD-ONLY: a 3.2 binary on a migrated
+  store misreads it rather than refusing, so rollback is the cold copies in `/backups/lore/`.
+  Receipts: store reference §0a (the 3.3.5 migration receipts). Probed facts KEEP their
+  per-version provenance labels; re-probe on contact.
+  History: 3.1.5 → 3.2.1 on 2026-07-22, carried to 3.2.4 by the floating `v3.2` tag (#336,
+  measured 2026-08-08; receipts store reference §0, ff7128e), then 3.3.5 on 2026-11-07.
+  Static vendor tiers (`lore.yaml`): `surrealql-tests` @ the v3.3.5 tag (5c3383f),
+  `surrealdb-docs` @ 9b533d1.
   Substrate: **#167 RESOLVED 2026-07-22** by a verified fingerprint reconcile (all
   17,287 chunks proven non-null + cosine 1.000000 vs fresh re-embeds on all three
   tiers; measured safe-stamp with rollback recorded; restart clean, no re-trigger).
