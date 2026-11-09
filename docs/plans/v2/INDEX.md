@@ -549,8 +549,9 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
     left is a store-reachability HEALTH SURFACE (the MCP endpoint stays UP while every call fails) and the
     live bounce drill. Rec: 16 owns the drill + quadlet `StopTimeout=`; the health surface is a served-render
     item → 09a unless the operator wants it in 16. Deploy receipt = 65-cut.
-35. **Orchestration-tooling findings have no packet (added 2026-11-09):** #546 #547 (the grep PreToolUse
-    hook), #549 (a stale 2026-08-01 ruling), #580 (haiku-runner EXIT line), #583 #586 (idle-gate report
+35. **Orchestration-tooling findings have no packet (added 2026-11-09):** ~~#546 #547 (the grep PreToolUse
+    hook)~~ RESOLVED same day: the deny hook is replaced by the global TEACHING hook `~/.claude/hooks/grep_teach.sh`
+    (operator: teach the lore tools, never block; `lore_recall("grep teaching hook")`), #549 (a stale 2026-08-01 ruling), #580 (haiku-runner EXIT line), #583 #586 (idle-gate report
     path), acknowledged #225 #297 #365 #387 #465. They live in `~/.claude/` and `.claude/hooks/`, outside
     lore's code. Rec: one standing "orchestration hygiene" row worked between packets, or `wontfix`-with-docs
     for the ones CLAUDE.md already carries (#297).
