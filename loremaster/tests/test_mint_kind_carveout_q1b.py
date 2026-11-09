@@ -34,6 +34,7 @@ import pytest
 import surrealdb.errors as sdk_errors
 import test_am37_13_3_63c_i_a as fix531d  # module-qualified: its Test* classes are not re-collected here
 import test_mint_unknown_outcome_note_q1 as q1  # module-qualified, same reason
+from _reanchor_58_support import fifty_eight_classes, fifty_eight_label_names
 from loremaster.principal_keys import PrincipalKeyStoreError
 from loremaster.store import _txn as _txn_module
 from loremaster.store._txn import (
@@ -92,6 +93,11 @@ _RULED_KIND_FATE: dict[str, str] = {
 _RULED_CLASSIFIED_BY_CONSTRUCTION: frozenset[str] = frozenset(
     {"TxnUniqueViolationError", "TxnGovernedConflictError"}
 )
+# packet 58 am-15 §9.1–§9.2 (contract-58-r5, lead grant #20010): 58's four guarded-shell THROW classes —
+# PROVEN NO KEY by am-37 §15.2's own property — DERIVED from ``_txn`` (empty before 58's build).
+_RULED_CLASSIFIED_BY_CONSTRUCTION = _RULED_CLASSIFIED_BY_CONSTRUCTION | frozenset(
+    fifty_eight_classes()
+)
 
 #: §15.2: the classifier's labels, written out. Every label but ``unspecified rejection`` is a RECOGNISED
 #: refusal
@@ -107,6 +113,9 @@ _RULED_CLASSIFIED_LABEL_NAMES: frozenset[str] = frozenset(
         "_ERROR_CLASS_UNIQUE_VIOLATION",
     }
 )
+# packet 58 am-15 §9.1–§9.2 (contract-58-r5, lead grant #20010): 58's four guarded-shell THROW classes —
+# PROVEN NO KEY by am-37 §15.2's own property — DERIVED from ``_txn`` (empty before 58's build).
+_RULED_CLASSIFIED_LABEL_NAMES = _RULED_CLASSIFIED_LABEL_NAMES | fifty_eight_label_names()
 #: §15.3 (RULED, dde69a6): the unspecified × kind axis is ALLOWLIST-driven — moved, re-keyed, to
 #: ``test_mint_kind_allowlist_q1c.py`` (``_RULED_PROVEN_KINDS``).
 

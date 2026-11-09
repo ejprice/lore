@@ -58,7 +58,12 @@ from _governed_contract import (
     credentialed_app_context,
     patch_shared_object_everywhere,
 )
-from _reanchor_58_support import DRIVER_SEAM_NAMES, ledger58  # noqa: F401 - the fixture is re-exported
+from _reanchor_58_support import (  # noqa: F401 - the fixture is re-exported
+    DRIVER_SEAM_NAMES,
+    fifty_eight_label_names,
+    fifty_eight_thrown_markers,
+    ledger58,
+)
 from _surreal_harness import SurrealConnection, SurrealEnv, admin_db, run  # noqa: F401
 from loremaster.floor_calibration.store import FenceLostError, LeaseFence
 from loremaster.governed import GovernedDenied, MigrateGovernedResult
@@ -233,6 +238,14 @@ _ECHO_HOSTS: dict[str, tuple[str | None, str, str]] = {
     "coercion-failure": (None, "CREATE hx SET s = 'ok', n = $v", TxnDomainRejectionError.__name__),
     "governed-throw": (None, "THROW 'governed_conflict:hx:' + $v", TxnGovernedConflictError.__name__),
 }
+# packet 58 am-15 §9.1–§9.2 (contract-58-r5, lead grant #20010): 58's four guarded-shell THROW classes —
+# one THROW host per marker, in the governed host's shape — DERIVED from ``_txn`` (empty pre-58).
+_ECHO_HOSTS.update(
+    {
+        f"fifty-eight-throw-{name}": (None, f"THROW '{marker}hx:' + $v", name)
+        for name, marker in fifty_eight_thrown_markers().items()
+    }
+)
 #: The value each host is driven with to CAPTURE its own engine text (a phrase source).
 _PLAIN_VALUE = "plain-echo-value"
 #: amendment 36 §1.2 pin 1 — the engine texts the two UPSTREAM readers (the retry decision, the root-cause
@@ -331,6 +344,8 @@ class TestTheClassIgnoresEveryEchoedPhrase63cIAa28c:
             "_ERROR_CLASS_ASSERT_VIOLATION",
             "_ERROR_CLASS_FIELD_COERCION",
             "_ERROR_CLASS_GOVERNED_CONFLICT",
+            # packet 58 am-15 §9.2 F-1 (a): 58's THROW labels, hosted by the fifty-eight-throw-* hosts
+            *fifty_eight_label_names(),
         }
         exempt = {
             "_ERROR_CLASS_RETRYABLE_CONFLICT": "decided by the TYPED conflict kind (amendment 36) — no text",

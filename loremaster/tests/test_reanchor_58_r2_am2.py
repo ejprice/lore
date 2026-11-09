@@ -26,6 +26,7 @@ from _reanchor_58_support import (
     new_ledger,
     predicted_chunks,
     raw_seed_row,
+    shrunk_row_caps,
     successor_of,
     supersede,
 )
@@ -33,7 +34,7 @@ from _surreal_harness import SurrealEnv
 from loremaster.store import _txn
 from loremaster.tasks import TaskLedger
 
-__all__ = ["ledger58"]
+__all__ = ["ledger58", "shrunk_row_caps"]
 HEAL_EVENT = "task.backfill.stragglers_reanchored"
 
 
@@ -64,6 +65,7 @@ async def _stragglers(ledger: TaskLedger, total: int, blockers: int, tag: str) -
 
 # PR18r2 — amendment 3 §1 (ii): the ONE-blocker population STAYS, but `chunks` is the packer's OWN
 # prediction for it (measured shape, greedy fit), never amendment 2's literal 2.
+@pytest.mark.usefixtures("shrunk_row_caps")
 async def test_PR18r2_cap_plus_one_of_ONE_blocker_heals_in_the_PACKERS_predicted_chunks(
     ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -71,14 +73,14 @@ async def test_PR18r2_cap_plus_one_of_ONE_blocker_heals_in_the_PACKERS_predicted
     fixed, per = await measure_heal_shape(ledger, env, "am3shape")
     cap = ledger.max_reanchor_dependents(0)
     ids = await _stragglers(ledger, cap + 1, 1, "am3one")
-    expected = predicted_chunks(cap + 1, fixed, per, _txn.TXN_STATEMENT_HARD_CAP)
+    expected = predicted_chunks(cap + 1, fixed, per, _txn.TXN_ROW_HARD_CAP)
     records = await _boot(env, caplog)
     assert len(records) == 1 and getattr(records[0], "count", None) == cap + 1, [
         (getattr(r, "count", None), getattr(r, "chunks", None)) for r in records
     ]
     assert getattr(records[0], "chunks", None) == expected, (
         f"{cap + 1} one-blocker stragglers; the heal chunk measures fixed={fixed}, per={per}, so a "
-        f"greedy packer against the {_txn.TXN_STATEMENT_HARD_CAP}-statement cap needs {expected} "
+        f"greedy packer against the {_txn.TXN_ROW_HARD_CAP}-row cap needs {expected} "
         f"chunk(s) — got {getattr(records[0], 'chunks', None)}. A chunk sized by the SUPERSEDE's "
         f"accessor (amendment 2's literal) is the defect amendment 3 §1 corrects"
     )
@@ -87,6 +89,7 @@ async def test_PR18r2_cap_plus_one_of_ONE_blocker_heals_in_the_PACKERS_predicted
 
 
 # PR19 — the SAME population spread over TEN distinct superseded blockers (the fleet's real shape).
+@pytest.mark.usefixtures("shrunk_row_caps")
 async def test_PR19_cap_plus_one_stragglers_over_TEN_blockers_all_heal_in_ONE_boot(
     ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -102,6 +105,7 @@ async def test_PR19_cap_plus_one_stragglers_over_TEN_blockers_all_heal_in_ONE_bo
 
 
 # PR20 — amendment 2 (a): owner= serves a HELD superseded row, decorated; owner=+status= excludes it.
+@pytest.mark.usefixtures("shrunk_row_caps")
 async def test_PR20_owner_query_serves_a_held_superseded_row_and_status_excludes_it(
     ledger58: tuple[TaskLedger, SurrealEnv],
 ) -> None:

@@ -82,7 +82,8 @@ bounds:
     REPORT-contract-58-r3.md FK-r3-4)
   ruling: docs/design/2026-09-26-packet58-kickoff-rulings.md (c8d3241) + packet58 amendments 1-8 (f4e96b4,
     e0760fd, 7266c1b, fd6497d, 67bf2cc, dcf6b0f, 01565f9, 03cb6d0) + amendments 9-12 (4cb8ce9, 5b72471, 0ed6705,
-    5419448); contract receipts REPORT-contract-58.md §RED + REPORT-contract-58-r2.md §RED@HEAD +
+    5419448) + amendments 13-15 (docs/design/2026-09-29-packet58-amendment-13.md,
+    docs/design/2026-09-30-packet58-amendment-14.md, docs/design/2026-11-09-packet58-amendment-15.md); contract receipts REPORT-contract-58.md §RED + REPORT-contract-58-r2.md §RED@HEAD +
     REPORT-contract-58-r3.md §RED@HEAD + REPORT-contract-58-r4.md §RED@HEAD (archived with the wave). r4 (am-12) —
     the lease `error_class` rider (store/lease.py, four lines) is carried by 58's BUILD (lead scope call) — its reds
     in test_reanchor_58_r4_lease_fates.py / test_exhaustion_fates.py are this bound's; test_reanchor_58_r4_state.py's
@@ -92,18 +93,14 @@ bounds:
     the pins name the ruled symbols now so the builder meets them, not invent them. Lead directive 17055
     (coldaudit-63c-i-a-2 F-6, the finding-461 shape) — this bound OWNS every packet-58 pytest RED, r1 and r2; each file
     below that carries one names a ruled symbol STATICALLY (a runtime-inert `if TYPE_CHECKING:` block where the
-    pins reach the symbol dynamically), so the typecheck line and the pytest legs share ONE self-destructing owner. Packet 66 (R39, sidecar RULING-12 §ADDENDUM D') — the five files below that read
-    `_txn.TXN_STATEMENT_HARD_CAP` / `_txn.TXN_STATEMENT_WARN_THRESHOLD` (deleted by the SDK3 build; §R4.1 F19 left the
-    reads loud for 58's revival) carry them as BARE missing_symbols. Bounds, stated — the match is token-exact,
-    quoted and per-file but OWNER-BLIND (mypy's module-alias message names no module — lore finding 587); and
-    liveness leg 4 reads a bare name UNCHECKED (no owner to import), so only the transcript self-destruct
-    discharges them
+    pins reach the symbol dynamically), so the typecheck line and the pytest legs share ONE self-destructing owner.
+    Contract r5 (packet 58 amendment 15, 2026-11-09) re-keyed every retired statement-cap read to the SDK3 row cap
+    (`_txn.TXN_ROW_HARD_CAP` / `TXN_ROW_WARN_THRESHOLD`, read live, shrunk per test) and removed the five bare
+    entries R39's D' had added (am-15 §6 item 8); test_reanchor_58_r5_rows.py (am-15 §2 / §4.1) joins the bound on
+    the ruled TxnCasLostError
   files:
   - path: loremaster/tests/test_supersede_reanchor_58.py
     missing_symbols:
-    # D' (R39) — bare, owner-blind (#587); liveness UNCHECKED — the SDK3 build deleted these (§R4.1 F19)
-    - TXN_STATEMENT_HARD_CAP
-    - TXN_STATEMENT_WARN_THRESHOLD
     - TaskLedger.max_reanchor_dependents
     - loremaster.tasks.SupersedeResult
     - type[TaskLedger]._guarded_append_fragment
@@ -115,21 +112,15 @@ bounds:
     - loremaster.tasks.SupersedeResult
   - path: loremaster/tests/test_reanchor_58_r2_probes.py
     missing_symbols:
-    # D' (R39) — bare, owner-blind (#587); liveness UNCHECKED — the SDK3 build deleted these (§R4.1 F19)
-    - TXN_STATEMENT_HARD_CAP
     - TaskLedger.max_reanchor_dependents
   - path: loremaster/tests/test_reanchor_58_r2_scale.py
     missing_symbols:
     - TaskLedger.max_reanchor_dependents
   - path: loremaster/tests/test_reanchor_58_r2_am2.py
     missing_symbols:
-    # D' (R39) — bare, owner-blind (#587); liveness UNCHECKED — the SDK3 build deleted these (§R4.1 F19)
-    - TXN_STATEMENT_HARD_CAP
     - TaskLedger.max_reanchor_dependents
   - path: loremaster/tests/test_reanchor_58_r2_rulings.py
     missing_symbols:
-    # D' (R39) — bare, owner-blind (#587); liveness UNCHECKED — the SDK3 build deleted these (§R4.1 F19)
-    - TXN_STATEMENT_HARD_CAP
     - TaskLedger.max_reanchor_dependents
   - path: loremaster/tests/test_reanchor_58_r3_am6.py
     missing_symbols:
@@ -148,8 +139,6 @@ bounds:
     - loremaster.tasks.StragglerHealPackerError
   - path: loremaster/tests/test_reanchor_58_r3_probes.py
     missing_symbols:
-    # D' (R39) — bare, owner-blind (#587); liveness UNCHECKED — the SDK3 build deleted these (§R4.1 F19)
-    - TXN_STATEMENT_HARD_CAP
     - loremaster.tasks.StragglerHealPackerError
   - path: loremaster/tests/test_reanchor_58_r3_relate.py
     missing_symbols:
@@ -160,6 +149,9 @@ bounds:
   - path: loremaster/tests/test_reanchor_58_r4_state.py
     missing_symbols:
     - type[TaskLedger]._reanchor_stragglers
+  - path: loremaster/tests/test_reanchor_58_r5_rows.py
+    missing_symbols:
+    - loremaster.store._txn.TxnCasLostError
   - path: loremaster/tests/test_reanchor_58_r4_lease_fates.py
     missing_symbols:
     - type[TaskLedger]._guarded_append_fragment

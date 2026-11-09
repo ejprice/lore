@@ -44,6 +44,7 @@ from _reanchor_58_support import (
     raw,
     raw_relate,
     raw_seed_row,
+    shrunk_row_caps,
     snapshot,
     supersede,
 )
@@ -61,7 +62,7 @@ if TYPE_CHECKING:
 
     _RULED_58: tuple[object, ...] = (StragglerHealPackerError,)
 
-__all__ = ["ledger58"]
+__all__ = ["ledger58", "shrunk_row_caps"]
 
 
 def _levels(caplog: pytest.LogCaptureFixture, message: str) -> list[int]:
@@ -70,6 +71,7 @@ def _levels(caplog: pytest.LogCaptureFixture, message: str) -> list[int]:
 
 # P-A (am-3 §3, ∀ "every OTHER THROW-rooted rollback … transition/supersede lost races, R1's straggler …
 # WARNING")
+@pytest.mark.usefixtures("shrunk_row_caps")
 async def test_PA1_a_lost_SUPERSEDE_race_logs_its_rollback_at_WARNING(
     ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -89,6 +91,7 @@ async def test_PA1_a_lost_SUPERSEDE_race_logs_its_rollback_at_WARNING(
     ]
 
 
+@pytest.mark.usefixtures("shrunk_row_caps")
 async def test_PA2_an_R1_straggler_rollback_logs_at_WARNING(
     ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -111,6 +114,7 @@ async def test_PA2_an_R1_straggler_rollback_logs_at_WARNING(
 
 # P-B (am-3 §3 principle: "a routine claim LOSS is not an error" — from ANY lore logger, not only the
 # driver's)
+@pytest.mark.usefixtures("shrunk_row_caps")
 async def test_PB_an_8_way_claim_race_raises_no_alarm_from_ANY_lore_logger(
     ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -139,6 +143,7 @@ async def test_PB_an_8_way_claim_race_raises_no_alarm_from_ANY_lore_logger(
 
 
 # P-C (am-3 §1: the packer BUILDS each row's fragments — ∀ rows, incl. a row naming TWO superseded blockers)
+@pytest.mark.usefixtures("shrunk_row_caps")
 async def test_PC_stragglers_naming_TWO_superseded_blockers_at_scale_heal_in_ONE_boot(
     ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -174,11 +179,12 @@ async def test_PC_stragglers_naming_TWO_superseded_blockers_at_scale_heal_in_ONE
     assert all(columns[t] == [head_a, head_b] for t in ids)
     heal = [r for r in caplog.records if r.getMessage() == HEAL_EVENT]
     assert len(heal) == 1 and getattr(heal[0], "count", None) == count
-    assert all(len(s) <= _txn.TXN_STATEMENT_HARD_CAP for s, _p in spy.heal_calls())
+    assert all(rows <= _txn.TXN_ROW_HARD_CAP for rows in spy.heal_rows()), spy.heal_rows()
 
 
 # P-D (am-3 §5: "a row whose head is a phantom is SKIPPED" — the WHOLE row, excluded from count; ∀ rows
 # incl. MIXED)
+@pytest.mark.usefixtures("shrunk_row_caps")
 async def test_PD1_a_MIXED_row_phantom_head_plus_healable_blocker_is_skipped_WHOLE(
     ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -205,6 +211,7 @@ async def test_PD1_a_MIXED_row_phantom_head_plus_healable_blocker_is_skipped_WHO
     assert not [r for r in caplog.records if r.getMessage() == HEAL_EVENT], "a skipped row was counted"
 
 
+@pytest.mark.usefixtures("shrunk_row_caps")
 async def test_PD2_a_MIXED_row_cyclic_chain_plus_healable_blocker_is_skipped_WHOLE(
     ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -228,6 +235,7 @@ async def test_PD2_a_MIXED_row_cyclic_chain_plus_healable_blocker_is_skipped_WHO
     assert not [r for r in caplog.records if r.getMessage() == HEAL_EVENT]
 
 
+@pytest.mark.usefixtures("shrunk_row_caps")
 async def test_PE_a_single_straggler_that_alone_exceeds_the_cap_fails_the_boot_LOUD_and_changes_nothing(
     ledger58: tuple[TaskLedger, SurrealEnv],
 ) -> None:
@@ -251,6 +259,6 @@ async def test_PE_a_single_straggler_that_alone_exceeds_the_cap_fails_the_boot_L
     assert len(before) == 1700
     with pytest.raises((TaskLedgerError, Exception)) as caught:
         await boot(env)
-    assert "cap" in str(caught.value).lower() or "statement" in str(caught.value).lower(), repr(caught.value)
+    assert "cap" in str(caught.value).lower() or "row" in str(caught.value).lower(), repr(caught.value)
     print("RAISED:", type(caught.value).__name__, str(caught.value)[:160])
     assert await column(ledger, monster) == before

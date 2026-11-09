@@ -9,8 +9,8 @@ sizing mispriced (r1 → am-2's defect → am-3 → N3, two-blocker rows). This 
 fourth instance:
 
     ∀ straggler populations whose heads resolve, ONE boot heals ALL of them — ``count == |population|`` and
-    every sent transaction ≤ ``TXN_STATEMENT_HARD_CAP`` — where each row's WEIGHT is its own composed
-    statement count (am-8 §2).
+    every sent transaction ≤ ``TXN_ROW_HARD_CAP`` — where each row's WEIGHT is its own composed ROW
+    count, ``_txn.fragment_rows`` (am-8 §2; r5: am-15 §2, at the §8.1 5 000-row shrink, read live).
 
 **The domain is GENERATED** (CLAUDE.md *Fix the CLASS*, rule 3) from the heal's own cost ingredients — the
 things one straggler row can carry that change what the heal composes for it:
@@ -52,7 +52,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import pytest
 from _reanchor_58_support import (
@@ -72,6 +72,7 @@ from _reanchor_58_support import (
     raw,
     raw_relate,
     raw_seed_row,
+    shrunk_row_caps,
     snapshot,
 )
 from _surreal_harness import SurrealEnv
@@ -88,7 +89,7 @@ if TYPE_CHECKING:
 
     _RULED_58: tuple[object, ...] = (StragglerHealPackerError,)
 
-__all__ = ["ledger58"]
+__all__ = ["ledger58", "shrunk_row_caps"]
 
 ENTRIES = (1, 2, 3)
 HEADS = ("distinct", "shared")
@@ -133,12 +134,14 @@ SCALES: dict[str, Callable[[int], int]] = {
     "fit+1": lambda fit: fit + 1,
     "2fit+1": lambda fit: 2 * fit + 1,
 }
-# SDK3 R8 F12 (round 4): the ROW bound REPLACES the statement cap; packet 58's packer re-sizes by ROWS when 58
-# is revived (dormant — this file is RED on the unbuilt 58 API). Read without breaking COLLECTION once the
-# statement cap is deleted (``None`` → every use raises; already RED). Re-size at 58's revival
-# (packet doc §R4, fork F19). The ``cast`` keeps this file's (and its importers') arithmetic typed as
-# today; at runtime it is ``None`` once the constant is gone.
-CAP = cast("int", getattr(_txn, "TXN_STATEMENT_HARD_CAP", None))
+# SDK3 R8 F12 / R12 F19 / F21 + packet 58 amendment 15 §2 / §8.1 (contract r5): the ROW bound replaced the
+# statement cap. Every leg requests the 5 000-row shrink (``shrunk_row_caps``) and reads the cap LIVE through
+# ``_cap()`` — never a module-level copy taken at import (the wrong build F21 forbids).
+
+
+def _cap() -> int:
+    """The row cap as ``compose`` and the packer see it right now (read live — F21)."""
+    return _txn.TXN_ROW_HARD_CAP
 
 
 def _pad(text: str) -> str:
@@ -190,7 +193,8 @@ async def seed_population(ledger: TaskLedger, shape: Shape, count: int, tag: str
 
 
 def _heal_chunks(spy: ComposeSpy) -> list[int]:
-    return [len(statements) for statements, _params in spy.heal_calls()]
+    """The ROW count (``fragment_rows``) of each heal chunk the boot composed (am-15 §2)."""
+    return spy.heal_rows()
 
 
 async def _boot_spied(env: SurrealEnv, caplog: pytest.LogCaptureFixture) -> ComposeSpy:
@@ -243,7 +247,7 @@ async def _assert_converged(
         f"for {len(population.rows)} rows"
     )
     sent = _heal_chunks(spy)
-    assert sent and all(size <= CAP for size in sent), f"{where}: heal transactions {sent} vs cap {CAP}"
+    assert sent and all(size <= _cap() for size in sent), f"{where}: heal transactions {sent} vs cap {_cap()}"
     assert getattr(heal[0], "chunks", None) == len(sent), (
         f"{where}: `chunks` ({getattr(heal[0], 'chunks', None)}) != composed heal transactions ({len(sent)})"
     )
@@ -265,6 +269,7 @@ class TestTheShapeSpaceIsNotVacuous:
         assert {shape.head_present for shape in SHAPES} == set(HEAD_PRESENT)
         assert len(SHAPES) == len(ENTRIES) * len(HEADS) * len(HEAD_PRESENT) - len(HEAD_PRESENT)
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_each_fixture_realizes_its_shape(self, ledger58: tuple[TaskLedger, SurrealEnv]) -> None:
         ledger, _env = ledger58
         for shape in SHAPES:
@@ -281,6 +286,7 @@ class TestOneBootHealsEveryShapeAtTheCapBoundary:
     """am-8 §2: per cost class, ``fit − 1`` / ``fit`` / ``fit + 1`` / ``2·fit + 1`` rows → 1 / 1 / 2 / 3 heal
     transactions (the last scale: contract r4, am-12 §3 F-E)."""
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     @pytest.mark.parametrize("scale", sorted(SCALES))
     @pytest.mark.parametrize("shape", SHAPES, ids=[shape.label for shape in SHAPES])
     async def test_one_boot_heals_the_whole_population_in_the_predicted_chunks(
@@ -293,7 +299,7 @@ class TestOneBootHealsEveryShapeAtTheCapBoundary:
         ledger, env = ledger58
         tag = f"cv{shape.label.replace('-', '')}"
         fixed, weight = await measure_weight(ledger, env, shape, tag, caplog)
-        fit = (CAP - fixed) // weight
+        fit = (_cap() - fixed) // weight
         assert fit > 1, f"{shape.label}: a chunk fits {fit} rows — the sweep needs ≥ 2"
         rows = SCALES[scale](fit)
         population = await seed_population(ledger, shape, rows, f"{tag}p")
@@ -318,6 +324,7 @@ MIXES = [
 class TestOneBootHealsAMixedPopulation:
     """am-8 §2 ``{pure, mixed cost classes}``: one boot heals all; chunks ≤ cap; greedy closure order-free."""
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     @pytest.mark.parametrize("mix", MIXES, ids=[f"{a.label}+{b.label}" for a, b in MIXES])
     async def test_a_mixed_population_heals_in_one_boot(
         self,
@@ -329,8 +336,8 @@ class TestOneBootHealsAMixedPopulation:
         (fixed_a, weight_a), (fixed_b, weight_b) = [
             await measure_weight(ledger, env, shape, f"mx{index}", caplog) for index, shape in enumerate(mix)
         ]
-        rows_a = (CAP - fixed_a) // (2 * weight_a) + 1
-        rows_b = (CAP - fixed_b) // weight_b
+        rows_a = (_cap() - fixed_a) // (2 * weight_a) + 1
+        rows_b = (_cap() - fixed_b) // weight_b
         first = await seed_population(ledger, mix[0], rows_a, "mxpa")
         second = await seed_population(ledger, mix[1], rows_b, "mxpb")
         population = Population(
@@ -343,8 +350,8 @@ class TestOneBootHealsAMixedPopulation:
         sent = sorted(_heal_chunks(spy), reverse=True)
         assert len(sent) >= 2, f"the mix must cross a chunk boundary: {sent}"
         heaviest = max(weight_a, weight_b) + max(fixed_a, fixed_b)
-        assert all(size > CAP - heaviest for size in sent[:-1]), (
-            f"a non-final heal chunk left more than one row's weight of room: {sent} (cap {CAP}, "
+        assert all(size > _cap() - heaviest for size in sent[:-1]), (
+            f"a non-final heal chunk left more than one row's weight of room: {sent} (cap {_cap()}, "
             f"heaviest row {heaviest}) — the packer is not greedy by each row's own weight"
         )
         await _assert_converged(ledger, env, population, spy, caplog, where="mixed population")
@@ -417,6 +424,7 @@ async def _seed_bad_entry(ledger: TaskLedger, kind: str, tag: str) -> str:
 class TestAnUnresolvableRowIsSkippedWHOLE:
     """am-8 §4 F4 × am-3 §5: skipped whole (byte-identical), uncounted, ONE WARNING per bad ENTRY, per boot"""
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     @pytest.mark.parametrize("kind", BAD_KINDS)
     @pytest.mark.parametrize(("composition", "position"), F4_LEGS, ids=[f"{c}-{p}" for c, p in F4_LEGS])
     async def test_the_row_is_the_unit(
@@ -473,6 +481,7 @@ class TestAnUnresolvableRowIsSkippedWHOLE:
             else:
                 assert not heal, "the second boot healed again"
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_a_row_with_a_PHANTOM_and_a_CYCLIC_entry_records_BOTH_and_its_healable_entry_waits(
         self, ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -516,6 +525,7 @@ class TestAnUnresolvableRowIsSkippedWHOLE:
 
 
 class TestARowOverTheCapFailsTheBootLOUD:
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_a_single_row_over_the_cap_raises_the_typed_packer_error_and_changes_NOTHING(
         self, ledger58: tuple[TaskLedger, SurrealEnv]
     ) -> None:
@@ -552,8 +562,8 @@ class TestARowOverTheCapFailsTheBootLOUD:
                 await boot(env)
             message = str(caught.value)
             assert monster in message, f"boot {boot_number}: the packer error must NAME the row: {message!r}"
-            assert any(int(number) > CAP for number in re.findall(r"\d+", message)), (
-                f"boot {boot_number}: the packer error must carry the row's WEIGHT (> {CAP}): {message!r}"
+            assert any(int(number) > _cap() for number in re.findall(r"\d+", message)), (
+                f"boot {boot_number}: the packer error must carry the row's WEIGHT (> {_cap()}): {message!r}"
             )
             assert await snapshot(ledger) == before, (
                 f"boot {boot_number}: a boot that fails LOUD must change NOTHING — the companion rows "

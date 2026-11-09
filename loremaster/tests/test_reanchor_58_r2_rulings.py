@@ -60,6 +60,7 @@ from _reanchor_58_support import (
     raw_relate,
     raw_seed_row,
     seed_stragglers,
+    shrunk_row_caps,
     snapshot,
     successor_of,
     supersede,
@@ -78,7 +79,7 @@ from loremaster.tasks import (
 )
 from test_task_guarded_shell_58 import _docstring_nodes
 
-__all__ = ["ledger58"]
+__all__ = ["ledger58", "shrunk_row_caps"]
 
 PACKAGE_ROOT = Path(importlib.import_module("loremaster").__file__ or "").parent
 SHELL = "_guarded_append_fragment"
@@ -118,7 +119,8 @@ def _pad_the_shell(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def _supersede_count(ledger: TaskLedger, dependents: int, successor_deps: int) -> int:
-    """Composed body-statement count of a real supersede with ``dependents`` / ``successor_deps``."""
+    """Composed ROW count (``fragment_rows``, am-15 §1.1) of a real supersede with ``dependents`` /
+    ``successor_deps``."""
     old = await create(ledger, "X")
     for index in range(dependents):
         await create(ledger, f"dependent {index}", [old])
@@ -127,7 +129,7 @@ async def _supersede_count(ledger: TaskLedger, dependents: int, successor_deps: 
     with spy.installed():
         await supersede(ledger, old, blocked_by=blockers)
     assert spy.calls, "the supersede composed nothing"
-    return len(spy.calls[-1][0])
+    return spy.rows[-1]
 
 
 class TestTheHubCapFollowsKAcrossFloorBoundaries:
@@ -137,6 +139,7 @@ class TestTheHubCapFollowsKAcrossFloorBoundaries:
     ``fixed ≢ 0 (mod per)`` — WB2 survived on a legit layout (fixed₀ = 6) and PR16 constructed the harm
     (compose's bare error at K = 3).  ``per`` is MEASURED, so ``K = per`` always crosses a floor."""
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     @pytest.mark.parametrize("k_spec", ["0", "1", "2", "3", "per", "per+1"])
     async def test_at_K_the_accessor_is_the_composed_cap_cap_succeeds_and_cap_plus_1_teaches(
         self, ledger58: tuple[TaskLedger, SurrealEnv], k_spec: str
@@ -151,7 +154,7 @@ class TestTheHubCapFollowsKAcrossFloorBoundaries:
         c1 = await _supersede_count(ledger, 1, k)
         assert await _supersede_count(ledger, 2, k) - c1 == per, "per must not depend on K"
         fixed = c1 - per
-        cap = (_txn.TXN_STATEMENT_HARD_CAP - fixed) // per
+        cap = (_txn.TXN_ROW_HARD_CAP - fixed) // per
         assert ledger.max_reanchor_dependents(k) == cap, (
             f"at K={k} the composed supersede is fixed={fixed} + {per}·N, so the derived cap is "
             f"{cap}; the accessor says {ledger.max_reanchor_dependents(k)} — it must BUILD the "
@@ -168,7 +171,10 @@ class TestTheHubCapFollowsKAcrossFloorBoundaries:
         with pytest.raises(TaskLedgerError) as caught:
             await supersede(ledger, over, blocked_by=blockers)
         message = str(caught.value)
-        assert "exceeding the hard cap" not in message and "nothing changed" in message.lower(), message
+        assert "nothing changed" in message.lower(), message
+        # r5 (am-15 §8.2): compose's bare refusal by TYPE, never by the retired text
+        assert not isinstance(caught.value, _txn.TxnRowCapExceededError), message
+        assert not isinstance(caught.value.__cause__, _txn.TxnRowCapExceededError), message
         assert str(cap + 1) in message and str(cap) in message, message
         assert await snapshot(ledger) == before, "a refused hub supersede wrote something"
 
@@ -181,6 +187,7 @@ class TestTheHubCapFollowsKAcrossFloorBoundaries:
 class TestTheHealPacksByItsOwnComposedCount:
     """RED at HEAD (no heal).  Amendment 3 §1 (i)/(iii)/(v)."""
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_cap_plus_1_stragglers_over_SIX_blockers_all_heal_in_ONE_boot_every_chunk_within_the_cap(
         self, ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -197,17 +204,17 @@ class TestTheHealPacksByItsOwnComposedCount:
         ]
         assert getattr(heal[0], "chunks", None) == len(chunks) >= 2, (
             f"the logged `chunks` must equal the heal transactions actually composed ({len(chunks)}); "
-            f"{cap + 1} rows over six blockers cannot fit one {_txn.TXN_STATEMENT_HARD_CAP}-statement "
+            f"{cap + 1} rows over six blockers cannot fit one {_txn.TXN_ROW_HARD_CAP}-row "
             f"transaction"
         )
-        sizes = [len(statements) for statements, _params in chunks]
-        assert all(size <= _txn.TXN_STATEMENT_HARD_CAP for size in sizes), sizes
+        sizes = spy.heal_rows()  # r5: the ROW count of each heal chunk (am-15 §2)
+        assert all(size <= _txn.TXN_ROW_HARD_CAP for size in sizes), sizes
         noisy = [
             # ⚠ DUAL (packet 58 contract r4 — amendment 12 §3 F-H, the same class): USED to also require
             # `r.name.startswith("loremaster")`; a clean heal emits no alarm from ANY logger.
             r.getMessage() for r in records
             if r.levelno >= logging.WARNING
-            and not hasattr(r, "statement_count")  # the size WARN is the WARN doing its job (am-2 (b))
+            and not hasattr(r, "row_count")  # the size WARN is the WARN doing its job (am-2 (b))
         ]
         assert not noisy, f"a clean heal logged a warning/error: {noisy}"
         columns = await all_columns(ledger)
@@ -219,6 +226,7 @@ class TestTheHealPacksByItsOwnComposedCount:
             "the sweep did not converge: a second boot healed or wrote again"
         )
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_MUTATION_padding_the_shell_moves_the_packer_AND_the_accessor(
         self,
         ledger58: tuple[TaskLedger, SurrealEnv],
@@ -233,7 +241,7 @@ class TestTheHealPacksByItsOwnComposedCount:
         assert ledger.max_reanchor_dependents(0) < baseline_cap, "the accessor ignored the padded shell"
         fixed, per = await measure_heal_shape(ledger, env, "padshape")
         rows = baseline_cap + 1
-        expected = predicted_chunks(rows, fixed, per, _txn.TXN_STATEMENT_HARD_CAP)
+        expected = predicted_chunks(rows, fixed, per, _txn.TXN_ROW_HARD_CAP)
         await seed_stragglers(ledger, rows, 1, "padone")
         records = await _boot_logged(env, caplog)
         heal = [r for r in records if r.getMessage() == HEAL_EVENT]
@@ -311,6 +319,7 @@ class TestAHealStoreFaultIsLOUD:
         finally:
             await booted.close()
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     @pytest.mark.parametrize(
         "fault",
         [SurrealStoreError("injected-58r2 store fault"), SurrealConnectionError("injected-58r2 transport")],
@@ -345,6 +354,7 @@ class TestAHealStoreFaultIsLOUD:
             "CONTROL: the unfaulted boot heals the straggler (so the doors above were the heal's)"
         )
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_a_chunk_DOMAIN_rejection_is_isolated_WARNED_and_healed_next_boot(
         self, ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -354,7 +364,7 @@ class TestAHealStoreFaultIsLOUD:
         the population is one row past a MEASURED chunk, so it spans exactly two chunks."""
         ledger, env = ledger58
         fixed, per = await measure_heal_shape(ledger, env, "rejshape")
-        fit = (_txn.TXN_STATEMENT_HARD_CAP - fixed) // per
+        fit = (_txn.TXN_ROW_HARD_CAP - fixed) // per
         head, ids = await seed_stragglers(ledger, fit + 1, 1, "rej")
         victim = ids[len(ids) // 2]
         await raw(
@@ -383,6 +393,7 @@ class TestAHealStoreFaultIsLOUD:
         assert all(c == [head] for t, c in (await all_columns(ledger)).items() if t in ids)
         assert [getattr(r, "count", None) for r in _records(caplog, HEAL_EVENT)] == [len(stranded)]
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_the_heal_READS_what_the_backfill_minted_in_the_SAME_boot(
         self, ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -413,6 +424,7 @@ class TestAHealStoreFaultIsLOUD:
 class TestAPhantomChainHeadIsSkippedAndRECORDED:
     """RED at HEAD (no heal record).  Amendment 3 §5 + its CONTROL."""
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_phantom_head_skipped_recorded_every_boot_sibling_healed_and_hand_fix_heals(
         self, ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -457,6 +469,7 @@ class TestASupersededByCycleIsBoundedAndRECORDED:
     """RED at HEAD (no heal record).  MP18 + amendment 3 §5 (*"a chain that CYCLES … recorded as
     ``straggler_chain_cycle``"*): bounded time, the straggler untouched, NO note appended per boot."""
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_a_cycle_is_recorded_each_boot_and_never_rewrites_the_straggler(
         self, ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -487,6 +500,7 @@ class TestASupersededByCycleIsBoundedAndRECORDED:
 class TestAClaimLossIsDEBUGNeverAnAlarm:
     """RED at HEAD for the typed legs (no ``TxnClaimLostError``).  Amendment 3 §3."""
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_an_8_way_race_logs_NO_warning_or_error_for_its_7_losers(
         self, ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -524,6 +538,7 @@ class TestAClaimLossIsDEBUGNeverAnAlarm:
             f"each of the 7 losers' rolled-back claim must be recorded at DEBUG — got {len(debug)}"
         )
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_CONTROL_a_lost_TRANSITION_race_still_logs_at_WARNING(
         self, ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -548,6 +563,7 @@ class TestAClaimLossIsDEBUGNeverAnAlarm:
             f"DEBUG (amendment 3 §3) — got {[logging.getLevelName(level) for level in levels]}"
         )
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_the_ledger_catches_the_TYPE_never_the_text(
         self, ledger58: tuple[TaskLedger, SurrealEnv], monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -560,8 +576,12 @@ class TestAClaimLossIsDEBUGNeverAnAlarm:
         assert (await ledger.claim_task(blocked, CLAIMANT)).claimed is False, "CONTROL: a loss is a RESULT"
         from loremaster.store._txn import TxnDomainRejectionError
 
+        # r5 re-base (66 / 63c-i-a): the ONE mapping helper is now called with ``kind=`` (and constructors
+        # take ``error_class=`` / ``kind=``) — the stand-in accepts both and still erases the type.
         monkeypatch.setattr(
-            _txn, "_domain_rejection_error", lambda _label, message: TxnDomainRejectionError(message)
+            _txn,
+            "_domain_rejection_error",
+            lambda _label, message, **_typed: TxnDomainRejectionError(message),
         )
         with pytest.raises(TxnDomainRejectionError):
             await ledger.claim_task(blocked, CLAIMANT)
@@ -617,6 +637,7 @@ class TestOnlyACycleThroughXPrimeIsRefused:
     """PR8 (``test_reanchor_58_r2_probes.py``) pins the success leg; this adds amendment 3 §4's
     "untouched" leg and its two refusal CONTROLS."""
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_the_legacy_loop_is_untouched_and_Y_follows_the_work(
         self, ledger58: tuple[TaskLedger, SurrealEnv]
     ) -> None:
@@ -632,6 +653,7 @@ class TestOnlyACycleThroughXPrimeIsRefused:
         assert await column(ledger, loop_y) == [successor, loop_z]
         assert await column(ledger, loop_z) == [loop_y], "the legacy loop member was touched"
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_CONTROL_a_successor_explicitly_blocked_by_its_dependent_is_REFUSED_whole(
         self, ledger58: tuple[TaskLedger, SurrealEnv]
     ) -> None:
@@ -643,6 +665,7 @@ class TestOnlyACycleThroughXPrimeIsRefused:
             await supersede(ledger, old, blocked_by=[dependent])
         assert await snapshot(ledger) == before
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_CONTROL_an_INHERITED_blocker_that_closes_a_loop_through_X_prime_is_REFUSED(
         self, ledger58: tuple[TaskLedger, SurrealEnv]
     ) -> None:
@@ -671,6 +694,7 @@ class TestEveryRELATEComesFromTheSharedFragment:
     ``TaskLedger._relate_fragment``: every RELATE statement the supersede composes must be one the shared
     fragment produced, and the counts must agree."""
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_the_supersede_composes_only_shared_fragment_RELATEs(
         self, ledger58: tuple[TaskLedger, SurrealEnv], monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -742,6 +766,7 @@ class TestEveryComposedGuardedWriteCameFromTheShell:
     may not read a LET-bound WRITE.  Reach is a CHECKED variable: the set of ``TaskLedger`` methods that
     call ``_apply`` is DERIVED from the AST and must equal the set this pin OBSERVED composing."""
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_every_verb_composes_guarded_writes_only_through_the_shell(
         self, ledger58: tuple[TaskLedger, SurrealEnv], monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -820,6 +845,7 @@ class TestTheFakeReanchorsInLockstepWithTheReal:
     """RED at HEAD (the fake's supersede returns ``str``).  Adversary P5: removing the fake's §HELD
     re-anchor loop left 1299 tests green — no test drove a supersede-with-dependents through the fake."""
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     @pytest.mark.parametrize("kind", ["fake", "real"])
     async def test_a_done_X_reanchors_and_reblocks_on_both(
         self, ledger58: tuple[TaskLedger, SurrealEnv], kind: str
@@ -856,6 +882,7 @@ class TestAHeldSupersededRowUnderOwnerQueries:
     blocked=False`` — Y is NOT claimable-partition material (superseded) → excluded; ``get Y`` serves it
     decorated; a ``transition`` by alice → ``IllegalTransitionError`` naming the supersession"*."""
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_blocked_False_excludes_it_get_serves_it_and_the_holder_cannot_transition_it(
         self, ledger58: tuple[TaskLedger, SurrealEnv]
     ) -> None:

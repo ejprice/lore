@@ -54,6 +54,7 @@ from _reanchor_58_support import (
     ledger58,
     new_ledger,
     raw,
+    shrunk_row_caps,
 )
 from _surreal_harness import PRODUCTION_DIM, SurrealEnv, drop_database, make_env, unique_database
 from loremaster.tasks import TaskLedger
@@ -76,7 +77,7 @@ if TYPE_CHECKING:
 
     _RULED: tuple[object, ...] = (TaskLedger._reanchor_stragglers, FindingLedger._run_guarded)
 
-__all__ = ["DESCRIPTION", "ledger58"]  # ledger58: re-exported fixture (the r3 idiom)
+__all__ = ["DESCRIPTION", "ledger58", "shrunk_row_caps"]  # re-exported fixtures (the r3 idiom)
 
 HEAL_VERB = "tasks.py::_reanchor_stragglers"
 HEAL_ROOT = "tasks.py::ensure_ready"
@@ -143,7 +144,7 @@ async def _drive_heal_multi_chunk(env: SurrealEnv, ledger: TaskLedger, seam: Dri
     """The heal at ``2·fit + 1`` rows of the one-entry shape: ≥ 2 heal transactions (am-12 §1 WRITES; F-E's
     scale).  Every leg seeds a FRESH population (distinct tag) and, after it, converges the store with an
     unarmed boot, so every leg sees the same n."""
-    from test_reanchor_58_r3_convergence import CAP, SHAPES, seed_population
+    from test_reanchor_58_r3_convergence import SHAPES, _cap, seed_population
 
     shape = next(shape for shape in SHAPES if shape.label == "e1-distinct-absent")
     fit = _HEAL_FIT.get("fit")
@@ -161,16 +162,16 @@ async def _drive_heal_multi_chunk(env: SurrealEnv, ledger: TaskLedger, seam: Dri
     finally:
         await booted.close()
         await boot(env)  # converge the remainder, unarmed — the next leg starts from a healed store
-    assert CAP > 0
+    assert _cap() > 0
 
 
 _HEAL_FIT: dict[str, int] = {}
 
 
 async def _measure_fit(ledger: TaskLedger, env: SurrealEnv, shape: Any) -> int:
-    """fit = ``(CAP − fixed) // weight``, MEASURED off ``compose`` (the convergence sweep's own helper)."""
+    """fit = ``(cap − fixed) // weight`` (cap read live; r5: the §8.1 shrink), MEASURED off ``compose``."""
     from _reanchor_58_support import ComposeSpy
-    from test_reanchor_58_r3_convergence import CAP, _heal_chunks, seed_population
+    from test_reanchor_58_r3_convergence import _cap, _heal_chunks, seed_population
 
     counts: list[int] = []
     for rows in (1, 2):
@@ -183,7 +184,7 @@ async def _measure_fit(ledger: TaskLedger, env: SurrealEnv, shape: Any) -> int:
         counts.append(chunks[0])
     weight = counts[1] - counts[0]
     fixed = counts[0] - weight
-    return (CAP - fixed) // weight
+    return int((_cap() - fixed) // weight)
 
 
 #: THIS module's ROOT drivers, keyed ``"<root> -> <verb>"``.  A key the derivation does not produce reds BY
@@ -238,6 +239,7 @@ class TestTheFiredLedgerEqualsTheDerivedDomain:
     """am-12 §1: per derived ``(R, v)`` — measure n, arm every k, the seam's FIRED triples equal
     ``{(R, v, k) : k ∈ 1..n}``; identity, ``statements_after == 0`` and a byte-identical store at every k."""
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     @pytest.mark.parametrize("pair", _collection_pairs())
     async def test_every_root_verb_and_write_index_fires_and_the_caller_gets_the_SAME_instance(
         self, monkeypatch: pytest.MonkeyPatch, pair: str
@@ -306,6 +308,7 @@ class TestTheStateInstrumentDiscriminates:
         seam.arm(None)
         return seam
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_a_retry_then_reraise_of_the_SAME_instance_is_caught_by_statements_after(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -329,6 +332,7 @@ class TestTheStateInstrumentDiscriminates:
         with pytest.raises(AssertionError, match="statement\\(s\\) AFTER"):
             await seam.expect_the_SAME_instance("fake.retry_reraise", verb)
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_the_write_index_fires_on_the_kth_matching_write_only(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

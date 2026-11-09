@@ -24,6 +24,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
+import pytest
 import pytest_asyncio
 from _surreal_harness import (
     PRODUCTION_DIM,
@@ -32,6 +33,7 @@ from _surreal_harness import (
     make_env,
     unique_database,
 )
+from loremaster.store import _txn as _txn_module
 from loremaster.store.surreal_schema import BLOCKS_RELATION, TASK_TABLE
 from loremaster.tasks import (
     STATUS_BLOCKED,
@@ -43,6 +45,7 @@ from loremaster.tasks import (
     TaskLedger,
 )
 from surrealdb import RecordID
+from test_sdk3_row_bound import _RETIRED_STATEMENT_CAP
 
 #: The identity that CREATES fixture rows and PERFORMS supersedes.  Distinct from every
 #: claimant below so an event's ``actor`` can be attributed to the verb that wrote it.
@@ -65,6 +68,101 @@ PHANTOM_ID = "phantom0058deadbeef0000000000000"
 ACTION_REANCHORED = "dependency_reanchored"
 #: The claim event's action vocabulary — kickoff §4 (``event={actor, action:"claim", at}``).
 ACTION_CLAIM = "claim"
+
+
+#: SDK3 rulings R8 F12 / R12 F19 / F21 + packet 58 amendment 15 §8.1 (contract r5): rows are the ONE
+#: strain measure, and 58's hub cap, heal packer and size WARN are pinned at a SHRUNK row cap / row warn —
+#: the retired statement values, so every r1–r4 fixture keeps the scale and discriminator it was graded at
+#: (58's fragments declare no ``TxnFragment.rows``: ``fragment_rows`` counts one row per statement).
+#: Monkeypatched on ``_txn`` and read LIVE by ``compose``, ``SurrealStore._log_transaction_size`` and
+#: every 58 consumer.
+SHRUNK_ROW_HARD_CAP = 5_000
+SHRUNK_ROW_WARN_THRESHOLD = 800
+#: The production row cap as this module imported it — the real-cap legs (am-15 §1.4 L1–L3, run WITHOUT the
+#: fixture) assert the live value still equals it before they run, so a leg that inherited a shrink reds.
+UNPATCHED_ROW_HARD_CAP: int = _txn_module.TXN_ROW_HARD_CAP
+#: SDK3's retired 5 000-statement cap — its ONE named constant (``test_sdk3_row_bound``), re-exported, never
+#: a second literal (am-15 §1.4 L2/L3).
+RETIRED_STATEMENT_CAP: int = _RETIRED_STATEMENT_CAP
+
+
+@pytest.fixture()
+def shrunk_row_caps(monkeypatch: pytest.MonkeyPatch) -> tuple[int, int]:
+    """am-15 §8.1 / fold item 13: shrink ``_txn.TXN_ROW_HARD_CAP`` → :data:`SHRUNK_ROW_HARD_CAP` and
+    ``_txn.TXN_ROW_WARN_THRESHOLD`` → :data:`SHRUNK_ROW_WARN_THRESHOLD` for ONE leg (``raising=True``: a
+    renamed constant reds by name). REQUESTED EXPLICITLY by each leg — never autouse. The patch lands
+    after import, so a build that copied either value at import time (``from … import
+    TXN_ROW_HARD_CAP``) does not see it and reds the cap+1 refusal and the WARN crossing."""
+    assert SHRUNK_ROW_HARD_CAP < _txn_module.TXN_ROW_HARD_CAP, "the shrink must be BELOW the live row cap"
+    assert SHRUNK_ROW_WARN_THRESHOLD < _txn_module.TXN_ROW_WARN_THRESHOLD, "the shrink must be BELOW the warn"
+    monkeypatch.setattr(_txn_module, "TXN_ROW_HARD_CAP", SHRUNK_ROW_HARD_CAP, raising=True)
+    monkeypatch.setattr(_txn_module, "TXN_ROW_WARN_THRESHOLD", SHRUNK_ROW_WARN_THRESHOLD, raising=True)
+    return SHRUNK_ROW_HARD_CAP, SHRUNK_ROW_WARN_THRESHOLD
+
+
+def assert_unpatched_row_cap() -> int:
+    """am-15 §8.1 rider: a real-cap leg first proves it did NOT inherit a shrink."""
+    assert _txn_module.TXN_ROW_HARD_CAP == UNPATCHED_ROW_HARD_CAP, (
+        f"a real-cap leg is running under a patched row cap ({_txn_module.TXN_ROW_HARD_CAP} ≠ "
+        f"{UNPATCHED_ROW_HARD_CAP}) — it would pass for the fixture's reason"
+    )
+    return UNPATCHED_ROW_HARD_CAP
+
+
+#: packet 58's four RULED guarded-shell THROW classes (kickoff / am-3 §3 / am-6 / am-7; am-15 §4.1 / §9).
+FIFTY_EIGHT_CLASS_NAMES: tuple[str, ...] = (
+    "TxnClaimLostError",
+    "TxnCasLostError",
+    "TxnReanchorStragglerError",
+    "TxnHealChunkError",
+)
+
+
+def fifty_eight_classes() -> dict[str, type[BaseException]]:
+    """58's ruled classes ``_txn`` defines right now — EMPTY before 58's build (so 63c's landed exact-set
+    pins that grow by them, am-15 §9.2, are unchanged at a pre-58 tree)."""
+    found = {name: getattr(_txn_module, name, None) for name in FIFTY_EIGHT_CLASS_NAMES}
+    return {name: cls for name, cls in found.items() if isinstance(cls, type)}
+
+
+def fifty_eight_label_names() -> frozenset[str]:
+    """The ``_txn._ERROR_CLASS_*`` NAMES whose value is a 58 class's constructed label — DERIVED, so no pin
+    spells the builder's label names (a class left on the unspecified label derives nothing and reds)."""
+    labels = {cls._constructed_error_class() for cls in fifty_eight_classes().values()}  # type: ignore[attr-defined]
+    return frozenset(
+        name
+        for name, value in vars(_txn_module).items()
+        if name.startswith("_ERROR_CLASS_")
+        and value in labels
+        and value != _txn_module._ERROR_CLASS_UNSPECIFIED
+    )
+
+
+def fifty_eight_thrown_markers() -> dict[str, str]:
+    """``{class name: marker}`` — for each present 58 class, the ONE ``_txn`` ``*_MARKER`` string the
+    classifier maps to that class's label when it LEADS an engine THROW (``_ENGINE_THROW_PREFIX``) — DERIVED
+    by inverting the classifier, never spelled (am-15 §4.1 / §9.2)."""
+    prefix = _txn_module._ENGINE_THROW_PREFIX
+    markers: dict[str, str] = {}
+    for name, cls in fifty_eight_classes().items():
+        label = cls._constructed_error_class()  # type: ignore[attr-defined]
+        found = [
+            value
+            for key, value in vars(_txn_module).items()
+            if key.endswith("_MARKER")
+            and isinstance(value, str)
+            and _txn_module._classify_engine_error(f"{prefix}{value} probe") == label
+        ]
+        assert len(found) == 1, f"exactly ONE marker must classify to {name}'s label {label!r}; found {found}"
+        markers[name] = found[0]
+    return markers
+
+
+def composed_rows(fragments: Any) -> int:
+    """The row count ``compose`` bounds — ``_txn.fragment_rows``, THE one counter (R8 F12), never a copy."""
+    from loremaster.store import _txn
+
+    return _txn.fragment_rows(list(fragments))
 
 
 @pytest_asyncio.fixture()
@@ -400,10 +498,11 @@ async def boot(env: SurrealEnv) -> None:
 
 
 class ComposeSpy:
-    """Record every transaction ``loremaster.tasks`` composes: ``(statements, params)`` per call.
+    """Record every transaction ``loremaster.tasks`` composes: ``(statements, params)`` per call, and its ROW
+    count (:func:`composed_rows`) in :attr:`rows`, index-aligned with :attr:`calls`.
 
-    The spy sits on ``compose`` — the ONE builder every task write goes through, the count its hard
-    cap checks — so what it sees is what reached the store, never what a builder merely built.
+    The spy sits on ``compose`` — the ONE builder every task write goes through, the ROW count its hard
+    cap checks (SDK3 R8 F12) — so what it sees is what reached the store, never what a builder merely built.
     """
 
     def __init__(self) -> None:
@@ -412,6 +511,7 @@ class ComposeSpy:
         self._module = importlib.import_module("loremaster.tasks")
         self._real = self._module.compose
         self.calls: list[tuple[list[str], dict[str, Any]]] = []
+        self.rows: list[int] = []
 
     def __call__(self, *fragments: Any) -> Any:
         statements = [statement for fragment in fragments for statement in fragment.statements]
@@ -419,6 +519,7 @@ class ComposeSpy:
         for fragment in fragments:
             params.update(fragment.params)
         self.calls.append((statements, params))
+        self.rows.append(composed_rows(fragments))
         return self._real(*fragments)
 
     @contextlib.contextmanager
@@ -428,6 +529,21 @@ class ComposeSpy:
             yield self
         finally:
             setattr(self._module, "compose", self._real)  # noqa: B010
+
+    def annotated_calls(self) -> list[tuple[int, int]]:
+        """``(rows, statements)`` of every recorded transaction whose ``fragment_rows`` differs from its
+        statement count — i.e. one that carries a ``TxnFragment.rows`` annotation (am-15 §2: 58's
+        fragments stay un-annotated, so a ``rows=`` under-declaration that slips the bound shows up here)."""
+        return [
+            (rows, len(statements))
+            for (statements, _params), rows in zip(self.calls, self.rows, strict=True)
+            if rows != len(statements)
+        ]
+
+    def heal_rows(self) -> list[int]:
+        """The ROW count of each boot-heal chunk, in :meth:`heal_calls` order."""
+        heal = {id(call) for call in self.heal_calls()}
+        return [rows for call, rows in zip(self.calls, self.rows, strict=True) if id(call) in heal]
 
     def heal_calls(self) -> list[tuple[list[str], dict[str, Any]]]:
         """The composed transactions that carry a boot-heal re-anchor note (a heal CHUNK each)."""
@@ -462,7 +578,7 @@ async def measure_heal_shape(ledger: TaskLedger, env: SurrealEnv, tag: str) -> t
     """``(fixed, per)`` of ONE heal chunk over stragglers of ONE superseded blocker, MEASURED.
 
     Seeds 1, 2 and 3 stragglers of a fresh blocker (one boot each; every boot heals only the new
-    ones), reads the heal chunk's composed statement count off :class:`ComposeSpy`, and checks
+    ones), reads the heal chunk's composed ROW count (``fragment_rows``) off :class:`ComposeSpy`, and checks
     linearity at n=3.  This is amendment 3 §1's "the packer's own count, read from the same counting
     function in the test — never a literal" (``compose`` spied — the ruling's second admitted form).
     """
@@ -474,7 +590,7 @@ async def measure_heal_shape(ledger: TaskLedger, env: SurrealEnv, tag: str) -> t
             await boot(env)
         chunks = spy.heal_calls()
         assert len(chunks) == 1, f"measuring the heal shape: {len(chunks)} heal chunks for n={n}"
-        counts.append(len(chunks[0][0]))
+        counts.append(spy.heal_rows()[0])
     per = counts[1] - counts[0]
     fixed = counts[0] - per
     assert per > 0 and counts[2] == fixed + 3 * per, (

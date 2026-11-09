@@ -45,6 +45,7 @@ import test_engine_rejection_seam as seam  # module-qualified: its Test* classes
 import test_preboot_schema_precondition_63c_13d as preboot
 import test_principals_cli as cli
 import yaml
+from _reanchor_58_support import fifty_eight_classes, fifty_eight_thrown_markers
 from _surreal_harness import PRODUCTION_DIM, connect_admin, drop_database, make_env, unique_database
 from loremaster.principal_keys import PrincipalKeyStore, PrincipalKeyStoreError
 from loremaster.store import _txn as _txn_module
@@ -579,6 +580,9 @@ _RULED_PROVEN_NO_KEY: frozenset[str] = frozenset(
         "TxnRowCapExceededError",
     }
 )
+# packet 58 am-15 §9.1–§9.2 (contract-58-r5, lead grant #20010): 58's four guarded-shell THROW classes —
+# PROVEN NO KEY by am-37 §15.2's own property — DERIVED from ``_txn`` (empty before 58's build).
+_RULED_PROVEN_NO_KEY = _RULED_PROVEN_NO_KEY | frozenset(fifty_eight_classes())
 #: §14 Q1: the store layer's unknown-outcome classes (the engine may have committed and the answer been
 #: lost). SDK3 round 6 (R15, MP-C 3e) adds ``SurrealOutcomeUnknownError`` — F14 / R5 rider 2 / R9 D1: a
 #: request was SENT and no reply came back, so the commit may have landed (it subclasses
@@ -630,6 +634,14 @@ _TYPED_PROVEN_SDK_ERROR: dict[str, dict[str, Any]] = {
         "details": {"kind": "Record", "details": {"id": "principal_key:k531d"}},
     },
 }
+# packet 58 am-15 §9.1–§9.2 (contract-58-r5, lead grant #20010): 58's four guarded-shell THROW classes —
+# PROVEN NO KEY by am-37 §15.2's own property — DERIVED from ``_txn`` (empty before 58's build).
+_TYPED_PROVEN_SDK_ERROR.update(
+    {
+        name: {"kind": "Thrown", "result": f"An error occurred: {marker} principal_key:k531d"}
+        for name, marker in fifty_eight_thrown_markers().items()
+    }
+)
 
 
 async def _typed_proven_instance(cls: type[BaseException]) -> BaseException:

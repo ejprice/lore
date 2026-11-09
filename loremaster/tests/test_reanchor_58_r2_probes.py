@@ -30,6 +30,7 @@ from _reanchor_58_support import (
     assert_edge_mirrors_column_for_every_row,
     bulk_seed_dependents,
     column,
+    composed_rows,
     create,
     drive_to,
     events_of,
@@ -38,6 +39,7 @@ from _reanchor_58_support import (
     raw,
     raw_relate,
     raw_seed_row,
+    shrunk_row_caps,
     successor_of,
     supersede,
 )
@@ -46,7 +48,7 @@ from loremaster.store import _txn
 from loremaster.store.surreal_schema import TASK_TABLE
 from loremaster.tasks import STATUS_WONTFIX, TaskLedger
 
-__all__ = ["ledger58"]
+__all__ = ["ledger58", "shrunk_row_caps"]
 
 
 async def _boot(env: SurrealEnv) -> None:
@@ -70,6 +72,7 @@ async def _seed_chain(ledger: TaskLedger, ids: list[str]) -> None:
 # ---------------------------------------------------------------------------------------------
 # PR1 — a NON-straggler rollback must NOT be served as the R1 "retry" teaching (supersede twin of B6)
 # ---------------------------------------------------------------------------------------------
+@pytest.mark.usefixtures("shrunk_row_caps")
 async def test_PR1_a_genuine_store_fault_is_not_laundered_into_the_R1_retry_teaching(
     ledger58: tuple[TaskLedger, SurrealEnv],
 ) -> None:
@@ -92,6 +95,7 @@ async def test_PR1_a_genuine_store_fault_is_not_laundered_into_the_R1_retry_teac
 # ---------------------------------------------------------------------------------------------
 # PR2 — the derived cap must follow K across a floor boundary (K = per always crosses one)
 # ---------------------------------------------------------------------------------------------
+@pytest.mark.usefixtures("shrunk_row_caps")
 async def test_PR2_the_cap_moves_with_K_across_a_floor_boundary(
     ledger58: tuple[TaskLedger, SurrealEnv], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -103,7 +107,7 @@ async def test_PR2_the_cap_moves_with_K_across_a_floor_boundary(
     counts: list[int] = []
 
     def _spy(*fragments: Any) -> Any:
-        counts.append(sum(len(f.statements) for f in fragments))
+        counts.append(composed_rows(fragments))
         return real(*fragments)
 
     async def _count(n: int, k: int) -> int:
@@ -122,12 +126,13 @@ async def test_PR2_the_cap_moves_with_K_across_a_floor_boundary(
     for k in (0, per, per + 1):
         c1 = await _count(1, k)
         fixed = c1 - per
-        assert ledger.max_reanchor_dependents(k) == (_txn.TXN_STATEMENT_HARD_CAP - fixed) // per, k
+        assert ledger.max_reanchor_dependents(k) == (_txn.TXN_ROW_HARD_CAP - fixed) // per, k
 
 
 # ---------------------------------------------------------------------------------------------
 # PR3 — the heal re-anchors EVERY superseded entry of a row, and counts ROWS (not pairs)
 # ---------------------------------------------------------------------------------------------
+@pytest.mark.usefixtures("shrunk_row_caps")
 async def test_PR3_a_straggler_naming_TWO_superseded_blockers_is_healed_fully_and_counted_once(
     ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -153,6 +158,7 @@ async def test_PR3_a_straggler_naming_TWO_superseded_blockers_is_healed_fully_an
 # ---------------------------------------------------------------------------------------------
 # PR4 — the heal must not DOUBLE an edge when the straggler already names the head
 # ---------------------------------------------------------------------------------------------
+@pytest.mark.usefixtures("shrunk_row_caps")
 async def test_PR4_a_straggler_already_naming_the_head_gets_ONE_entry_and_ONE_edge(
     ledger58: tuple[TaskLedger, SurrealEnv],
 ) -> None:
@@ -171,6 +177,7 @@ async def test_PR4_a_straggler_already_naming_the_head_gets_ONE_entry_and_ONE_ed
 # ---------------------------------------------------------------------------------------------
 # PR5 — a straggler whose chain head names NO row must not kill the boot (backfill's R11 twin)
 # ---------------------------------------------------------------------------------------------
+@pytest.mark.usefixtures("shrunk_row_caps")
 async def test_PR5_a_phantom_chain_head_does_not_fail_the_boot(
     ledger58: tuple[TaskLedger, SurrealEnv],
 ) -> None:
@@ -189,6 +196,7 @@ async def test_PR5_a_phantom_chain_head_does_not_fail_the_boot(
 # ---------------------------------------------------------------------------------------------
 # PR6 — #130 exclusion must hold under a LIMIT (T1: a short answer is a TRUE short answer)
 # ---------------------------------------------------------------------------------------------
+@pytest.mark.usefixtures("shrunk_row_caps")
 async def test_PR6_status_open_with_a_limit_is_not_short_while_claimable_rows_exist(
     ledger58: tuple[TaskLedger, SurrealEnv],
 ) -> None:
@@ -204,6 +212,7 @@ async def test_PR6_status_open_with_a_limit_is_not_short_while_claimable_rows_ex
 # ---------------------------------------------------------------------------------------------
 # PR7 — a WONTFIX predecessor re-blocks exactly like a DONE one (TERMINAL_STATUSES, not "done")
 # ---------------------------------------------------------------------------------------------
+@pytest.mark.usefixtures("shrunk_row_caps")
 async def test_PR7_a_WONTFIX_predecessor_reports_its_reblocked_dependent(
     ledger58: tuple[TaskLedger, SurrealEnv],
 ) -> None:
@@ -219,6 +228,7 @@ async def test_PR7_a_WONTFIX_predecessor_reports_its_reblocked_dependent(
 # PR8 — a dependent already on a LEGACY loop (not closed by this rewire) — spec-silent; the probe
 #       records what the reference does (succeeds) so a refusing build is visible.
 # ---------------------------------------------------------------------------------------------
+@pytest.mark.usefixtures("shrunk_row_caps")
 async def test_PR8_a_dependent_on_a_legacy_loop_does_not_block_the_supersede(
     ledger58: tuple[TaskLedger, SurrealEnv],
 ) -> None:
@@ -259,6 +269,7 @@ def test_PR9_a_clone_with_a_MODULE_LEVEL_guard_template_is_found() -> None:
 # ---------------------------------------------------------------------------------------------
 # PR10 — a ROUTINE claim loss must not emit an ERROR-level log record (it did not before 58)
 # ---------------------------------------------------------------------------------------------
+@pytest.mark.usefixtures("shrunk_row_caps")
 async def test_PR10_a_routine_claim_loss_logs_no_ERROR(
     ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -276,6 +287,7 @@ async def test_PR10_a_routine_claim_loss_logs_no_ERROR(
 # ---------------------------------------------------------------------------------------------
 # PR11 — the index rider must serve the PRODUCTION containment statements, not a hand-typed one
 # ---------------------------------------------------------------------------------------------
+@pytest.mark.usefixtures("shrunk_row_caps")
 @pytest.mark.parametrize(
     "statement",
     [
@@ -298,6 +310,7 @@ async def test_PR11_production_containment_statements_are_index_served(
 # ---------------------------------------------------------------------------------------------
 # PR12 — the re-anchor note's ``at`` is the supersede's time, not a stale/constant stamp
 # ---------------------------------------------------------------------------------------------
+@pytest.mark.usefixtures("shrunk_row_caps")
 async def test_PR12_the_note_at_is_the_supersede_time(ledger58: tuple[TaskLedger, SurrealEnv]) -> None:
     ledger, _env = ledger58
     old = await create(ledger, "X")
@@ -313,6 +326,7 @@ async def test_PR12_the_note_at_is_the_supersede_time(ledger58: tuple[TaskLedger
 # ---------------------------------------------------------------------------------------------
 # PR13 — the WARN policy is SHARED: silencing SurrealStore._log_transaction_size silences the task WARN
 # ---------------------------------------------------------------------------------------------
+@pytest.mark.usefixtures("shrunk_row_caps")
 async def test_PR13_the_task_WARN_rides_the_ONE_telemetry_policy(
     ledger58: tuple[TaskLedger, SurrealEnv],
     monkeypatch: pytest.MonkeyPatch,
@@ -327,25 +341,44 @@ async def test_PR13_the_task_WARN_rides_the_ONE_telemetry_policy(
     caplog.clear()
     with caplog.at_level(logging.DEBUG):
         await supersede(ledger, old)
-    warned = [r for r in caplog.records if r.levelno == logging.WARNING and hasattr(r, "statement_count")]
+    warned = [r for r in caplog.records if r.levelno == logging.WARNING and hasattr(r, "row_count")]
     assert not warned, "the task ledger warned through a PRIVATE copy of the threshold policy"
+
+
+@pytest.mark.usefixtures("shrunk_row_caps")
+async def test_PR13_CONTROL_the_house_policy_DOES_warn_at_that_size(
+    ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
+) -> None:
+    """r5 (A-10): PR13's positive control — the same hub at the same shrunk warn, the house function NOT
+    stubbed, warns exactly once, so PR13's silence is evidence, not blindness (a different reason to red)."""
+    ledger, _env = ledger58
+    old = await create(ledger, "a hub above the warn threshold (control)")
+    await bulk_seed_dependents(ledger, old, 300, tag="adv58warnctl")
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG):
+        await supersede(ledger, old)
+    warned = [r for r in caplog.records if r.levelno == logging.WARNING and hasattr(r, "row_count")]
+    assert len(warned) == 1, f"the house size WARN did not fire once: {[r.getMessage() for r in warned]}"
 
 
 # ---------------------------------------------------------------------------------------------
 # PR14 — the hub cap follows the SHARED compose cap (mutate it; the accessor must move)
 # ---------------------------------------------------------------------------------------------
+@pytest.mark.usefixtures("shrunk_row_caps")
 async def test_PR14_the_accessor_follows_the_shared_hard_cap(
     ledger58: tuple[TaskLedger, SurrealEnv], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ledger, _env = ledger58
     baseline = ledger.max_reanchor_dependents(0)
-    monkeypatch.setattr(_txn, "TXN_STATEMENT_HARD_CAP", _txn.TXN_STATEMENT_HARD_CAP - 300)
+    # r5 (am-15 §8.4 = §1.4 L4): shrink the live ROW cap again by per·d from inside the fixture → −d.
+    monkeypatch.setattr(_txn, "TXN_ROW_HARD_CAP", _txn.TXN_ROW_HARD_CAP - 300, raising=True)
     assert ledger.max_reanchor_dependents(0) == baseline - 100
 
 
 # ---------------------------------------------------------------------------------------------
 # PR15 — a legacy superseded_by LOOP must not hang the boot (bounded chain follow)
 # ---------------------------------------------------------------------------------------------
+@pytest.mark.usefixtures("shrunk_row_caps")
 async def test_PR15_a_superseded_by_loop_does_not_hang_the_boot(
     ledger58: tuple[TaskLedger, SurrealEnv],
 ) -> None:

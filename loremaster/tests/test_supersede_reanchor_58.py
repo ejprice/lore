@@ -49,12 +49,15 @@ from _reanchor_58_support import (
     CLAIMANT,
     CREATOR,
     PHANTOM_ID,
+    RETIRED_STATEMENT_CAP,
     SUPERSEDER,
     ApplyHook,
     all_columns,
     assert_edge_mirrors_column_for_every_row,
+    assert_unpatched_row_cap,
     bulk_seed_dependents,
     column,
+    composed_rows,
     create,
     drive_to,
     edge_pairs,
@@ -66,6 +69,7 @@ from _reanchor_58_support import (
     raw_relate,
     raw_seed_row,
     row_count,
+    shrunk_row_caps,
     snapshot,
     successor_of,
     supersede,
@@ -87,7 +91,7 @@ from loremaster.tasks import (
     TaskLedgerError,
 )
 
-__all__ = ["ledger58"]  # the imported fixture is USED by name below — keep ruff from pruning it
+__all__ = ["ledger58", "shrunk_row_caps"]  # imported fixtures USED by name — keep ruff from pruning them
 
 # The module whose ``compose`` / ``_apply`` the supersede routes through (the statement-count spy's seam).
 TASKS_MODULE = "loremaster.tasks"
@@ -169,6 +173,7 @@ async def world(ledger58: tuple[TaskLedger, SurrealEnv]) -> World:
 class TestEveryDependentFollowsTheWorkToTheSuccessor:
     """RED at HEAD (#356: supersede touches no dependent).  Kickoff §6 row 1 + F-2."""
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_every_dependent_names_the_successor_and_NOT_the_superseded_task(
         self, world: World
     ) -> None:
@@ -182,6 +187,7 @@ class TestEveryDependentFollowsTheWorkToTheSuccessor:
                 f"forever — #356's strand"
             )
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_only_the_X_entry_is_rewritten_order_and_other_blockers_kept(
         self, world: World
     ) -> None:
@@ -192,6 +198,7 @@ class TestEveryDependentFollowsTheWorkToTheSuccessor:
             "scratch, drops Other, or appends X' at the end is a different dependency list)"
         )
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_the_bystander_row_is_byte_unchanged(self, world: World) -> None:
         assert await column(world.ledger, world.bystander) == [world.other]
         assert await events_of(world.ledger, world.bystander) == world.events_before[world.bystander]
@@ -199,6 +206,7 @@ class TestEveryDependentFollowsTheWorkToTheSuccessor:
             world.bystander
         ], "a row that does not name X must not be written at all (updated_at moved)"
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_the_edge_mirrors_the_column_for_EVERY_row_and_no_edge_leaves_X(
         self, world: World
     ) -> None:
@@ -219,6 +227,7 @@ class TestEveryDependentFollowsTheWorkToTheSuccessor:
                 f"got {pairs.count((world.successor, task_id))}"
             )
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_direct_dependents_of_X_is_EMPTY_and_of_the_successor_is_the_whole_set(
         self, world: World
     ) -> None:
@@ -233,6 +242,7 @@ class TestEveryDependentFollowsTheWorkToTheSuccessor:
 class TestEachDependentCarriesTheReanchorNote:
     """RED at HEAD.  P58 Scope IN 1: ``{actor, action: "dependency_reanchored", from: X, to: X', at}``."""
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_exactly_ONE_new_event_per_dependent_naming_X_X_prime_and_the_SUPERSEDER(
         self, world: World
     ) -> None:
@@ -258,6 +268,7 @@ class TestEachDependentCarriesTheReanchorNote:
             )
             assert isinstance(event.get("at"), str) and datetime.fromisoformat(event["at"]), event
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_the_note_lands_on_the_DEPENDENT_never_on_X_or_the_successor(
         self, world: World
     ) -> None:
@@ -268,6 +279,7 @@ class TestEachDependentCarriesTheReanchorNote:
             successor_events
         )
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_updated_at_is_stamped_on_every_rewired_dependent(self, world: World) -> None:
         """Kickoff §4 rider iv: the shell stamps ``updated_at`` ∀ callers; the re-anchor now does too
         (§2: a re-anchored ``done`` row re-appears in the next rollup window — ACCEPTED, §7.9)."""
@@ -282,6 +294,7 @@ class TestEachDependentCarriesTheReanchorNote:
 class TestTheSupersedeItselfIsUnchanged:
     """The #174 / stamp behaviour 58 must PRESERVE (required-green)."""
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_X_is_stamped_and_the_successor_is_open_unowned(self, world: World) -> None:
         old = await world.ledger.get_task(world.old)
         assert old.superseded_by == world.successor
@@ -291,6 +304,7 @@ class TestTheSupersedeItselfIsUnchanged:
             "X had no blockers, so the #174 INHERIT default gives the successor none"
         )
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_the_result_names_exactly_the_reanchored_dependents(self, world: World) -> None:
         """Kickoff §7.7: ``SupersedeResult(successor_id, reanchored)`` — the PRE-write list, because
         a post-write ``direct_dependents(X)`` is ``[]`` by construction."""
@@ -301,6 +315,7 @@ class TestTheSupersedeItselfIsUnchanged:
             f"{sorted(world.dependents.values())}"
         )
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_the_result_is_the_typed_carrier(self, world: World) -> None:
         from loremaster.tasks import SupersedeResult
 
@@ -316,6 +331,7 @@ class TestTheRewireDedupes:
     LEGACY ``[X, X]`` row (ruling T5's shape — rows that predate the birth-time dedupe), seeded raw.
     """
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_a_legacy_duplicate_X_X_becomes_ONE_successor_entry_and_ONE_edge(
         self, ledger58: tuple[TaskLedger, SurrealEnv]
     ) -> None:
@@ -331,6 +347,7 @@ class TestTheRewireDedupes:
         assert pairs.count((successor, legacy)) == 1 and (old, legacy) not in pairs, pairs
         assert list(result.reanchored).count(legacy) == 1
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_a_legacy_PHANTOM_entry_is_left_untouched_and_carries_no_edge(
         self, ledger58: tuple[TaskLedger, SurrealEnv]
     ) -> None:
@@ -368,6 +385,7 @@ class TestTheSupersedeIsONETransaction:
         dependents = sorted([await create(ledger, f"dependent {index}", [old]) for index in range(3)])
         return old, dependents
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     @pytest.mark.parametrize("position", [0, 1, 2], ids=["k=1", "k=2", "k=3"])
     @pytest.mark.parametrize("point", ["row_update", "edge_create"])
     async def test_a_failure_at_dependent_k_rolls_back_EVERYTHING(
@@ -419,6 +437,7 @@ class TestACycleClosingRewireIsRefusedWhole:
     today's ``_refuse_a_cycle({X': [Z]})`` — finds nothing.
     """
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_refused_as_a_cycle_naming_it_and_NOTHING_changed(
         self, ledger58: tuple[TaskLedger, SurrealEnv]
     ) -> None:
@@ -439,6 +458,7 @@ class TestACycleClosingRewireIsRefusedWhole:
             "Y/Z columns + edges + provenance unchanged"
         )
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_CONTROL_the_same_shape_without_the_closing_dependency_succeeds(
         self, ledger58: tuple[TaskLedger, SurrealEnv]
     ) -> None:
@@ -450,6 +470,7 @@ class TestACycleClosingRewireIsRefusedWhole:
         successor = successor_of(await supersede(ledger, old, blocked_by=[unrelated]))
         assert await column(ledger, dependent) == [successor]
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_CONTROL_a_legacy_cycle_ELSEWHERE_does_not_refuse_a_reanchor(
         self, ledger58: tuple[TaskLedger, SurrealEnv]
     ) -> None:
@@ -479,6 +500,7 @@ class TestAConcurrentCreateIsRefusedNotStranded:
     class).  A build that rewires only its pre-read list strands Y2 and returns success.
     """
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_the_supersede_is_REFUSED_byte_inert_and_TEACHES_retry(
         self, ledger58: tuple[TaskLedger, SurrealEnv]
     ) -> None:
@@ -534,7 +556,8 @@ class TestTheHubBoundIsDERIVED:
     the ledger ACTUALLY composes: a spy on ``loremaster.tasks.compose`` counts the body statements of a
     successful supersede at N=1, 2, 3 dependents; ``per = c(2) − c(1)``, ``fixed = c(1) − per``,
     linearity checked at N=3, and ``max_reanchor_dependents(K)`` must equal
-    ``(TXN_STATEMENT_HARD_CAP − fixed) // per``.  A literal cap cannot survive the in-suite mutation leg.
+    ``(TXN_ROW_HARD_CAP − fixed) // per`` (r5: rows, am-15 §1.2).  A literal cap cannot survive the
+    in-suite mutation leg.
     """
 
     @staticmethod
@@ -550,7 +573,7 @@ class TestTheHubBoundIsDERIVED:
         real_compose = tasks_module.compose
 
         def _spy(*fragments: Any) -> Any:
-            counts.append(sum(len(fragment.statements) for fragment in fragments))
+            counts.append(composed_rows(fragments))  # r5: the ROW count compose bounds (am-15 §1.1)
             return real_compose(*fragments)
 
         old = await create(ledger, "X")
@@ -587,13 +610,36 @@ class TestTheHubBoundIsDERIVED:
         successor_deps: int,
     ) -> None:
         ledger, _env = ledger58
+        assert_unpatched_row_cap()  # am-15 §1.4 L1 / §8.1: this leg runs at the REAL row cap
         fixed, per = await self._derive(ledger, monkeypatch, successor_deps)
-        expected = (_txn.TXN_STATEMENT_HARD_CAP - fixed) // per
+        expected = (_txn.TXN_ROW_HARD_CAP - fixed) // per
         assert ledger.max_reanchor_dependents(successor_deps) == expected, (
             f"max_reanchor_dependents({successor_deps}) must be derived from the builder's own counts "
             f"(fixed={fixed}, per={per} measured off the composed transaction) → {expected}"
         )
 
+    async def test_REAL_CAP_a_supersede_past_the_RETIRED_statement_cap_SUCCEEDS(
+        self, ledger58: tuple[TaskLedger, SurrealEnv], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """am-15 §1.4 L2 (§8.1: REQUIRED, run WITHOUT the fixture): at the unpatched row cap, one supersede
+        whose composed rows exceed SDK3's retired 5 000-statement cap re-anchors every dependent.  At the
+        5 000 shrink a build that never left the statement cap (a literal, or ``min(old, new)``) passes
+        every other pin — this leg refuses it."""
+        ledger, _env = ledger58
+        assert_unpatched_row_cap()
+        fixed, per = await self._derive(ledger, monkeypatch, 0)
+        dependents = (RETIRED_STATEMENT_CAP - fixed) // per + 1
+        assert fixed + per * dependents > RETIRED_STATEMENT_CAP, "the leg must cross the retired bound"
+        old = await create(ledger, "a hub past the retired statement cap")
+        hub = await bulk_seed_dependents(ledger, old, dependents, tag="realcapx")
+        result = await supersede(ledger, old)
+        assert sorted(result.reanchored) == sorted(hub), (
+            f"{dependents} dependents ({fixed + per * dependents} rows > the retired "
+            f"{RETIRED_STATEMENT_CAP}) "
+            f"must re-anchor at the real row cap — a statement bound survives beside the row bound (F12)"
+        )
+
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_MUTATION_an_extra_per_dependent_statement_MOVES_the_cap(
         self, ledger58: tuple[TaskLedger, SurrealEnv], monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -614,12 +660,13 @@ class TestTheHubBoundIsDERIVED:
         monkeypatch.setattr(Ledger, "_guarded_append_fragment", staticmethod(_padded), raising=True)
         fixed, per = await self._derive(ledger, monkeypatch, 0)
         mutated = ledger.max_reanchor_dependents(0)
-        assert mutated == (_txn.TXN_STATEMENT_HARD_CAP - fixed) // per and mutated < baseline, (
+        assert mutated == (_txn.TXN_ROW_HARD_CAP - fixed) // per and mutated < baseline, (
             f"after padding the shell by one statement the composed per-dependent cost is {per}, so "
-            f"the cap must move from {baseline} to {(_txn.TXN_STATEMENT_HARD_CAP - fixed) // per}; "
+            f"the cap must move from {baseline} to {(_txn.TXN_ROW_HARD_CAP - fixed) // per}; "
             f"the accessor returned {mutated} — it is not derived from the builder"
         )
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     @pytest.mark.parametrize("successor_deps", [0, 2])
     @pytest.mark.parametrize("offset", [-1, 0], ids=["cap-1", "cap"])
     async def test_at_and_just_below_the_cap_EVERY_dependent_is_reanchored(
@@ -638,6 +685,7 @@ class TestTheHubBoundIsDERIVED:
         await assert_edge_mirrors_column_for_every_row(ledger, where=f"hub of {len(hub)}")
         assert (await ledger.get_task(old)).superseded_by == successor
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     @pytest.mark.parametrize("successor_deps", [0, 2])
     async def test_one_past_the_cap_is_REFUSED_byte_inert_and_TEACHES(
         self, ledger58: tuple[TaskLedger, SurrealEnv], successor_deps: int
@@ -658,11 +706,23 @@ class TestTheHubBoundIsDERIVED:
         assert "nothing changed" in message.lower(), (
             f"the refusal must SAY nothing changed (kickoff F-1 sentence): {message!r}"
         )
-        assert "statements, exceeding the hard cap" not in message, (
-            "the bare compose() cap error was served — F-1 rules a TEACHING refusal before any write"
+        # r5 (am-15 §8.2, A-9): r1's text check keyed on the RETIRED statement-cap wording and could no
+        # longer fail. By TYPE now: neither the error nor its __cause__ is compose's own row-cap refusal …
+        assert not isinstance(caught.value, _txn.TxnRowCapExceededError), (
+            "the bare compose() row-cap refusal was served — F-1 rules a TEACHING refusal before any write"
         )
+        assert not isinstance(caught.value.__cause__, _txn.TxnRowCapExceededError), (
+            "the ledger re-wrapped compose()'s row-cap refusal — F-1 decides at the DERIVED cap, "
+            "before compose"
+        )
+        # … and the positive control, same leg: composing cap+1 rows DOES raise it, so the
+        # negative half above is shown able to fire (no message text is asserted).
+        rows_needed = _txn.TXN_ROW_HARD_CAP + 1
+        with pytest.raises(_txn.TxnRowCapExceededError):
+            _txn.compose(_txn.TxnFragment(statements=["RETURN NONE"] * rows_needed, params={}))
         assert await snapshot(ledger) == before, "a refused hub supersede must write NOTHING"
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_crossing_the_WARN_threshold_logs_ONE_warning_and_SUCCEEDS(
         self,
         ledger58: tuple[TaskLedger, SurrealEnv],
@@ -673,14 +733,14 @@ class TestTheHubBoundIsDERIVED:
         measured ``fixed``/``per`` — the smallest hub whose transaction crosses the threshold."""
         ledger, _env = ledger58
         fixed, per = await self._derive(ledger, monkeypatch, 0)
-        crossing = (_txn.TXN_STATEMENT_WARN_THRESHOLD - fixed) // per + 1
-        assert fixed + per * crossing > _txn.TXN_STATEMENT_WARN_THRESHOLD >= fixed + per * (crossing - 1)
+        crossing = (_txn.TXN_ROW_WARN_THRESHOLD - fixed) // per + 1
+        assert fixed + per * crossing > _txn.TXN_ROW_WARN_THRESHOLD >= fixed + per * (crossing - 1)
         below_old = await create(ledger, "a hub just BELOW the warn threshold")
         await bulk_seed_dependents(ledger, below_old, crossing - 1, tag="warnbelow")
         caplog.clear()
         with caplog.at_level(logging.DEBUG):
             await supersede(ledger, below_old)
-        below = [r for r in caplog.records if r.levelno >= logging.WARNING and hasattr(r, "statement_count")]
+        below = [r for r in caplog.records if r.levelno >= logging.WARNING and hasattr(r, "row_count")]
         assert not below, f"a below-threshold supersede warned: {[r.getMessage() for r in below]}"
         old = await create(ledger, "a hub just ABOVE the warn threshold")
         hub = await bulk_seed_dependents(ledger, old, crossing, tag="warnabove")
@@ -688,13 +748,13 @@ class TestTheHubBoundIsDERIVED:
         with caplog.at_level(logging.DEBUG):
             result = await supersede(ledger, old)
         warnings = [
-            r for r in caplog.records if r.levelno == logging.WARNING and hasattr(r, "statement_count")
+            r for r in caplog.records if r.levelno == logging.WARNING and hasattr(r, "row_count")
         ]
         assert len(warnings) == 1, (
-            f"expected exactly ONE WARNING carrying `statement_count` for a {fixed + per * crossing}-"
-            f"statement supersede; got {[r.getMessage() for r in warnings]}"
+            f"expected exactly ONE WARNING carrying `row_count` for a {fixed + per * crossing}-"
+            f"row supersede; got {[r.getMessage() for r in warnings]}"
         )
-        assert getattr(warnings[0], "statement_count") > _txn.TXN_STATEMENT_WARN_THRESHOLD  # noqa: B009
+        assert getattr(warnings[0], "row_count") > _txn.TXN_ROW_WARN_THRESHOLD  # noqa: B009
         assert sorted(result.reanchored) == sorted(hub)
 
 
@@ -714,6 +774,7 @@ class TestTheBootBackfillAfterAReanchorIsANoOp:
             if r.getMessage().startswith("task.backfill.")
         ]
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_after_a_reanchor_the_backfill_mints_nothing_and_records_nothing(
         self, world: World, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -725,6 +786,7 @@ class TestTheBootBackfillAfterAReanchorIsANoOp:
         )
         assert not records, [r.getMessage() for r in records]
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_after_a_REFUSED_supersede_the_backfill_mints_nothing(
         self, ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -775,6 +837,7 @@ class TestTheBootHealReanchorsStragglers:
             await booted.close()
         return [r for r in caplog.records if r.getMessage() == HEAL_EVENT]
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_a_boot_heals_every_straggler_to_its_successor_and_COUNTS_them(
         self, ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -802,6 +865,7 @@ class TestTheBootHealReanchorsStragglers:
             f"{[(r.getMessage(), getattr(r, 'count', None)) for r in records]}"
         )
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_a_second_boot_changes_NOTHING_and_is_SILENT(
         self, ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -816,6 +880,7 @@ class TestTheBootHealReanchorsStragglers:
             "the heal is not idempotent: a second boot wrote or logged again"
         )
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_a_three_hop_chain_reanchors_to_the_HEAD(
         self, ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -829,6 +894,7 @@ class TestTheBootHealReanchorsStragglers:
             "(which is itself superseded — a second strand)"
         )
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_a_DONE_head_frees_the_straggler(
         self, ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -852,6 +918,7 @@ class TestRequiredGreen:
     """Builds prior rulings require GREEN (63c amendment 14's lesson) — each reddens a build that
     regresses them while "adding" the re-anchor.  GREEN at HEAD except where the re-anchor is asserted."""
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_ZERO_dependents_reanchors_nothing(self, ledger58: tuple[TaskLedger, SurrealEnv]) -> None:
         ledger, _env = ledger58
         live = await create(ledger, "a live blocker")
@@ -864,6 +931,7 @@ class TestRequiredGreen:
             "a zero-dependent supersede must add exactly the successor's #174 edge and touch nothing else"
         )
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     @pytest.mark.parametrize("sentinel", ["inherit", "clear", "replace"])
     async def test_the_174_sentinel_still_resolves_the_SUCCESSOR_while_dependents_are_rewired(
         self, ledger58: tuple[TaskLedger, SurrealEnv], sentinel: str
@@ -884,6 +952,7 @@ class TestRequiredGreen:
         assert await column(ledger, dependent) == [successor]
         await assert_edge_mirrors_column_for_every_row(ledger, where=f"#174 {sentinel}")
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_a_DOUBLE_supersede_race_reanchors_EXACTLY_ONCE_to_the_WINNER(
         self, ledger58: tuple[TaskLedger, SurrealEnv]
     ) -> None:
@@ -913,6 +982,7 @@ class TestRequiredGreen:
             assert len(notes) == 1 and notes[0]["to"] == successor, notes
         await assert_edge_mirrors_column_for_every_row(ledger, where="after a 4-way supersede race")
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_a_loser_that_PASSED_its_pre_read_rolls_back_WHOLE_via_the_in_txn_CAS(
         self, ledger58: tuple[TaskLedger, SurrealEnv]
     ) -> None:
@@ -947,6 +1017,7 @@ class TestRequiredGreen:
             assert len(notes) == 1 and notes[0]["to"] == won[0], notes
         await assert_edge_mirrors_column_for_every_row(ledger, where="after a pre-read-passing loser")
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_a_superseded_X_still_does_not_UNBLOCK_its_dependents(
         self, ledger58: tuple[TaskLedger, SurrealEnv]
     ) -> None:
@@ -971,6 +1042,7 @@ class TestSupersedeOfATerminalPredecessorA1:
     gates CLAIMS only).
     """
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_reblocked_names_exactly_the_previously_CLAIMABLE_dependents(
         self, ledger58: tuple[TaskLedger, SurrealEnv]
     ) -> None:
@@ -1011,6 +1083,7 @@ class TestSupersedeOfATerminalPredecessorA1:
         assert not loss.claimed and successor in loss.task.blocked_by
         assert (await ledger.get_task(held)).status == held_status_before, "Z's status must be untouched"
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_an_OPEN_predecessor_reblocks_NOTHING(
         self, ledger58: tuple[TaskLedger, SurrealEnv]
     ) -> None:
@@ -1022,6 +1095,7 @@ class TestSupersedeOfATerminalPredecessorA1:
         result = await supersede(ledger, old)
         assert list(result.reblocked) == [] and len(result.reanchored) == 1
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_every_status_is_rewired_including_claimed(
         self, ledger58: tuple[TaskLedger, SurrealEnv]
     ) -> None:
@@ -1041,6 +1115,7 @@ class TestSupersedeOfATerminalPredecessorA1:
             "A1: the open dependent now waits on the OPEN successor"
         )
 
+    @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_a_claim_whose_PRE_READ_predates_the_reanchor_can_NOT_win(
         self, ledger58: tuple[TaskLedger, SurrealEnv]
     ) -> None:
