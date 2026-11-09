@@ -1,0 +1,11 @@
+id	entries_returned	subjA_rank	subjA_score	subjB_rank	subjB_score	rank1_first70
+A6	10	5	0.0154	-	-	MEASURED 2026-11-09: unpinned agents follow the lead's model now that 
+A7	10	1	0.0164	-	-	Claude Code agent-definition `tools:` grant semantics. MEASURED 2026-0
+B1	10	-	-	9	0.0145	The running lore container (`lore-lore`, and every per-project lore co
+B2	10	-	-	1	0.0164	lore-lore deploy, restart and resource ceiling. Measured 2026-08-08 (p
+B3	10	-	-	1	0.0164	lore-lore deploy, restart and resource ceiling. Measured 2026-08-08 (p
+B4	10	-	-	1	0.0164	lore-lore deploy, restart and resource ceiling. Measured 2026-08-08 (p
+B5	10	-	-	1	0.0164	lore-lore deploy, restart and resource ceiling. Measured 2026-08-08 (p
+D1	10	-	-	-	-	numpy and scipy are ADDABLE to the lore image via uv in ~1 second (mea
+D2	10	-	-	-	-	2026-07-13 (PKT-28 C1, finding #107 — a 100% production outage). Opera
+D3	10	-	-	-	-	- **Concurrent lore pytest sessions are SAFE since #466's fix (2026-09
