@@ -1387,8 +1387,14 @@ Live defects and things we genuinely do not know. **Nothing here is settled — 
   (searcher = VIEWER; scout/indexer = EDITOR.)
 - **HNSW is in-memory** (default 256 MiB, `SURREAL_HNSW_CACHE_SIZE`). 3.1 added **DiskANN**
   (persisted, larger-than-memory) — evaluate at Odoo scale.
-- A live MCP session connects to lore only at session **start**: if the server was down then, the
-  `mcp__lore_lore__*` tools stay unreachable until `claude --continue`.
+- A live MCP session connects to lore at session **start**: if the server was down then, the
+  `mcp__lore_lore__*` tools stay unreachable until you reconnect. Since Claude Code 2.1.284,
+  `/mcp reconnect all` retries every failed server in place, with no restart; `claude --continue`
+  also works. A remote (HTTP) server like lore that drops MID-session is reconnected automatically
+  (Claude Code mcp doc; 2.1.273 adds a notification when that gives up). *(Refreshed 2026-11-09
+  against Claude Code 2.1.319. Whether auto-reconnect also covers a server that was down at session
+  start is undocumented. Separately, lore-lore itself may not reconnect to lore-surreal after a
+  store restart; see memory 50faec1f and #250/#164.)*
 
 ---
 
