@@ -166,11 +166,13 @@ _MCP_INITIALIZE_BODY = json.dumps(
 ).encode("utf-8")
 
 # Printed to stdout whenever a container is freshly launched or recreated on a new
-# image so the operator knows to reconnect their MCP client (e.g. restart Claude Code
-# via `claude --continue`) to load the refreshed tool schemas.
+# image so the operator knows to reconnect their MCP client to load the refreshed tool
+# schemas. `/mcp reconnect all` is the first fix (operator, 2026-11-09; store reference
+# §9); restarting Claude Code is the fallback.
 _MCP_RECONNECT_REMINDER = (
     "ACTION REQUIRED: reconnect the MCP session so the refreshed tool schemas load. "
-    "Restart Claude Code (e.g. `claude --continue`) or re-attach your MCP client."
+    "In Claude Code run `/mcp reconnect all`; if lore's tools still do not appear, restart "
+    "it (e.g. `claude --continue`). Other MCP clients: re-attach."
 )
 
 
