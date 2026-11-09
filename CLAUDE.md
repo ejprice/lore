@@ -780,17 +780,10 @@ them. Therefore:
   for, and nothing else. Delegate frontier-generation to the contract adversary rather
   than relying on the lead to enumerate it.
 - **A DESIGN PROBLEM NEVER REACHES A BUILDER (operator, 2026-07-14 — packet 01, the
-  three-scanner chain; roster re-ruled 2026-11-09).** Roster: **contract authors on the
-  LEAD's model · SONNET builders · Opus contract-adversary · Opus cold code-audits · Opus
-  lead** (Fable = design sidecar + escalation valve only).
-  - `tdd-contract` and `tdd-light-contract` are **deliberately unpinned** (operator,
-    2026-11-09): an Opus lead gets Opus contract authors, and a Fable lead gets Fable ones.
-    Never add a `model:` line to them.
-  - The builder slot is the `tdd-implementer`, `tdd-refactorer` and `tdd-stub` agents.
-  - They pin `model: sonnet` in their definitions, which overrides
-    `CLAUDE_CODE_SUBAGENT_MODEL`.
-  - The operator ruled (2026-11-09) that those pins are correct. That supersedes the
-    2026-07-14 "Opus builders" half of this ruling.
+  three-scanner chain; roster re-ruled 2026-11-09).** Who runs which role, on which model:
+  the **ROSTER table** at the top of § Orchestration. The 2026-11-09 re-ruling returned
+  builders to Sonnet, superseding the 2026-07-14 "Opus builders" half of this ruling, and
+  left the contract authors deliberately unpinned so that they follow the lead's model.
 
   **The routing rule is the half that matters, and it binds the LEAD:** if a contract's
   central requirement is a **property to INVENT** rather than a **spec to IMPLEMENT**, it is a
@@ -899,6 +892,24 @@ assert it: `assert Path(loremaster.__file__).resolve().is_relative_to(SCRATCH_RO
   and no production code loads. `scratch_copy.sh` closes all three (`--all-packages`, not a plain sync).
 
 ## Orchestration (multi-agent phases)
+
+### ROSTER — who runs which role (operator rulings; table added 2026-11-09)
+| Role | Spawn as | Model | Spawn rule, and why |
+|---|---|---|---|
+| Lead | the session itself | Opus | Opus orchestrates packets by default; Fable context is never spent on agent management (2026-07-14). |
+| Contract author | `tdd-contract` / `tdd-light-contract` | **the lead's model** | Deliberately UNPINNED: never add a `model:` line. An Opus lead gets Opus authors, a Fable lead gets Fable ones (2026-11-09). |
+| Contract adversary | `contract-adversary` | Opus | Grades every contract revision before any builder sees it (2026-07-28). |
+| Builders | `tdd-implementer`, `tdd-refactorer`, `tdd-stub` | Sonnet (pinned) | They implement a spec, never invent a property: a design problem routes to the lead (2026-07-14). Sonnet re-ruled 2026-11-09. |
+| Cold audits, design consults, research | `opus-worker` | Opus, effort high | The builder never grades its own work. |
+| Design sidecar, escalation valve | `fable-worker` | Fable, effort high | Once per session, long-running, NEVER a fork. Only on the INDEX-marked design packets or the named escalation triggers (2026-07-14). |
+| Test runners, mechanical fan-out | `haiku-runner` / `haiku-worker` | Haiku | No `name`; a self-contained brief with no brief-base (2026-10-21). |
+
+Spawn every one of these with NO per-call `model`: it overrides the agent file. The files
+use the aliases (`opus`, `sonnet`, `fable`, `haiku`), which resolve to the newest model;
+never pin a full model id except as a dated escape hatch (lead-base, operator 2026-11-09).
+Rows change only by operator ruling; the paragraphs below carry the reasons, not a second
+copy of the roster.
+
 - The lead writes no code — tests included. Ladder: ground-truth verify → TaskStop →
   respawn fresh (never reuse a teammate name).
 - **LEAD MODEL (operator, 2026-07-14): OPUS orchestrates packets by default — Fable
