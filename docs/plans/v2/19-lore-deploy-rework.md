@@ -7,7 +7,7 @@ form"; operator rules on the doc** · skill tests idiom: `cd skills/lore-deploy/
 ## REDESIGNATED (operator slotting, 2026-07-22)
 **#166** landed: deploying lore requires TWO loremaster toolchains — the baked container
 AND a host install, resolved through a path HARDCODED to the author's personal clone
-(`lore_deploy.py:369-388`), because four load-bearing shell-outs (config-parse ×2, the
+(`lore_deploy._loremaster_python`), because four load-bearing shell-outs (config-parse ×2, the
 cold index, a snippet check — L442/L466/L736/L1137) run loremaster ON THE HOST while the
 image already bakes everything needed (verified live: the skill itself is stdlib-only;
 the image imports `loremaster.index.cli` + `loremaster.config` today). The clean shape —

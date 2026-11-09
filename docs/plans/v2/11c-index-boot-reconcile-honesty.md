@@ -107,7 +107,8 @@ did not happen.
 
 ## Hazards
 - `test_comms_tool.py` is under uncommitted 63c edit at this writing: start from a fetched, committed base.
-- Landmines (MEMORY.md): do NOT `lore-deploy start` lore-lore (hand-rolled mount). Capture
+- Landmines (`lore_recall`, label `harness_type=landmine`): `lore-deploy start` lore-lore is SAFE since the
+  #165 fix (2026-11-01; #166 stays a stated bound) — the old "do NOT start, hand-rolled mount" line is retired. Capture
   `podman inspect --format '{{.Config.CreateCommand}}'` before `rm`. Rebuild and recreate, never restart.
   Tests never touch `:18500`.
 

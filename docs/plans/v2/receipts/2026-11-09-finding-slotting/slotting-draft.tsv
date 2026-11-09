@@ -1,0 +1,106 @@
+cluster	finding	proposed_home	note
+store-lifecycle	478	16	lore-lore never re-establishes store WS after lore-surreal restart (52 min outage) — one class with 575/576/609
+store-lifecycle	575	16	stale WS one failed call after restart — duplicate of 576
+store-lifecycle	576	16	same subject as 575; 66 named bound R-4/T3 is adjacent
+store-lifecycle	609	16	intermittent 1005 after store restart; store SIGTERM→SIGKILL (quadlet side)
+store-lifecycle	479	16	host OOM kills prod store first; MemoryMax absent (joins #249 RSS restart policy)
+store-lifecycle	512	68	17 _ensure_connection wraps = one policy; the tenacity conversion is the natural moment to collapse them
+store-lifecycle	521	68	8 lifecycle catch sites swallow exhausted contention (inbox_awaiter, scout) — retry loops 68 converts
+store-lifecycle	548	68	eager-build retry warning logs no exception — _eager_build_with_retry is a hand-rolled retry loop
+store-lifecycle	539	68	scout._consume_live awaitable branch shaped by wrong fake — scout is a 68 surface
+store-txn	501	64b	compose() accepts top-level RETURN → envelope truncation; sdk3 migration doc already names it
+store-txn	543	64b	wrap_store_rejection "could not <verb>" at 20 non-mint callers (am-37 §14 residual, operator scope)
+store-txn	489	64b	guarded-append TxnFragment shell duplicated findings/tasks → 64b §DRY
+store-txn	594	64b	_as_rows ×12 → 64b §DRY (Log 2026-10-01 routes the _as_rows sweep there)
+store-txn	599	66-bound	5 required_datetime callers "(id unknown)" — 66 named bound, carried; re-open trigger stands
+store-txn	588	upstream	filed surrealdb.py#439 — watch list
+store-txn	593	upstream	filed surrealdb.py#438 — watch list
+search-errors	495	09a	bare-UUID store error served by lore_search — served-prose/error-honesty class (verify at HEAD: 66 may have changed the shape)
+search-errors	496	09a	same class as 495
+search-errors	498	09a	same class as 495 (3 parallel calls)
+search-errors	511	09a	same class as 495 (SDK in-flight KeyError shape)
+search-errors	585	09a	"unspecified rejection" — same class
+search-latency	482	16	lore_search >120s under load — host/store contention; 16 owns :18500 ops
+search-latency	490	16	>120s twice + recall miss on _bare_id copies (recall half → 28)
+search-latency	500	16	>120s under concurrent pytest load
+search-latency	502	16	no response for 300s — MCP idle-timeout abort
+search-latency	516	16	three queries >120s, one 300s abort
+search-latency	499	28	budget notice "0 of 6 entries" + process-tree query returns only vendor docs — render + recall
+search-recall	475	28	module-level constants unresolvable by get_symbol/search
+search-recall	476	28	same class as 475 (TXN_STATEMENT_HARD_CAP)
+search-recall	550	28	literal config key miss
+search-recall	551	28	no path-exclusion filter
+search-recall	493	09a	FILTER MISS prose contradicts itself (tier 'lore')
+search-recall	481	67	memory leg serves a 2026-07-03 memory teaching retired tool names, no stale marker — read-side honesty
+impact-coverage	477	28	covering_tests for substrate helper lists its own module (418)
+impact-coverage	518	28	covering_tests capped at 15, no knob
+impact-coverage	559	28	same as 518
+impact-coverage	557	28	counts modules/classes as tests
+impact-coverage	563	28	incomplete covering set under a complete-reading label (CLAUDE.md TEST SCOPE blocker)
+impact-coverage	522	43	lease rendered dead with 0 prod refs though server.py wires it — graph derivation false clear
+impact-coverage	507	43	scripts/*.py absent from the code graph
+index-reconcile	483	11c	reconcile=True no progress for 300s → client abort
+index-reconcile	519	11c	same
+index-reconcile	542	11c	same
+index-reconcile	582	11c	same
+index-reconcile	513	11c	indexer marks failed with ONE reason for retryable vs permanent
+memory-surface	578	67	lore_recall registered readOnly but writes (_reinforce)
+memory-surface	581	67	lore_recall serves no memory id → cannot supersede
+memory-surface	608	67	duplicate of 581
+memory-surface	607	67	connect-time "recall the landmines first" directive (served instructions)
+governed	484	64b	agent-migrate refusal renders stored ids raw (lore-adm) — principals migrate
+governed	485	63c	credentialed register refused after keep mint leaves keep+keeper (register is 63c's surface; check 63c-ii status)
+governed	487	64	#420 adjudication stale for the 63b message family (verb routing pin)
+governed	488	64	amendment-25 vs §10.7-Z orphaning conflict — "once orphaning lands (64)"
+governed	510	64c	existence oracle over content-derived memory ids — security-auditor half
+governed	515	64	LegacyMapping zero instances; decide materialisation
+governed	520	64	comms foreign-param hand-list where derivation exists (server.py)
+tasks-rollup	590	69	rollup next cursor re-serves its row (re-opens PKT-06 §1)
+tasks-rollup	591	69	rows sharing updated_at skipped forever (no tiebreak)
+tasks-rollup	596	69	h3 header false when two legs truncated
+tasks-rollup	598	69	h3 "any leg" clause over-broad (LOW)
+tasks-rollup	597	69	already 69's spec
+tasks-rollup	491	58	write-skew known bound — packet 58 amendment 1 FORK-C
+gate-tooling	533	NEW-G	currency --legs typecheck,ruff exits 1 — six filings one defect
+gate-tooling	540	NEW-G	dup of 533
+gate-tooling	555	NEW-G	dup of 533
+gate-tooling	565	NEW-G	dup of 533
+gate-tooling	577	NEW-G	dup of 533
+gate-tooling	589	NEW-G	dup of 533
+gate-tooling	535	NEW-G	currency discards pytest tail/junit/count
+gate-tooling	545	NEW-G	same as 535
+gate-tooling	579	NEW-G	pending_contracts.yaml pytest-only RED (F6 landed in 66 — verify, likely resolvable)
+gate-tooling	587	NEW-G	missing_symbols matcher cannot match dotted symbol
+gate-tooling	517	NEW-G	owned pending red masks member-level doors
+gate-tooling	508	NEW-G	known bounds of #503 worker policy (pin)
+gate-tooling	509	NEW-G	mutation_proof not signal-safe
+gate-tooling	560	NEW-G	mutation_proof cwd mismatch
+gate-tooling	514	NEW-G	scratch_copy inherits source INDEX (staged changes)
+gate-tooling	570	NEW-G	gated_ground LEG B false clear (pinned bound)
+gate-tooling	506	NEW-G	other_pytest_sessions matches any argv with "pytest"
+gate-tooling	544	NEW-G	pgrep -f waiting gates deadlock — same class as 506
+gate-tooling	480	NEW-G	ALL_DDL_GENERATORS hand-list 10/15 (∀-pin reach)
+gate-tooling	494	NEW-G	guarded-CAS door enumerator bound (pin)
+gate-tooling	504	NEW-G	known bound loopback interrupt pins
+gate-tooling	505	NEW-G	known bound raw-listener aiohttp deny-list
+gate-tooling	541	NEW-G	#486 four LOW pin gaps
+gate-tooling	573	NEW-G	test wrote into real state dir
+gate-tooling	584	NEW-G	test leaks memory.db manifests into repo root — same class as 573
+gate-tooling	595	NEW-G	RRF ordering intermittent (not ruled flaky) — needs 20-run rule
+gate-tooling	546	ORCH	grep hook blocks in scratch copy — hooks, not lore code
+gate-tooling	547	ORCH	grep hook blocks sanctioned rename sweeps
+deploy	492	19	_free_port bind→close race in lore-deploy
+deploy	552	19	stale lore-demand_intelligence container
+deploy	554	19	snapshot-root hardcoded ×4 (#166 owner)
+deploy	558	19	_loremaster_python hardcodes venv (#140 class)
+deploy	564	19	four LOW lore-deploy residuals
+deploy	574	19	#165 wave residuals (operator-deprioritised)
+deploy	553	18	legacy SQLite lore.db opened at boot — ledger retirement
+deploy	572	18	lore-deploy keys on SQLite <slug>.db manifest — ledger retirement (deploy half)
+ops	525	65-pre	restore_prod_dump DB names refused by config pattern — dress rehearsal
+ops	603	65-pre	restore --full vs 4 GiB /import cap — dress rehearsal (Log already routes)
+ops	601	accept	security gotcha, operator ACCEPTED 2026-11-09 — acknowledge, rule in store ref §9
+orchestration	549	ORCH	stale 2026-08-01 agent-fix ruling vs spawn grant
+orchestration	580	ORCH	haiku-runner EXIT line disagreement
+orchestration	583	ORCH	idle-gate report path
+orchestration	586	ORCH	idle-gate absolute scratch path — same class as 583

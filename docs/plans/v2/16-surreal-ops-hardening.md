@@ -36,8 +36,8 @@ risks on this box, plus the minimal observability the #124 watch needs.
   both stores measured at 20–25 GB; restart returns both to ~695 MB regardless of dataset size
   (~44 GB reclaimed once; ~400 MB per suite run). Mitigation = a deliberate restart policy in
   the quadlets, sized WITH #110's cache bounds (they may be one fix); candidate upstream
-  report. ⚠ BLOCKED for production by #250/#164 — lore-lore does not survive a store restart;
-  **07a is the enabler, sequence it first.**
+  report. 07a ✅ (2026-08-17): the #250/#164 wedge did NOT reproduce at HEAD; 16 IS 07a's A1
+  re-open trigger (it fired: #478/#576, routed here 2026-11-09), so the prod leg is UNBLOCKED.
 - **#239** (slotted 2026-07-27) — 4.0 UPGRADE BREAK, land in the reference: deterministic edge
   ids on a RELATE overwrite SILENTLY on 3.2.1 and become a HARD ERROR on 4.0 (verified via 3.2
   release-note item #349; receipts in 04a's probe report). Land it in
@@ -51,7 +51,7 @@ risks on this box, plus the minimal observability the #124 watch needs.
 **FIRST READ (repo store law): `docs/reference/surrealdb-31-capabilities.md`** — this
 packet touches the store/schema/DDL or store-reading code; #107 was a 100% production
 outage whose answer was ALREADY in that file. Cite it, never re-transcribe.
-`lore_findings` → all seven (#109/#110/#113/#114/#116/#117/#175) unresolved. `systemctl
+`lore_findings` → all nine owned (#109/#110/#113/#114/#116/#117/#175/#239/#249) unresolved. `systemctl
 --user status lore-surreal spike-surreal` both active. Snapshot both quadlet files BEFORE editing (they are the recovery recipe — memory:
 surreal-stores-systemd-managed).
 

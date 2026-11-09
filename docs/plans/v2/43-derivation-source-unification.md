@@ -86,7 +86,7 @@ attacks its own design** before any builder sees it, or it escalates to the oper
   2026-07-26, and this packet exists precisely because it is not a property.
 
 ## Exit
-Design doc ruled → gates green (`pytest -n auto` with a passed-COUNT, `scripts/typecheck.sh`,
+Design doc ruled → gates green (`pytest -n 12` with a passed-COUNT (the once-per-packet full suite; never `-n auto`), `scripts/typecheck.sh`,
 ruff) → cold REFUTE audit → deploy BOTH (rebuild + recreate, never restart) → the ∀ pin
 mutation-proven (break the fragment builder, watch it go RED, restore) → INDEX row + Log →
 ledger row done.

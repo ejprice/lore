@@ -140,6 +140,52 @@ byte-unchanged until the 65 cutover.
 | 428 | `@observes_routing` observes the marker, not the verb's effect | **IN** — the meta-pin confirms each decorated test exercises THAT tool/verb |
 | 429 | `guarded_write` DELETE / SET_SCOPE branches unexercised | **IN** — 64 is their first consumer; both branches pinned with positive controls |
 
+### Routed 2026-11-09 (finding slotting; INDEX row 64 carries the same list)
+| # | one line | disposition |
+|---|---|---|
+| 487 | the #420 adjudication is stale for the 63b message family: send/drain/ack/await/story are enforced but still `_GOVERNED_VERBS_PENDING_ROUTING`; the pin checks routed⊆observed only | **IN** — Scope IN 10 gains the reverse leg (observed/enforced ⊆ routed); the comms legs are 63c's to green, 64 adds the pin |
+| 488 | am-25 "scoped-but-ownerless row = half-applied, REFUSE" contradicts §10.7-Z orphaning (admin SET_OWNER→NONE on a scoped row): an idempotent migrate re-run refuses once orphaning lands | **FORK at kickoff, with F8** — orphaned rows need a disposition the half-pair precondition recognises |
+| 515 | `governed.LegacyMapping` has zero instances; a table's legacy disposition exists only as docstring prose + its migrate leg's SQL | **IN (Scope IN 7)** — materialise `LEGACY_MAPPINGS` as the derivation's twin or delete the class; never both |
+| 520 | comms' foreign-param `values` dict is a hand-list; `_comms_foreign_param_error` derives owners from `_COMMS_ACTIONS` unconditionally | **IN** — the F7 `requires_capability` derivation covers it; 64 adds two multi-verb tools and must not clone the hand-list |
+| 484 | the 63c-i-a agent-migrate refusal renders STORED record ids raw in lore-adm (a newline-bearing id forges a row line) | **IN 64b (lore-adm migrate legs)** — route through `render_attributed`; hostile fixture required |
+| 510 | a member's write on an INVISIBLE foreign memory row serves GovernedDenied naming the row — an existence oracle over uuid5-over-text ids | **64c** — the security-auditor frames it; the tasks/findings legs must not reproduce it (ids are not content-derived there — state that as a pin) |
+| 529 / 530 | 63c-i-a residuals: `_set_columns` scanner narrows on a block comment; `unmigrated_rows` WARNING prefix is false for the task/finding legs | **IN 64b** — both sit in the migrate legs 64 extends |
+
+## §DRY — the store-reader sweep (64b-ii; written 2026-11-09)
+The 2026-10-01 INDEX Log routed "the `GROUP ALL` + foreign `_as_rows` sweep → 64b §DRY" and
+amendment-37 §8.3/§10/§13 of packet 63c name the same step, but no packet-64 document carried it
+until now. It is the read-side ONE-IMPLEMENTATION sweep and runs in **64b-ii** (the read side,
+which already edits `findings.py`'s readers). Law: `~/.claude/CLAUDE.md` §One implementation and
+this repo's §`lorerunes`; prove sharing by MUTATION (change the shared reader, every caller's pins
+redden), never by routing.
+1. **`GROUP ALL` count readers → ONE `governed.group_all_count`** (am-37 §8.3): `findings._extract_group_count`,
+   `messages._extract_group_count`, `diff.py`, `tasks`, `store/surreal.py`, `index/surreal_manifest.py`, the
+   `cascaded` audit count. STOP rule (am-37): a pin that expects `0` on a malformed count gets a DUAL re-key,
+   never a silent pass.
+2. **`_as_rows` → ONE tolerant row reader (`governed.rows_of`)** — **#594**: 13 production copies at `e1593d7`
+   (4 distinct bodies: 9 identical in agents/briefs/diff/findings/index.surreal_manifest/memory.local/messages/
+   store.surreal/tasks; 2 in floor_calibration.store + store.lease; `noun=`/`landed=` variants in principal_keys
+   and principals). Measured by the AST instrument in `receipts/2026-11-09-finding-slotting/head-verify.md`.
+3. **`_ensure_connection` disposition wraps → ONE seam** — **#512**: 17 copies at `e1593d7` (scout's `_connect`
+   excepted) each wrap `open_surreal_connection → signin → bootstrap_session`, catch exactly
+   `TxnContentionExhaustedError` + `_CONNECTION_ERRORS`, close, and translate to `SurrealConnectionError`.
+   Packet 66 shared the FACTORY, not the wrap. Sites: agents, audit, briefs, diff, findings,
+   floor_calibration/store, graph_surreal, index/snapshots, index/surreal_manifest, keeps, memory/local,
+   messages, principal_keys, principals, store/lease, store/surreal, tasks. Routing is not sharing: the
+   classification moves with the wrap.
+4. **The guarded-append `TxnFragment` shell** — **#489**: findings and tasks each carry their own
+   `LET … UPDATE … provenance.events += … + IF array::len == 0 THROW` shell; 58 extracts the TASK side first
+   (its Scope IN), 64b-ii unifies across ledgers when the finding side is touched. Trigger stated in #489:
+   "when the THIRD ledger needs one" — 64 IS that moment (tasks + findings + messages).
+5. **`wrap_store_rejection`'s "could not <verb>" at the 20 non-mint callers** — **#543** (am-37 §14 Q1
+   residual, operator scope): the message asserts non-landing for outcome-unknown faults. The mint fix
+   (`_txn.proven_no_key`) is the prior art; sweep the callers the same way or pin the bound per caller.
+   ⚠ Operator ruled this "operator scope" on 2026-10-05 — confirm at kickoff before building.
+Bound: items 1–3 touch files outside the `finding` table (messages, diff, store, manifest, keeps …).
+They ride 64b-ii because the shared reader lands in `governed`, which 64b-ii already edits; the
+caller sweep is mechanical once the seam exists. If 64b-ii prices over 0.30 with them, split them to
+**64d — store-reader DRY** rather than dropping them (the sizing law, not the scope law).
+
 ## FORKS for the Fable sidecar at kickoff (asked as questions; the operator rules MAJOR ones)
 - **F1 — column mapping.** 63 ruled strings → UNOWNED-LEGACY. Does that hold for BOTH `provenance.
   created_by` (task) and `finding.created_by`? Is there ANY legacy string that is a verifiable LINK (none

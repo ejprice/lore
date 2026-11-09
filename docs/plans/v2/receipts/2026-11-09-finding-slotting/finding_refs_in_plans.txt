@@ -1,0 +1,384 @@
+## #475: 1 hit(s)
+  receipts/2026-09-24-plan-review/REPORT-packetdoc-64.md:2: - **State:** done-with-deviations · **Deviations:** (1) grep hook-blocked in the main checkout → constants located with a Python `ast` locator + Read (said out 
+## #476: 1 hit(s)
+  receipts/2026-09-24-plan-review/REPORT-packetdoc-57-58-11c.md:7: - **Capability check:** all tools present. A PreToolUse hook blocks `grep` in the main checkout, so I used lore tools plus `Read`/`awk`. I used `awk` for INDEX 
+## #477: 2 hit(s)
+  receipts/2026-09-30-63c-i-a/REPORT-contract-63c-i-a-r3.md:14: - **decisions-needed:** none open. For the lead's builder brief (amendment-5 §W): the builder deletes the fake's `except ImportError` guard in REFACTOR (the con
+  receipts/2026-09-30-63c-i-a/REPORT-contract-63c-i-a-r3.md:20: - lore friction, FILED as finding #477 (area `lore_impact`): `lore_impact("patch_shared_object_everywhere")` lists 418 "covering tests" that are simply every sy
+## #478: 0 hit(s)
+## #479: 0 hit(s)
+## #480: 0 hit(s)
+## #481: 2 hit(s)
+  receipts/2026-09-30-63c-i-a/REPORT-contract-63c-i-a-r4a.md:33: §INSTRUMENTS. Lore friction: finding #481.
+  receipts/2026-09-30-63c-i-a/REPORT-contract-63c-i-a-r4a.md:101: Lore friction noticed during these searches: finding **#481** filed (a served memory teaches retired tool names).
+## #482: 0 hit(s)
+## #483: 1 hit(s)
+  receipts/2026-09-30-63c-i-a/REPORT-builder-63c-i-a.md:14: - **decisions-needed:** none blocking. FLAGS for the lead (§FLAGS): F-1 stale fake docstring/comment (outside grant), F-2 a third raw-CREATE agent helper in `te
+## #484: 3 hit(s)
+  receipts/2026-09-30-63c-i-a/REPORT-builder-63c-i-a-fix.md:91: | D4 | agent leg §2.1 ROW precondition (after operator resolution and the counts): `SELECT VALUE id … scope IS NONE AND owner_principal IS NOT NONE`; refused wi
+  receipts/2026-09-30-63c-i-a/REPORT-coldaudit-63c-i-a.md:529: - **Add to the §W fix wave:** CA-1 (lore finding **#484**), the raw stored-id render in the same refusal text §W item 4 rewrites.
+  receipts/2026-09-30-63c-i-a/REPORT-contract-63c-i-a-a19.md:53: - CA-1 `[agent]` → `CA-1 (#484): the refusal renders a STORED record id raw — a newline / control character reaches the served line`; `[memory|message|brief]` →
+## #485: 41 hit(s)
+  receipts/2026-09-30-63c-i-a/REPORT-adversary-63c-i-a-a19.md:6: - **state:** done-with-deviations. **Verdict: INSUFFICIENT.** 5 MISSING PINS (MP-1..MP-5). 0 SAT defects. 1 READING-DEPENDENT survivor (WB7b, §8.2 → amendment 2
+  receipts/2026-09-30-63c-i-a/REPORT-adversary-63c-i-a-a19.md:14: - **decisions-needed:** FORK F-1 (amendment 21 CD-2 "validity first" vs a19's four `∀[brief]` pins — which set is "valid"?) · F-2 (a message from an ownerless-S
+  receipts/2026-09-30-63c-i-a/REPORT-adversary-63c-i-a-a19.md:15: - **receipt pointers:** §3 missing pins · §4.1/§4.2 wrong-build runs · §5 SAT + claim re-derivation · §6 DUAL · §7 forks · §8 P1c reach · §9 #485 · §10 §8-readi
+  receipts/2026-09-30-63c-i-a/REPORT-adversary-63c-i-a-a19.md:39: | 3 · the quantifier over "a rejected register" | — | **every registry refusal after the mint** (PQ1: role conflict) — at `84af63f` AND on a correct a19 build |
+  receipts/2026-09-30-63c-i-a/REPORT-adversary-63c-i-a-a19.md:266: **Finding #485 (filed 2026-09-25).** **PQ1 · a credentialed register refused by a registry rule OTHER than blank role still mints the session keep, claims
+  receipts/2026-09-30-63c-i-a/REPORT-adversary-63c-i-a-a19.md:1057: LIVE-PRODUCTION-DEFECT ×1, **#485**: a credentialed register refused AFTER the mint (role conflict) keeps the
+  ... +35 more
+## #487: 0 hit(s)
+## #488: 0 hit(s)
+## #489: 0 hit(s)
+## #490: 6 hit(s)
+  receipts/2026-09-30-63c-i-a/REPORT-builder-63c-i-a-fix.md:20: - **lore friction filed: #490** — `lore_search` exceeded 120 s twice (harness-backgrounded) and a DRY query for a bare-record-id helper missed the seven known `
+  receipts/2026-09-30-63c-i-a/REPORT-builder-63c-i-a-fix.md:125: ¹ ² `lore_search` over-ran 120 s on this box today (finding #490); results, when they arrive, are recorded in §9 R-k. The awk fallback over `loremaster/loremast
+  receipts/2026-09-30-63c-i-a/REPORT-builder-63c-i-a-fix.md:246: | R-k | `lore_search` (finding #490): the DRY query for a bounded-id render returned only this build's own `_id_sample` (the watcher had indexed the working tre
+  receipts/2026-09-30-63c-i-a/REPORT-coldaudit-63c-i-a-2.md:134: | RS-9 | lore friction: `lore_search` over-ran 120 s once and served a budget STUB once in this run (same class as #490); awk fallback used and said so | carrie
+  receipts/2026-09-30-63c-i-a/REPORT-coldaudit-63c-i-a-2.md:134: | RS-9 | lore friction: `lore_search` over-ran 120 s once and served a budget STUB once in this run (same class as #490); awk fallback used and said so | carrie
+  receipts/2026-11-08-sdk3/REPORT-conform-66.md:293: No new friction filed for the ensure_ready miss: it is the known lore_search recall class (#490/#550).
+## #491: 0 hit(s)
+## #492: 3 hit(s)
+  receipts/2026-09-26-466-503/REPORT-contract-466.md:12: - **Decisions needed:** (1) **spike adjudication:** I recommend ROUTE (§Spike). (2) **#492 (filed):** `lore_deploy._free_port(base)` has the same race in PRODUC
+  receipts/2026-09-26-466-503/REPORT-contract-466.md:13: - **Receipts:** §RED/GREEN receipts · §Wrong builds · §Instruments (pasted verbatim) · finding #492 (lore_deploy prod race) · finding #493 (a lore_search filter
+  receipts/2026-09-26-466-503/REPORT-contract-466.md:160: - **#492 (filed):** `lore_deploy._free_port(base)`: production close→podman-rebind race. It also checks 127.0.0.1 only, while podman may publish on another inte
+## #493: 3 hit(s)
+  receipts/2026-09-26-466-503/REPORT-contract-466.md:13: - **Receipts:** §RED/GREEN receipts · §Wrong builds · §Instruments (pasted verbatim) · finding #492 (lore_deploy prod race) · finding #493 (a lore_search filter
+  receipts/2026-09-26-466-503/REPORT-contract-466.md:161: - **#493 (filed):** `lore_search` served `[FILTER MISS] … 'lore' is not a configured tier — configured tier(s): 'lore', …`. It contradicts itself and blames the
+  receipts/2026-09-26-466-503/REPORT-contract-466.md:172: | driver result reader | `lore_search("parse pytest summary line …")`, `lore_search("regex over pytest terminal output …")` (#493 surfaced here); AST scan of `s
+## #494: 0 hit(s)
+## #495: 5 hit(s)
+  receipts/2026-09-30-63c-i-a/REPORT-contract-63c-i-a-a28.md:10: - **Reuse ledger:** 18 new test-local symbols, all dispositioned (§11); lore_search FAILED on 2 of 3 DRY queries (#495) — fallback said
+  receipts/2026-09-30-63c-i-a/REPORT-contract-63c-i-a-a28.md:19: - lore: registered (`contract-63c-i-a-a28` / `63c-20260924` / contract / ≤20m). `lore_search` served a bare `SurrealDB query failed against 'ws://127.0.0.1:1850
+  receipts/2026-09-30-63c-i-a/REPORT-contract-63c-i-a-a28.md:192: | `_outcome` | `lore_search("test helper that awaits a call and returns the exception class name and text or OK")` ×2 | **store error both times (#495)** — fall
+  receipts/2026-09-30-63c-i-a/REPORT-contract-63c-i-a-a28.md:193: | `_spy_delete_keep`, `_count_calls` | `lore_search("monkeypatch spy counting calls to a store method in governed contract tests")` ×2 | **store error (#495)**;
+  receipts/2026-09-30-63c-i-a/REPORT-contract-63c-i-a-a28.md:211: | R-7 | lore_search store errors (#495) | filed |
+## #496: 1 hit(s)
+  receipts/2026-09-26-466-503/REPORT-refactor-466.md:14: - `_root_manifest`: FILE-LOCAL private extraction. `lore_search` for a manifest reader failed twice with an opaque store error (filed as **#496**). The Python t
+## #498: 2 hit(s)
+  receipts/2026-09-26-466-503/REPORT-contract-466-d1.md:23: - **Demanded:** lore-first. **Have:** it works. `lore_search` failed 3/3 when the calls ran in parallel, with a bare-UUID error, and worked singly afterwards. F
+  receipts/2026-09-26-466-503/REPORT-contract-466-d1.md:297: 6. **Finding #498** (filed): lore_search batch failure with a bare-UUID error.
+## #499: 3 hit(s)
+  receipts/2026-09-26-466-503/REPORT-impl-466-d1.md:93: | `_loud_teardown` | "bounded thread join on teardown that raises or adds a PEP 678 note when the shutdown overruns its timeout" | ran >120 s (backgrounded; fin
+  receipts/2026-09-26-466-503/REPORT-impl-466-d1.md:96: | `_kill_process_group` | "kill process tree os.killpg subprocess Popen start_new_session timeout" (×2, tier custom / unscoped) | only a surrealdb-docs `db.kill
+  receipts/2026-09-26-466-503/REPORT-impl-466-d1.md:161: - Finding **#499** filed (lore_search budget notice "0 of 6", a >120 s query).
+## #500: 3 hit(s)
+  receipts/2026-09-26-466-503/REPORT-close-466.md:20: - `lore_search` for the DRY check ran >120 s and was backgrounded (same shape as finding #500); it did return (see DRY ledger).
+  receipts/2026-09-26-466-503/REPORT-refactor-466-d1.md:9: - **deviations:** (1) pins (c)/(d) authored AFTER the build (lead-directed; both rulings post-date the contract) — each proven able to fail by mutation, 9/9 PRO
+  receipts/2026-09-26-466-503/REPORT-refactor-466-d1.md:146: ⚠ **Deviation:** the lore search ran AFTER the symbols were written (it took >120 s and was backgrounded — filed as **finding #500**), so it could not inform th
+## #501: 1 hit(s)
+  sdk3-python-sdk-3-migration.md:1659: | W16 | `compose` refuses a top-level `RETURN` in a transaction | engine-bug | §3, #497 / #501 | **still-present** — P12: `BEGIN; CREATE a; RETURN NONE; CREATE 
+## #502: 3 hit(s)
+  receipts/2026-09-30-63c-i-a/REPORT-adversary-63c-i-a-a28.md:18: - All demanded tools present: lore_comms (registered `adversary-63c-i-a-a28` / `63c-20260924` / adversary / ≤20m; heartbeats; directive **#17070 acked**), lore_
+  receipts/2026-09-30-63c-i-a/REPORT-adversary-63c-i-a-a28.md:167: | R-8 | #502 filed: `lore_search` no response for 300 s | friction, filed |
+  receipts/2026-09-30-63c-i-a/REPORT-adversary-63c-i-a-a28.md:187: | `_spy_registry_queries` (K1/K8) | `lore_search("shared helper … re-read the row …")` | **no response 300 s → #502**; fallback awk | HAND-ROLLED — a28's `_coun
+## #504: 0 hit(s)
+## #505: 0 hit(s)
+## #506: 10 hit(s)
+  receipts/2026-09-26-466-503/REPORT-archive-466.md:6: - **Deviations:** none from the brief. One wording choice: the contract-503 header says #506 is *still open* and that the build corrected the *docstring*. The d
+  receipts/2026-09-26-466-503/REPORT-archive-466.md:14: Everything the brief demanded was available. grep/rg are hook-blocked (#473), so the whole sweep uses awk as the brief directed. Lore was used for finding #506 
+  receipts/2026-09-26-466-503/REPORT-archive-466.md:104: Prepended text: *"⚠ PREMISE FALSE IN PART: the Phase-0 premise that the session detector keys on "executable plus lore path" was FALSE (it matches argv text; fi
+  receipts/2026-09-26-466-503/REPORT-archive-466.md:105: Verification: `REPORT-contract-503.md` §Forks F2 (line 82 pre-header) says that description "is FALSE at HEAD `884ca63`". Finding #506 was read via `lore_findin
+  receipts/2026-09-26-466-503/REPORT-archive-466.md:106: **Wording note:** the brief said "corrected in the build". What the build corrected is the *description*, not the *behaviour*. The argv-text over-match is still
+  receipts/2026-09-26-466-503/REPORT-archive-466.md:106: **Wording note:** the brief said "corrected in the build". What the build corrected is the *description*, not the *behaviour*. The argv-text over-match is still
+  ... +4 more
+## #507: 36 hit(s)
+  receipts/2026-09-26-466-503/REPORT-contract-503-d1.md:28: - Fallback, said out loud: `scripts/` is not in lore's graph (#507, already filed by refactor-503, so I did not file a duplicate). I used **awk** over `scripts/
+  receipts/2026-09-26-466-503/REPORT-contract-503-d2.md:26: - `scripts/` is outside lore's graph (#507), and grep/rg are hook-blocked (#473), so the source reads used awk and sed. I am saying that fallback out loud; no n
+  receipts/2026-09-26-466-503/REPORT-contract-503-d2.md:154: | `_exit_two_handlers`, `_other_exit_two_families` | `lore_search("test helper that derives stderr labels or caught exception types from a CLI main's except han
+  receipts/2026-09-26-466-503/REPORT-impl-503-d1.md:8: - (1) I did not register on `lore_comms` (brief-base §5). The spawn brief named no ledger row, and `scripts/` is outside lore's graph (#507). Declared in §Capab
+  receipts/2026-09-26-466-503/REPORT-impl-503-d1.md:23: - lore-first for structure questions: not used. `scripts/` is not in lore's graph (#507, already filed), so I searched with **awk** (grep/rg are hook-blocked, #
+  receipts/2026-09-26-466-503/REPORT-impl-503-d1.md:97: lore could not be queried for `scripts/` (#507). Every search below is awk over `scripts/*.py`, `skills/lore-deploy/scripts/*.py` and `lorerunes/lorerunes/*.py`
+  ... +30 more
+## #508: 1 hit(s)
+  receipts/2026-10-04-486/REPORT-coldaudit-486.md:73: - **Command (in S):** `systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0 uv run python scripts/pending_contract_gate.py --currency -- --maxprocesse
+## #509: 7 hit(s)
+  receipts/2026-09-30-63c-i-a/REPORT-adversary-63c-i-a-a28b.md:230: | R-6 | the brief's watchdog reading (host MemAvailable < 15 GB) killed two of my runs while neighbours (a foreign lore full suite `-n 12`, `mobile-pricepaper-s
+  receipts/2026-09-30-63c-i-a/REPORT-adversary-63c-i-a-a28b.md:1205: ### §A.10 the quiet-gated chain with a post-step md5 re-assert (#509 defence) — `chain.sh` md5 `ac4b524e5072ffad90ef63f53d864474`
+  receipts/2026-09-30-63c-i-a/REPORT-adversary-63c-i-a-a28c.md:556: # cgroup cap + per-test timeout, restore from content, cmp byte-exact (#509). One summary line per build.
+  receipts/2026-09-30-63c-i-a/REPORT-contract-63c-i-a-a28b.md:53: - lore: registered (`contract-63c-i-a-a28b` / `63c-20260924` / contract / ≤20m); ledger signals #17082 (FK-a28b-1) and #17085 (the scanner collision); lead dire
+  receipts/2026-09-30-63c-i-a/REPORT-contract-63c-i-a-a28b.md:148: **Run 2 is the receipt (the FINAL, renamed contract).** Run 1 (pre-rename, ONE-set scanner, 168 targets) is summarised at the end. ⚠ Two watchdog kills (host Me
+  receipts/2026-09-30-63c-i-a/REPORT-contract-63c-i-a-a28c.md:424: ## §6 Mutation proofs (declare-then-diff, BOTH ways — `scripts/mutation_proof.py` run in the REFERENCE copy, #509 content backups + byte-exact restore)
+  ... +1 more
+## #510: 0 hit(s)
+## #511: 0 hit(s)
+## #512: 0 hit(s)
+## #513: 0 hit(s)
+## #514: 2 hit(s)
+  receipts/2026-09-30-63c-i-a/REPORT-adversary-63c-i-a-a28b.md:16: - **decisions-needed:** (1) FK-ADV-3: type R-txn via `parse_query_error` (delete the record text pair) — am-33 §(a) · (2) MP-3: anchor the unique text match to 
+  receipts/2026-09-30-63c-i-a/REPORT-contract-63c-i-a-a28c.md:667: - **F-7 #514 (a teammate's staged index poisons `scratch_copy.sh` copies)**: both my copies were `git reset --hard
+## #515: 0 hit(s)
+## #516: 3 hit(s)
+  receipts/2026-09-30-63c-i-a/REPORT-contract-63c-i-a-a28c.md:157: after 300 s of silence — filed as finding **#516**.
+  receipts/2026-09-30-63c-i-a/REPORT-contract-63c-i-a-a28c.md:787: >120 s, one was aborted by the client after 300 s of silence — filed as finding **#516**. The remaining look-ups were
+  receipts/2026-09-30-63c-i-a/REPORT-contract-63c-i-a-a28c.md:795: | `_spy_driver_statements` (C) | lore_search "record every driver statement by wrapping run_query and execute_transaction bindings" — ABORTED (#516); awk | 58's
+## #517: 0 hit(s)
+## #518: 18 hit(s)
+  receipts/2026-09-30-63c-i-a/REPORT-builder-63c-i-a-a28c.md:41: - **`lore_impact` caps covering tests at 15 (#518)** — `execute_transaction` reports 1840 covering tests, `run_query`
+  receipts/2026-09-30-63c-i-a/REPORT-builder-63c-i-a-a28c.md:272: 2. **Covering tests (64 files incl. overlap):** `lore_impact` capped at 15 (#518) for every changed symbol I queried
+  receipts/2026-09-30-63c-i-a/REPORT-builder-63c-i-a-a28c.md:555: (Name / Attribute / import alias / string constant equal to the name). Fallback for lore_impact's 15-cap (#518)."""
+  receipts/2026-09-30-63c-i-a/REPORT-builder-63c-i-a-fix2.md:21: `lore_impact` covering-test cap (#518) → AST scan (§SET, instrument pasted). lore's index covers the MAIN tree, not my
+  receipts/2026-09-30-63c-i-a/REPORT-builder-63c-i-a-fix4.md:18: - Covering tests came from an **AST scan** (§8a), not `lore_impact`, per the brief (#518's cap). `lore_impact(loremaster.principals._dispatch)` was run as corro
+  receipts/2026-09-30-63c-i-a/REPORT-builder-63c-i-a-fix4.md:18: - Covering tests came from an **AST scan** (§8a), not `lore_impact`, per the brief (#518's cap). `lore_impact(loremaster.principals._dispatch)` was run as corro
+  ... +12 more
+## #519: 0 hit(s)
+## #520: 0 hit(s)
+## #521: 0 hit(s)
+## #522: 0 hit(s)
+## #525: 12 hit(s)
+  INDEX.md:2520: Residuals: #529–#532, F-9 (exit codes, deferred), R-1, FLAG-r7-1, the GROUP ALL + foreign `_as_rows` sweep → 64b §DRY, #525 → 64. Receipts: `receipts/2026-09-30
+  receipts/2026-09-30-63c-i-a/REPORT-coldaudit-63c-i-a-5.md:172: every call (instruments §A.7 `adm5.py` — audit-4 §A.2's loader swap, needed because of #525 — and §A.8 `dq5.py`,
+  receipts/2026-09-30-63c-i-a/REPORT-coldaudit-63c-i-a-5.md:638: audit-4 §A.2 method, needed because of #525). The ONLY substitution: `principals.load_surreal_only_config` is
+  receipts/2026-09-30-63c-i-a/REPORT-coldaudit-63c-i-a-5.md:640: dump coordinate (SurrealConfig.database's pattern refuses the name restore_prod_dump.py mints — #525). The port
+  receipts/2026-09-30-63c-i-a/REPORT-coldaudit-63c-i-a-5.md:963: | inherited | R-1/F-8, F-9, F-11, F-12, F-16, §W row 4, the GROUP ALL sweep → 64b, D-4 (brief alarm teaches a refusing verb — re-observed §6(v)), #525 (dump nam
+  receipts/2026-09-30-63c-i-a/REPORT-coldaudit-63c-i-a-6.md:168: Instrument: audit-5's `adm5.py` (#525 loader swap), re-used.
+  ... +6 more
+## #533: 11 hit(s)
+  receipts/2026-10-04-486/REPORT-coldaudit-486-2.md:151: - `uv run python scripts/pending_contract_gate.py --currency --legs typecheck,ruff` (rc 1, the known #533 shape):
+  receipts/2026-10-04-486/REPORT-coldaudit-486-2.md:154: - `pytest       NOT_RUN — claimed by the manifest, never executed` (#533: the leg was deliberately excluded)
+  receipts/2026-10-04-486/REPORT-implement-486-r2.md:84: - `pytest NOT_RUN`: the known #533 scoped-legs line.
+  receipts/2026-10-04-486/REPORT-implement-486-r3.md:183: - `pytest NOT_RUN` is the known #533 scoped-legs line.
+  receipts/2026-10-04-486/REPORT-refactor-486.md:97: - `pytest NOT_RUN`, the known #533 line.
+  receipts/2026-10-04-531-536/REPORT-fix531b.md:14: - **Decisions needed:** none blocking. Readings and residuals are in §5. New friction **#533** filed: the currency gate under `--legs` renders the excluded pyte
+  ... +5 more
+## #535: 2 hit(s)
+  receipts/2026-10-04-486/REPORT-coldaudit-486.md:12: - The gate discarded the full suite's tail, so no passed-count exists for it (#535). Instead I ran the 37 registry-owned + owed files TWICE (patched vs pristine
+  receipts/2026-10-04-486/REPORT-coldaudit-486.md:173: | R3 | **#535** — the currency gate discards the full suite's pytest tail, junit and terminal summary, and hides the adjudicated count when orphaned (§3 ⚠) | in
+## #539: 5 hit(s)
+  INDEX.md:2524: Residuals: #541 (four LOW regression-pin gaps), #540 (currency renders FAIL on the mandated legs subset), #539 (scout awaitable branch), R-4/R-5 (DNS executor, 
+  INDEX.md:2530: - Residuals: #539 (scout's awaitable branch), #540/#545 (currency render), #541 (#486 pin gaps), #543 (the "could not <verb>" class at 16 other wrap callers; op
+  receipts/2026-10-05-am37-14/REPORT-fix-q3-retry-seam.md:13: - **Decisions-needed:** none blocking. 1 flag for #539 (§E): with this fix, NO test in `test_retry_seam.py` reaches `_consume_live`'s non-awaitable branch.
+  receipts/2026-10-05-am37-14/REPORT-fix-q3-retry-seam.md:148: **Flag for #539 (production, not touched):** `scout._consume_live`'s comment says the test fake is "an async-generator FUNCTION", and §A shows no async SDK clas
+  receipts/2026-10-05-am37-14/REPORT-fix-q3-retry-seam.md:148: **Flag for #539 (production, not touched):** `scout._consume_live`'s comment says the test fake is "an async-generator FUNCTION", and §A shows no async SDK clas
+## #540: 10 hit(s)
+  INDEX.md:2524: Residuals: #541 (four LOW regression-pin gaps), #540 (currency renders FAIL on the mandated legs subset), #539 (scout awaitable branch), R-4/R-5 (DNS executor, 
+  INDEX.md:2530: - Residuals: #539 (scout's awaitable branch), #540/#545 (currency render), #541 (#486 pin gaps), #543 (the "could not <verb>" class at 16 other wrap callers; op
+  receipts/2026-10-04-486/REPORT-coldaudit-486-3.md:11: - **Gates (§5b):** typecheck RED_ADJUDICATED (83, owned, 0 in the audited files), ruff GREEN, **RED_ORPHANED 0**. The FAIL render is friction #540.
+  receipts/2026-10-04-486/REPORT-coldaudit-486-3.md:260: ### F-4 (LOW, friction, FILED as lore finding #540): the currency gate's correct per-round use always renders FAIL
+  receipts/2026-10-04-486/REPORT-coldaudit-486-3.md:275: | R-7 | F-4 / #540: the currency render FAILs on the legs-subset invocation the law mandates | LOW | gate owner | filed #540 |
+  receipts/2026-10-04-486/REPORT-coldaudit-486-3.md:275: | R-7 | F-4 / #540: the currency render FAILs on the legs-subset invocation the law mandates | LOW | gate owner | filed #540 |
+  ... +4 more
+## #541: 2 hit(s)
+  INDEX.md:2524: Residuals: #541 (four LOW regression-pin gaps), #540 (currency renders FAIL on the mandated legs subset), #539 (scout awaitable branch), R-4/R-5 (DNS executor, 
+  INDEX.md:2530: - Residuals: #539 (scout's awaitable branch), #540/#545 (currency render), #541 (#486 pin gaps), #543 (the "could not <verb>" class at 16 other wrap callers; op
+## #542: 3 hit(s)
+  receipts/2026-10-05-am37-14/REPORT-contract-mint-q1.md:6: - (2) `lore_index(reconcile=True)` timed out client-side after 300 s (finding **#542**). The `lore_impact` answers were therefore used unreconciled. My session 
+  receipts/2026-10-05-am37-14/REPORT-contract-mint-q1.md:22: - `lore_index` reconcile timed out (#542).
+  receipts/2026-10-05-am37-14/REPORT-implement-mint-q1.md:8: - (3) I did not run `lore_index(reconcile=True)` (#542). Every `lore_impact` and `lore_get_symbol` read happened BEFORE my first edit, so my edits could not hav
+## #543: 1 hit(s)
+  INDEX.md:2530: - Residuals: #539 (scout's awaitable branch), #540/#545 (currency render), #541 (#486 pin gaps), #543 (the "could not <verb>" class at 16 other wrap callers; op
+## #544: 7 hit(s)
+  INDEX.md:2530: - Residuals: #539 (scout's awaitable branch), #540/#545 (currency render), #541 (#486 pin gaps), #543 (the "could not <verb>" class at 16 other wrap callers; op
+  receipts/2026-10-05-am37-14/REPORT-coldaudit-mint-q1.md:8: - Deviations: (1) the brief's 20 GiB floor stalled runs ~11:36–12:06Z (host, not ours) — I waited, no bypass (§FORK; no reply needed in the end); (2) one VOID M
+  receipts/2026-10-05-am37-14/REPORT-coldaudit-mint-q1.md:13: - Findings: F-1 LOW (`mint` `Raises:` over-claims "any OTHER store fault" → PKSE; connection/TCE arrive raw) · F-2 LOW (tuple comment's "not-landed message" ine
+  receipts/2026-10-05-am37-14/REPORT-coldaudit-mint-q1.md:245: Filed as **#544**.
+  receipts/2026-10-05-am37-14/REPORT-coldaudit-mint-q1.md:252: ### F-4 (LOW, coordination) — `pgrep -f` waiting gates match other agents' shells → filed **#544** (§5)
+  receipts/2026-10-05-am37-14/REPORT-implement-mint-q1.md:257: **Gate:** `gate_run_q1b.sh`. It waits for ≥ 20 GiB and for no other lore pytest, matched on **argv0** per #544 (`^[^ ]*python[^ ]* .*(-m pytest|bin/pytest|scrip
+  ... +1 more
+## #545: 5 hit(s)
+  INDEX.md:2530: - Residuals: #539 (scout's awaitable branch), #540/#545 (currency render), #541 (#486 pin gaps), #543 (the "could not <verb>" class at 16 other wrap callers; op
+  receipts/2026-10-05-am37-14/REPORT-coldaudit-mint-q1.md:8: - Deviations: (1) the brief's 20 GiB floor stalled runs ~11:36–12:06Z (host, not ours) — I waited, no bypass (§FORK; no reply needed in the end); (2) one VOID M
+  receipts/2026-10-05-am37-14/REPORT-coldaudit-mint-q1.md:13: - Findings: F-1 LOW (`mint` `Raises:` over-claims "any OTHER store fault" → PKSE; connection/TCE arrive raw) · F-2 LOW (tuple comment's "not-landed message" ine
+  receipts/2026-10-05-am37-14/REPORT-coldaudit-mint-q1.md:247: ### F-3 (LOW, instrument) — the currency gate's pytest leg cannot report its own counts → filed **#545**
+  receipts/2026-10-05-am37-14/REPORT-coldaudit-mint-q1.md:313: by the instrument (#545).
+## #546: 1 hit(s)
+  INDEX.md:2530: - Residuals: #539 (scout's awaitable branch), #540/#545 (currency render), #541 (#486 pin gaps), #543 (the "could not <verb>" class at 16 other wrap callers; op
+## #547: 2 hit(s)
+  INDEX.md:2530: - Residuals: #539 (scout's awaitable branch), #540/#545 (currency render), #541 (#486 pin gaps), #543 (the "could not <verb>" class at 16 other wrap callers; op
+  receipts/2026-10-05-am37-14/REPORT-contract-mint-q1c.md:123: - The PreToolUse hook blocks `grep`/`rg` in the main checkout, including for rename-exhaustiveness sweeps, which CLAUDE.md names as an honest grep case. I worke
+## #548: 1 hit(s)
+  receipts/2026-10-31-165/PLAN-165-fix.md:82: - Leave **#548** (the retry warning has no exc_info) and **#339** (no restart policy) open; they are not this fix.
+## #549: 0 hit(s)
+## #550: 5 hit(s)
+  receipts/2026-10-31-165/REPORT-source-history-165-r3.md:22: - **Decisions needed:** D-1, the INDEX pre-Log key gap (§Q5); also the Q4 fork (ship option A before the packet-19 design?) · **Pointers:** §Q1–§Q5; W=`/var/tmp
+  receipts/2026-10-31-165/REPORT-source-history-165-r3.md:40: | 6b (added) `installed_modules_file` literal check | inline | me | 1 command, 2 hits; config key = grep-honest seam; lore_search miss filed #550 |
+  receipts/2026-10-31-165/REPORT-source-history-165-r3.md:103: - **Config dependents:** `installed_modules_file` appears in exactly 2 tracked lines, both in `loremaster/tests/test_config.py` (`git grep`; lore_search missed 
+  receipts/2026-10-31-165/REPORT-source-history-165-r3.md:246: - **R4 (friction filed, #550):** lore_search missed a literal config key. Separately, repo-root REPORT-*.md files are indexed, which is how D1 happened.
+  receipts/2026-11-08-sdk3/REPORT-conform-66.md:293: No new friction filed for the ensure_ready miss: it is the known lore_search recall class (#490/#550).
+## #551: 1 hit(s)
+  receipts/2026-10-31-165/WAVE-STATE.md:95: #551–#555, #556 (resolved), #557, #558, #559→#563, #560, #561/#562 (resolved), #564, #565 (currency --legs prints FAIL),
+## #552: 0 hit(s)
+## #553: 0 hit(s)
+## #554: 0 hit(s)
+## #555: 5 hit(s)
+  receipts/2026-10-31-165/REPORT-audit-165.md:232: - (I did not run the `--legs` currency verdict, since #555 makes its line falsely read FAIL.)
+  receipts/2026-10-31-165/REPORT-contract-165.md:18: - decisions-needed: (1) SPEC-SILENT S1/S2 (§Inventory) for the operator. (2) Finding #555 filed: the currency `--legs` verdict reads FAIL.
+  receipts/2026-10-31-165/REPORT-contract-165.md:131: - Currency `--legs typecheck,ruff`: ruff GREEN, typecheck RED_ADJUDICATED. It renders `CURRENCY: FAIL` only because pytest is "NOT_RUN". RED_ORPHANED over the r
+  receipts/2026-10-31-165/REPORT-impl-165.md:93: - 82 + 1 = 83 = the adjudicated residual count, with 0 in my files. Per finding #555 I did not use the `--currency` verdict line.
+  receipts/2026-10-31-165/WAVE-STATE.md:95: #551–#555, #556 (resolved), #557, #558, #559→#563, #560, #561/#562 (resolved), #564, #565 (currency --legs prints FAIL),
+## #557: 2 hit(s)
+  receipts/2026-10-31-165/WAVE-STATE.md:95: #551–#555, #556 (resolved), #557, #558, #559→#563, #560, #561/#562 (resolved), #564, #565 (currency --legs prints FAIL),
+  receipts/2026-11-08-sdk3/SERVICER-LOG-66.md:41: - Derivation: the strays are SQLite `memories` ledgers named `<unique_database slug>.memory.db`. lore_impact(MemoryLedger / LocalMemoryBackend) covering lists a
+## #558: 6 hit(s)
+  receipts/2026-10-31-165/REPORT-audit-165.md:253: - **#558 still open:** `_loremaster_python()` hardcodes `~/PycharmProjects/lore/.venv` as its fallback, so any proof without `LORE_PYTHON` grades the original t
+  receipts/2026-10-31-165/REPORT-contract-165-t8.md:117: Every run used `LORE_PYTHON=/var/tmp/claude-1000/t8-scratch/.venv/bin/python` for the scratch legs (finding #558), `systemd-run … MemoryMax=16G`, `-n 8` and `--
+  receipts/2026-10-31-165/REPORT-contract-165.md:6: - r2 decisions-needed: none. r2 flags: #558 (`_loremaster_python` scratch poison); an implementer constraint (existing stubs answer "0" to any `static` expr, so
+  receipts/2026-10-31-165/REPORT-contract-165.md:219: - (a) `_loremaster_python()` hardcodes the ORIGINAL repo venv, so the reader subprocess imported the original loremaster: `AttributeError: … no attribute 'tier_
+  receipts/2026-10-31-165/REPORT-contract-165.md:232: 2. **#558:** `_loremaster_python` defeats scratch isolation for anything `lore_deploy` spawns. scratch_copy.sh's provenance check cannot see it. Every future mu
+  receipts/2026-10-31-165/WAVE-STATE.md:95: #551–#555, #556 (resolved), #557, #558, #559→#563, #560, #561/#562 (resolved), #564, #565 (currency --legs prints FAIL),
+## #559: 4 hit(s)
+  receipts/2026-10-31-165/REPORT-impl-165.md:21: - **Pointers:** §Routing table · §Step C (covering-test derivation + its bound, finding #559) · §Files changed · §DRY ledger · §Noticed.
+  receipts/2026-10-31-165/REPORT-impl-165.md:60: **Bound (stated):** the elided covering-test entries (229/93/157/85) cannot be listed; no knob widens `max_covering_tests=15`. Filed as **finding #559**. Files 
+  receipts/2026-10-31-165/REPORT-impl-165.md:115: - **Finding #559 filed:** lore_impact covering-test elision (no widen knob) + the guard's own FP-05 suite invisible to every impact view.
+  receipts/2026-10-31-165/WAVE-STATE.md:95: #551–#555, #556 (resolved), #557, #558, #559→#563, #560, #561/#562 (resolved), #564, #565 (currency --legs prints FAIL),
+## #560: 16 hit(s)
+  receipts/2026-10-31-165/REPORT-audit-165-guard.md:85: ## 6. Mutation proof — DECLARED sets (written 2026-10-31 BEFORE any mutation run; ids from `--collect-only` in the scratch copy, written cwd-relative `../tests/
+  receipts/2026-10-31-165/REPORT-audit-165.md:8: 2. The `mutation_proof.py` verdicts for M1–M4 were hand-diffed: the tool false-FAILs on the id form (#560). M5 PASSED in the tool.
+  receipts/2026-10-31-165/REPORT-audit-165.md:224: - With cwd-relative ids the tool passes, which confirms #560's diagnosis.
+  receipts/2026-10-31-165/REPORT-audit-165.md:251: - **#560 (filed):** `mutation_proof.py` false-FAILs a correct proof when cwd ≠ rootdir, because of the id form. 4 of my 5 proofs hit it.
+  receipts/2026-10-31-165/REPORT-audit-568-slug.md:15: - Mutation M1 (`_project_slug` no-config branch → raw `project.name`): LANDED, killed by 4 setup tests; declared≠observed (EXIT=4) because of the #560 id form p
+  receipts/2026-10-31-165/REPORT-audit-568-slug.md:131: 1. **id form (#560):** I declared the rootdir form `skills/lore-deploy/scripts/test_scaffold_slug.py::…` (what `--collect-only -q` printed); the run from the sc
+  ... +10 more
+## #563: 8 hit(s)
+  receipts/2026-10-31-165/REPORT-impl-568-slug.md:114: Gate 2 scope derivation: `lore_impact(loremaster.config.SLUG_PATTERN)` → covering tests only in `test_scaffold_slug.py` (63 tests; 48 elided, #563). `derive_pro
+  receipts/2026-10-31-165/WAVE-STATE.md:95: #551–#555, #556 (resolved), #557, #558, #559→#563, #560, #561/#562 (resolved), #564, #565 (currency --legs prints FAIL),
+  receipts/2026-11-08-sdk3/REPORT-builder-66.md:12: - **Deviations:** file-grouped commits (no interactive staging); M2 declaration error (3 declared / 4 observed); run scope by grep (#563); baseline without TREE
+  receipts/2026-11-08-sdk3/REPORT-builder-66.md:123: - Run scope (TEST SCOPE law): `target_set_b66.txt` = r8's 155 files + 18 hand-derived behaviour-delta suites (`target_set_b66_added.txt`). Derivation: `lore_imp
+  receipts/2026-11-08-sdk3/REPORT-builder-66.md:226: 6. **Run scope by grep, not `lore_impact`** (#563: elided at 15, bare-name unions, 0 tests for row mappers) — said in §Run scope; the store-seam modules' true c
+  receipts/2026-11-08-sdk3/REPORT-builder-66.md:321: Read in full: `sidecar66/RULING-14.md`, `audit66/REPORT-audit-66.md`. Scope run: the exit set ∪ `structural_pins.txt` (92) ∪ every test file grep-naming a touch
+  ... +2 more
+## #564: 2 hit(s)
+  receipts/2026-10-31-165/WAVE-STATE.md:52: - #564 items;
+  receipts/2026-10-31-165/WAVE-STATE.md:95: #551–#555, #556 (resolved), #557, #558, #559→#563, #560, #561/#562 (resolved), #564, #565 (currency --legs prints FAIL),
+## #565: 21 hit(s)
+  receipts/2026-10-31-165/REPORT-audit-165-guard.md:222: ## 8. Gates (final tree; every command captured its own exit; read verdicts, not exits, per #565)
+  receipts/2026-10-31-165/REPORT-audit-165-guard.md:228: | currency | `uv run python scripts/pending_contract_gate.py --currency --legs typecheck,ruff` | typecheck **RED_ADJUDICATED** (83 residuals, packet-58-contract
+  receipts/2026-10-31-165/REPORT-audit-572-ledger.md:16: - **Gates (final, lore_deploy.py sha256 `cbbfcdf0…387a`):** skill suite 419 passed EXIT=0 · typecheck `skills OK`, 0 lore_deploy lines (EXIT=1 = the 83 adjudica
+  receipts/2026-10-31-165/REPORT-audit-572-ledger.md:27: | currency | `uv run python scripts/pending_contract_gate.py --currency --legs typecheck,ruff` | `…/gate-audit-572-final-currency.log` | 1 (#565) | typecheck RE
+  receipts/2026-10-31-165/REPORT-contract-165-guard-r2.md:10: - **Gates:** ruff clean; currency `--legs typecheck,ruff`: typecheck RED_ADJUDICATED (owned), ruff GREEN, no RED_ORPHANED — but EXIT 1 because the deselected py
+  receipts/2026-10-31-165/REPORT-contract-165-guard-r2.md:136: - `pending_contract_gate.py --currency --legs typecheck,ruff` (final text, run 2): typecheck RED_ADJUDICATED (83 residuals, owned by packet-58-contract / packet
+  ... +15 more
+## #570: 14 hit(s)
+  INDEX.md:2538: - Open: #570 (pinned bound), #572 (SurrealManifest move), #573 (test strays in the real state dir), #574 (wave residuals, operator-deprioritised).
+  receipts/2026-10-31-165/REPORT-audit-566-gg-c3.md:16: - F2 → finding **#570**: a tracked conftest in a `collect_ignore`d or virtualenv dir under a testpath reads COVERED; pytest never loads it. This was measured, p
+  receipts/2026-10-31-165/REPORT-contract-571-gg.md:5: # REPORT-contract-571-gg: tdd-light Phase 1 amendment for #571 + #570 (#165 wave)
+  receipts/2026-10-31-165/REPORT-contract-571-gg.md:16: - **Closing #570:** the `test_the_guard_still_reads_it_covered[collect_ignore|virtualenv]` pins would go red with the KNOWN BOUND message. Reasoned.
+  receipts/2026-10-31-165/REPORT-contract-571-gg.md:60: 3. **#570, pinned miss.** New class `TestAConftestPytestSkipsByIgnoreOrVirtualenvIsAKnownBound`:
+  receipts/2026-10-31-165/REPORT-contract-571-gg.md:64: - `test_the_guard_still_reads_it_covered[collect_ignore|virtualenv]`: asserts the guard reads both as COVERED. If not, it fails with "this is a KNOWN BOUND (#57
+  ... +8 more
+## #572: 30 hit(s)
+  INDEX.md:2536: - #572 deploy-side half: the host `<slug>.db` is setup's Ledger with a provisioned marker; status shows no ledger counts.
+  INDEX.md:2538: - Open: #570 (pinned bound), #572 (SurrealManifest move), #573 (test strays in the real state dir), #574 (wave residuals, operator-deprioritised).
+  receipts/2026-10-31-165/REPORT-audit-568-slug.md:16: - Gates: skill suite **348 passed** EXIT=0 (excluding the sibling's file; with it: 43 failed, all in `test_ledger_572.py`, the sibling's #572 RED contract) · te
+  receipts/2026-10-31-165/REPORT-audit-568-slug.md:36: Second-writer question: loremaster opens `<slug>.memory.db` (`server.py` `MemoryLedger(str(manifest_path.with_name(f"{slug}.memory.db")))`) and `calibration/<mo
+  receipts/2026-10-31-165/REPORT-audit-568-slug.md:119: | S1 | **Fixture fiction.** `PodmanShim._index_like_the_real_indexer` says "Create the manifest the real cold index creates: `<slug>.db` with its schema", but p
+  receipts/2026-10-31-165/REPORT-audit-568-slug.md:137: - **C1 (A2, defect vs F5):** a corrupt (non-SQLite) `<slug>.db` makes `setup` traceback (`sqlite3.DatabaseError` from `ManifestOwner.recorded_path`, not caught,
+  ... +24 more
+## #573: 2 hit(s)
+  INDEX.md:2538: - Open: #570 (pinned bound), #572 (SurrealManifest move), #573 (test strays in the real state dir), #574 (wave residuals, operator-deprioritised).
+  receipts/2026-10-31-165/WAVE-STATE.md:102: - #573 filed: wire_test_*.memory.db strays in the real ~/.local/state/lore (2026-09-26); ask operator whether in scope.
+## #574: 1 hit(s)
+  INDEX.md:2538: - Open: #570 (pinned bound), #572 (SurrealManifest move), #573 (test strays in the real state dir), #574 (wave residuals, operator-deprioritised).
+## #575: 0 hit(s)
+## #576: 14 hit(s)
+  sdk3-python-sdk-3-migration.md:10: §E 7/11/12), finding #576, `docs/reference/surrealdb-31-capabilities.md` §0a/§2/§3/§6.5.
+  sdk3-python-sdk-3-migration.md:1287: | 3 | 18 per-owner `AsyncSurreal(url)` + reconnect-on-next-call self-heal (#576) | every `_ensure_connection` / `_drop_connection` (17 stores + scout) | ONE fac
+  sdk3-python-sdk-3-migration.md:1328: | X5 | self-heal → an idle owner's FIRST call after a restart failed, the second healed (#576) | old-bug, fixed: L1 |
+  sdk3-python-sdk-3-migration.md:1498: old symptom (§3.2). **Simplify:** #576's per-owner self-heal (W7), the statement[0] rule's rationale
+  sdk3-python-sdk-3-migration.md:1512: - **#576 is fixed by SDK 3.0's background reconnect**, measured across all 18 connection owners
+  sdk3-python-sdk-3-migration.md:1513: through a bounce proxy: RED at HEAD with #576's own text, GREEN on SDK 3.0 with NO lore change (§4 L1).
+  ... +8 more
+## #577: 0 hit(s)
+## #578: 0 hit(s)
+## #579: 3 hit(s)
+  INDEX.md:2546: - [RETIRED 2026-11-09 — see the packet-66 close-out line] **2026-11-08 — packet 66 PROVISIONAL adjudication of its RED@HEAD set (R27 / sidecar RULING-6 FORK-R7-
+  receipts/2026-11-08-sdk3-sidecar/RULING-6.md:4: Read: `scratchpad/sdk3r7/REPORT.md` (summary, items, satisfiability, declared sets, DRY ledger, §Item 6, progress log); packet doc §ROUND 7 (R7.1–R7.5); `c10/ru
+  receipts/2026-11-08-sdk3-sidecar/RULING-6.md:19: ## FORK-R7-4 — item 5: the registry refuses pytest-only files (#579). **Owner is already ruled (R6/R3.7(c): F6 is the builder's); make it BUILD STEP 0 of packet
+## #580: 0 hit(s)
+## #581: 0 hit(s)
+## #582: 2 hit(s)
+  receipts/2026-11-08-sdk3/ADVERSARY3.md:36: - `lore_index(reconcile=True)` hit the MCP 300 s idle timeout, although the server-side sweep finished (status read: last_sweep 3.5 s). Filed as **#582**.
+  receipts/2026-11-08-sdk3/ADVERSARY3.md:201: - **R17:** Finding #582 (lore_index reconcile timeout).
+## #583: 0 hit(s)
+## #584: 7 hit(s)
+  receipts/2026-11-08-sdk3/ADVERSARY5.md:194: - R5-5: the reference dir holds 6 stray `test_<pid>_<uuid>.memory.db` at its root (`git status`). That is the #584 class from runs made before f866fbe. NO ROUND
+  receipts/2026-11-08-sdk3/REPORT-builder-66.md:160: `loop20.sh` (r8's set + `test_comms_await::TestSocketDropNonLoss`, whose teardown I changed): **20/20 EXIT=0, 35 passed each** (`logs/loop20_{1..20}.log`, ~106 
+  receipts/2026-11-08-sdk3/REPORT-builder-66.md:160: `loop20.sh` (r8's set + `test_comms_await::TestSocketDropNonLoss`, whose teardown I changed): **20/20 EXIT=0, 35 passed each** (`logs/loop20_{1..20}.log`, ~106 
+  receipts/2026-11-08-sdk3/REPORT-builder-66.md:175: | #584 (lead) | stray `test_*.memory.db` | test fixture fix (shared conftest `ledger_path`) | `f866fbe` |
+  receipts/2026-11-08-sdk3/SERVICER-LOG-66.md:40: ## #19006 (q:stray-memory-db, finding #584) — six test_<pid>_<uuid>.memory.db at the repo root
+  sdk3-python-sdk-3-migration.md:107: | SVC-584 | `f866fbe` (#584) | 4 ledger fixtures (`supersede_world`, `dirty_world`, `rebuild_world`, `ledger_backend`) + `test_memory_backend.ledger_path` | REW
+  ... +1 more
+## #585: 0 hit(s)
+## #586: 0 hit(s)
+## #587: 1 hit(s)
+  sdk3-rulings.md:651: - The matcher's blind spot is finding #587. Trigger: convert back to dotted form when it is fixed.
+## #588: 11 hit(s)
+  INDEX.md:2572: - **Filed:** #588 / #593 (upstream SDK defects; issue drafts await the operator); #601 (incident: `surreal --help` printed the prod password into an agent trans
+  INDEX.md:2574: - **2026-11-09 — packet 66 close-out decisions (operator):** #592's two header fixes STAY in 66 (resolved). #597: 66's pinned bound ACCEPTED, and follow-up **pa
+  receipts/2026-11-08-sdk3/REPORT-builder-66.md:18: - Decisions needed: none open. (Resolved: 20× loop re-run on the final tree per #19086; REQ-H serviced via R36 route `769903c`; `db.batch()` upstream gap filed 
+  receipts/2026-11-08-sdk3/REPORT-builder-66.md:348: | #14 | `probe_c14_batch.py` | T6 quoting → `QueryError kind= Query … cancelled transaction`; control → `ThrownError kind= Thrown`; nothing committed either way
+  receipts/2026-11-08-sdk3/REPORT-storeref-66.md:76: | 19 | `db.batch()` reports the cancellation notice, not the THROW (#588) | `REPORT-builder-66.md` §R-9 row #14 + C-row #14; finding #588 |
+  receipts/2026-11-08-sdk3/REPORT-storeref-66.md:76: | 19 | `db.batch()` reports the cancellation notice, not the THROW (#588) | `REPORT-builder-66.md` §R-9 row #14 + C-row #14; finding #588 |
+  ... +5 more
+## #589: 0 hit(s)
+## #590: 19 hit(s)
+  receipts/2026-11-08-sdk3/REPORT-builder-66.md:326: | `fda1411` | **B1 #590** — THE cursor codec in `store._txn`: `served_instant_text` (`PreciseDatetime.isoformat_with_nanoseconds`) renders `next cursor:` AND th
+  receipts/2026-11-08-sdk3/REPORT-builder-66.md:354: | #34 | `probe_c34_cursor_boundary.py` (NEW — the row that had none) | stamp ns 372; L1 in-process rebind EXCLUDED; L2 pydantic keeps `PreciseDatetime` ns → EXC
+  receipts/2026-11-08-sdk3/REPORT-coldaudit-66.md:11: - **BLOCKING 2 — a served-surface regression (R17 false clear, CONSTRUCTED live):** drop #34's retirement (`ead3356`) breaks the rollup cursor's exclusive bound
+  receipts/2026-11-08-sdk3/REPORT-coldaudit-66.md:18: - Decisions needed: ① and ② routes (port / exempt-with-evidence / adjudicate; whitelist vs rename); #590 fix shape; T3 fork (should a request timeout drop the S
+  receipts/2026-11-08-sdk3/REPORT-coldaudit-66.md:199: | **rollup `next cursor`** (`AppContext._render_rollup` + `TaskLedger.updated_since`) | a task stamped with a non-zero ns tail, the cursor round-tripped as serv
+  receipts/2026-11-08-sdk3/REPORT-coldaudit-66.md:213: | R-1 | **BLOCKING** finding #590: rollup cursor re-serves its own row | builder (fix) + servicer (pin the served-text round trip) | — (blocks GO) |
+  ... +13 more
+## #591: 12 hit(s)
+  receipts/2026-11-08-sdk3/REPORT-builder-66.md:374: ## R44 (RULING-15, #591 + #592 leans, directive #19100) — builder, production only
+  receipts/2026-11-08-sdk3/REPORT-coldaudit-66.md:518: | 2b | tie probe → #591 (RULING-15 / R44) | **PASS.** My mutation (`cut_stamp_page`'s tie branch → `if True:`) = **8/8 red across all THREE legs** (task ×2 + sh
+  receipts/2026-11-08-sdk3/SERVICER-LOG-66.md:120: - B1 pin (sub-author fixb1-pin-66): fda1411 landed first → red leg = sub-author's dabc671 receipt; green at b411cab; real-codec mutations (a) parse_served_insta
+  receipts/2026-11-08-sdk3-sidecar/RULING-15.md:1: # design-sidecar-66 — ruling 15: finding #591 — rollup rows sharing one stamp are skipped forever when `limit` cuts inside the group
+  receipts/2026-11-08-sdk3-sidecar/RULING-15.md:4: Read: `lore_findings` #591 (body + the servicer's `build66/fixb1/probe_rollup_tie.py` and `logs/tie_probe_{head,ref}.log`); `tasks.updated_since` / `findings.fi
+  receipts/2026-11-08-sdk3-sidecar/RULING-15.md:29: **R17 on the fixed surface.** Leg 1 — question answered: *every row with stamp > cursor, in stamp order, in WHOLE stamp groups, at most `limit` per leg; or, for
+  ... +6 more
+## #593: 19 hit(s)
+  INDEX.md:2572: - **Filed:** #588 / #593 (upstream SDK defects; issue drafts await the operator); #601 (incident: `surreal --help` printed the prod password into an agent trans
+  INDEX.md:2574: - **2026-11-09 — packet 66 close-out decisions (operator):** #592's two header fixes STAY in 66 (resolved). #597: 66's pinned bound ACCEPTED, and follow-up **pa
+  receipts/2026-11-08-sdk3/REPORT-coldaudit-66.md:508: - **Reproduced by me** with the reader's store-free probe (`audit66/delta_r17_probes/probe_h3_two_truncated.py`, sha256 `252cdf46…`, log `logs/probe_h3_two_trun
+  receipts/2026-11-08-sdk3/REPORT-coldaudit-66.md:518: | 2b | tie probe → #591 (RULING-15 / R44) | **PASS.** My mutation (`cut_stamp_page`'s tie branch → `if True:`) = **8/8 red across all THREE legs** (task ×2 + sh
+  receipts/2026-11-08-sdk3/REPORT-coldaudit-66.md:523: | + | lead-added checks | P4 asserts **h2-held**, not h1: PASS. h1 / h2 / h2-held pinned once; **h3 twice (S2)**. #592 h2: PASS (S5: false-CONSERVATIVE when the
+  receipts/2026-11-08-sdk3/REPORT-coldaudit-66.md:523: | + | lead-added checks | P4 asserts **h2-held**, not h1: PASS. h1 / h2 / h2-held pinned once; **h3 twice (S2)**. #592 h2: PASS (S5: false-CONSERVATIVE when the
+  ... +13 more
+## #594: 1 hit(s)
+  sdk3-rulings.md:758: - the `_as_rows` cluster → #594, a later packet;
+## #595: 2 hit(s)
+  receipts/2026-11-08-sdk3/REPORT-coldaudit-66.md:523: | + | lead-added checks | P4 asserts **h2-held**, not h1: PASS. h1 / h2 / h2-held pinned once; **h3 twice (S2)**. #592 h2: PASS (S5: false-CONSERVATIVE when the
+  sdk3-rulings.md:762: - #595 (`test_rrf_ordering_is_deterministic` failed once in a subset run; 20/20 alone) is not ruled flaky: the full suite arbitrates.
+## #596: 7 hit(s)
+  INDEX.md:2563: - **Verification:** cold audit GO at `88b06be` (`receipts/2026-11-08-sdk3/REPORT-coldaudit-66.md`; the first pass NO-GO → R43; the §DELTA NO-GO #596 → R45; §DEL
+  receipts/2026-11-08-sdk3/REPORT-coldaudit-66.md:552: **DELTA-2 VERDICT: GO.** The §DELTA blocker #596 is closed by construction and by mutation. S2 / S4 / S3 / S5 are as ruled, and the S6 fix is in. R46 / #597 is 
+  receipts/2026-11-08-sdk3/REPORT-coldaudit-66.md:558: | 1 | S1 (#596) | **CLOSED.** h3 is now RULING-16 §S1's one leg-agnostic string. My `probe_h3_two_truncated.py` re-run at 88b06be serves on BOTH legs "the next 
+  receipts/2026-11-08-sdk3/REPORT-coldaudit-66.md:589: DELTA-2: DONE · GO · #596 closed (P7/P8 green, mutation HELD; h3 true for both legs); S2/S3/S4/S6 as ruled; #597 pinned bound (pin + mutation HELD, NULL sub-cas
+  receipts/2026-11-08-sdk3/REPORT-conform-66.md:226: | lore_tasks rollup (tokenless, walk) | `rollup since 1970-01-01T00:00:00.000000000Z` / `tasks transitioned (showing 20 of 162 — the next cursor is the earliest
+  sdk3-rulings.md:764: ## R45 — sidecar ruling 16: the audit DELTA's NO-GO (#596) and S2–S6 (adopted by the lead)
+  ... +1 more
+## #597: 37 hit(s)
+  INDEX.md:357: | 69 | **Boot-time stamp-integrity count** (finding #597; spec = `receipts/2026-11-08-sdk3-sidecar/RULING-17.md` + #597's annotations) — at `ensure_ready()`, af
+  INDEX.md:357: | 69 | **Boot-time stamp-integrity count** (finding #597; spec = `receipts/2026-11-08-sdk3-sidecar/RULING-17.md` + #597's annotations) — at `ensure_ready()`, af
+  INDEX.md:2568: - **#597** boot-time stamp-integrity count at `ensure_ready()` (RULING-17; scheduling is the operator's call).
+  INDEX.md:2571: - **Named bounds carried:** R-4/T3, R-5/T4 (above); #597 (pinned); #598 (h3 "any leg", LOW); #599 (5 `(id unknown)` sites); W5; ADVERSARY4 R4-10 (`r_a3_floor16`
+  INDEX.md:2574: - **2026-11-09 — packet 66 close-out decisions (operator):** #592's two header fixes STAY in 66 (resolved). #597: 66's pinned bound ACCEPTED, and follow-up **pa
+  receipts/2026-11-08-sdk3/REPORT-builder-66.md:421: | `d2df34c` | R46: `read_stamp_page` docstring states the predicate once (what `> $since` admits/excludes on 3.3.5, the admin-retype door, KNOWN BOUND #597, re-
+  ... +31 more
+## #598: 10 hit(s)
+  INDEX.md:2571: - **Named bounds carried:** R-4/T3, R-5/T4 (above); #597 (pinned); #598 (h3 "any leg", LOW); #599 (5 `(id unknown)` sites); W5; ADVERSARY4 R4-10 (`r_a3_floor16`
+  receipts/2026-11-08-sdk3/REPORT-coldaudit-66.md:554: - **Both readings, written down (brief-base §2), of finding #598** (below): (a) strict R17, "any false clause in served bytes is a defect", gives NO-GO again. (
+  receipts/2026-11-08-sdk3/REPORT-coldaudit-66.md:568: | — | #598 (new, LOW) | The R45 h3 clause "the next cursor is the earliest resume point of any leg" is false beside an UNTRUNCATED or empty leg, because `_rollu
+  receipts/2026-11-08-sdk3/REPORT-coldaudit-66.md:568: | — | #598 (new, LOW) | The R45 h3 clause "the next cursor is the earliest resume point of any leg" is false beside an UNTRUNCATED or empty leg, because `_rollu
+  receipts/2026-11-08-sdk3/REPORT-coldaudit-66.md:575: | E-3 | #598 h3 "any leg" over-broad (LOW, consequence-free) | builder, at the next touch of `_rollup_leg_header` | — |
+  receipts/2026-11-08-sdk3/REPORT-coldaudit-66.md:589: DELTA-2: DONE · GO · #596 closed (P7/P8 green, mutation HELD; h3 true for both legs); S2/S3/S4/S6 as ruled; #597 pinned bound (pin + mutation HELD, NULL sub-cas
+  ... +4 more
+## #599: 1 hit(s)
+  INDEX.md:2571: - **Named bounds carried:** R-4/T3, R-5/T4 (above); #597 (pinned); #598 (h3 "any leg", LOW); #599 (5 `(id unknown)` sites); W5; ADVERSARY4 R4-10 (`r_a3_floor16`
+## #601: 13 hit(s)
+  INDEX.md:2572: - **Filed:** #588 / #593 (upstream SDK defects; issue drafts await the operator); #601 (incident: `surreal --help` printed the prod password into an agent trans
+  INDEX.md:2574: - **2026-11-09 — packet 66 close-out decisions (operator):** #592's two header fixes STAY in 66 (resolved). #597: 66's pinned bound ACCEPTED, and follow-up **pa
+  receipts/2026-11-08-sdk3/REPORT-conform-66.md:8: - ⚠ **INCIDENT:** I printed the prod `SURREAL_PASS` via `surreal export --help` inside lore-surreal (§INCIDENT; #601). The lead owns the operator escalation (ro
+  receipts/2026-11-08-sdk3/REPORT-conform-66.md:121: - Incident: lead acknowledged it and owns the operator escalation. Finding **#601** carries the class.
+  receipts/2026-11-08-sdk3/REPORT-storeref-66.md:11: 2. I added the `#601` anchor entry to the finding-anchor list.
+  receipts/2026-11-08-sdk3/REPORT-storeref-66.md:52: | §9 OPS | recovery image corrected to the exact `v3.3.5` tag (re-read from the quadlet), the old `v3.2` text kept as history (**out of scope**: stale since 202
+  ... +7 more
+## #603: 5 hit(s)
+  INDEX.md:2569: - **#603** `restore_prod_dump --full` vs the 4 GiB `/import` cap (packet 65's dress rehearsal).
+  receipts/2026-11-08-sdk3/REPORT-storeref-66.md:82: | 25 | `/import` 4 GiB cap: HTTP 413 measured; vendor table; `snapshot_entry` 6.25 GB | `REPORT-conform-66.md` §Step 4b; finding #603 |
+  receipts/2026-11-08-sdk3/VERIFY-storeref-66.md:3: Scope: every added line of `git diff docs/reference/surrealdb-31-capabilities.md` (286 + lines). Claims grouped; SUPPORTED rows are summarised by group, non-SUP
+  receipts/2026-11-08-sdk3/VERIFY-storeref-66.md:40: | `POST /import` 4 GiB (vendor); HTTP 413 "length limit exceeded"; snapshot_entry 6.25 GB; packet 65 (#603) | SUPPORTED | via-http.mdx:43 (scout copy of corpus)
+  receipts/2026-11-08-sdk3/VERIFY-storeref-66.md:40: | `POST /import` 4 GiB (vendor); HTTP 413 "length limit exceeded"; snapshot_entry 6.25 GB; packet 65 (#603) | SUPPORTED | via-http.mdx:43 (scout copy of corpus)
+## #607: 0 hit(s)
+## #608: 0 hit(s)
+## #609: 0 hit(s)
