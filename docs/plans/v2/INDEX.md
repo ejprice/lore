@@ -551,8 +551,9 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
     item → 09a unless the operator wants it in 16. Deploy receipt = 65-cut.
 35. **Orchestration-tooling findings have no packet (added 2026-11-09):** ~~#546 #547 (the grep PreToolUse
     hook)~~ RESOLVED same day: the deny hook is replaced by the global TEACHING hook `~/.claude/hooks/grep_teach.sh`
-    (operator: teach the lore tools, never block; `lore_recall("grep teaching hook")`), #549 (a stale 2026-08-01 ruling), #580 (haiku-runner EXIT line), #583 #586 (idle-gate report
-    path), acknowledged #225 #297 #365 #387 #465. They live in `~/.claude/` and `.claude/hooks/`, outside
+    (operator: teach the lore tools, never block; `lore_recall("grep teaching hook")`), #549 (a stale 2026-08-01 ruling), #580 (haiku-runner EXIT line), ~~#583 #586 (idle-gate report
+    path)~~ RESOLVED 2026-11-09: the idle gate is retired, replaced by the global TeammateIdle
+    lead-context guard `~/.claude/hooks/lead_context_guard.py` (`lore_recall("lead-context guard")`), acknowledged #225 #297 #365 #387 #465. They live in `~/.claude/` and `.claude/hooks/`, outside
     lore's code. Rec: one standing "orchestration hygiene" row worked between packets, or `wontfix`-with-docs
     for the ones CLAUDE.md already carries (#297).
 36. **Pool 21 is DUE (added 2026-11-09):** surrealdb-py 3.0.0 shipped in packet 66 — rule #111's typed

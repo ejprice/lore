@@ -919,8 +919,10 @@ assert it: `assert Path(loremaster.__file__).resolve().is_relative_to(SCRATCH_RO
   instruction to STAND BY for follow-ups after each answer. Follow-ups travel via
   SendMessage — sanctioned HERE because a standing-by consultant is AT REST between
   questions (the one shape inbox delivery is reliable for); its reply is its receipt.
-  Its idle-between-questions state is BENIGN — never wake-loop it, and exempt it from
-  the idle-gate until its design doc is owed. Never respawn per question; if it must be
+  Its idle-between-questions state is BENIGN — never wake-loop it. As a teammate, each
+  answer to the lead goes into its design doc, and its reply is the brief-base §1 terse line
+  pointing there; the lead-context guard refuses a prose reply to a lead or peer message (a
+  turn the operator types in its pane is never judged). Never respawn per question; if it must be
   respawned, suffix the name (standing law). Its output is a DOC + recommendation —
   the operator rules; the consultant decides nothing.
 - Directives travel ONLY in fully-front-loaded spawn briefs; the inbox is advisory
@@ -933,11 +935,13 @@ assert it: `assert Path(loremaster.__file__).resolve().is_relative_to(SCRATCH_RO
   coordination / forks there (and to `lore_findings` / `lore_tasks` as apt); native SendMessage
   carries ONLY a wake to an AT-REST agent, never content. The one message an agent sends the lead
   is the brief-base §1 terse disambiguated micro-format (`STATE · REPORT-path · headline`) —
-  detail is PULLED from the ledger/report, never pushed into the lead's context. WHY: no hook can
-  filter or reshape what the lead sees (measured 2026-08-10, doc-cited — Claude Code's
-  teammate→lead notifications are auto-delivered mailbox traffic, not a lead-side hook event), so
-  the agent's own outbound message text is the ONLY control surface for the lead's per-wave
-  context cost. Prefer ONE-SHOT agents that deliver and exit over STANDING-BY agents (the design
+  detail is PULLED from the ledger/report, never pushed into the lead's context. WHY: the lead's
+  idle notification carries a teammate's WHOLE final answer (measured 2026-11-09 on 2.1.319:
+  15,912 characters, untruncated). For teammates this is now ENFORCED by the global TeammateIdle
+  hook `~/.claude/hooks/lead_context_guard.py` (it refuses a non-terse final answer twice in a row,
+  then lets it through). Background subagents are exempt by operator ruling (2026-11-09): Claude
+  Code refuses their Writes to `REPORT*.md`, so their report IS their final message and lands in
+  full; keep work that needs a report file on a named teammate. Prefer ONE-SHOT agents that deliver and exit over STANDING-BY agents (the design
   sidecar excepted): a standing-by agent re-idles repeatedly, and each idle is a contentless ping
   the lead must triage.
 - Briefs use the versioned base protocol: the agent's FIRST action is
@@ -987,7 +991,8 @@ assert it: `assert Path(loremaster.__file__).resolve().is_relative_to(SCRATCH_RO
   SCOPE, not a fact.* A fix wave is exactly where an adversary is cheapest and most needed:
   it is written by someone who has just been told what they missed, which is the state most
   likely to produce a narrow patch that satisfies the letter of a finding.
-- Reports: REPORT-<agent-name>.md at repo root, EXACT name. One concern per commit;
+- Reports: REPORT-<agent-name>.md at repo root, EXACT name (teammates; a background subagent
+  returns its report as text, brief-base §1 exception, operator 2026-11-09). One concern per commit;
   cold REFUTE audit before every wave commit (builder ≠ grader; P8d receipts: 3 of 4
   waves shipped a defect green at every builder gate and only the cold audit caught it).
 - **ARCHIVE REPORTS — NEVER DELETE THEM (operator, 2026-07-21; this REPLACES the old
