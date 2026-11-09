@@ -487,6 +487,69 @@ finding. r5's report therefore carries a `§DECLINED` list (proof · the pin it 
 adversary's set also gains two from this section: a heal that swallows its apply fault (§10.3), and a gate
 partition that still adjudicates an unlisted red in a 58 file (§10.2).
 
+## 11. Q3 (lead-58, lore_comms #20018): finding #616 — the 22 same-class sites in seven `scripts/` probes
+
+Sources: finding #616 (site list as filed); `git log` and a literal sweep for each probe's name over
+`docs/reference/`, `CLAUDE.md`, `scripts/gates.yaml` and every `.py` under `scripts/` and `loremaster/` (non-symbol
+textual seam — grep is right; 7 names swept, 7 reported). `REPORT-builder-614-1.md` §CLASS-HITS was NOT read; I
+rule from the finding's list.
+
+### 11.0 What the sweep says about "probes nobody runs"
+| probe | sites | cited by the store reference | imported by |
+|---|---|---|---|
+| `probe_read_filter_63.py` | 2 | no | 4 probes + `_governed_contract.py`, `test_message_governed_ddl_63b_ii_a.py`, `test_secret_typing.py` |
+| `probe_drain_read_63b_ii_b.py` | 3 | **yes** | 4 probes + `_governed_contract.py`, `test_comms_schema.py`, `test_secret_typing.py` |
+| `probe_governed_63c.py` | 4 | **yes** | `probe_read_filter_63.py`, `test_secret_typing.py` |
+| `probe_dnd_defense_objects.py` | 1 | no | `probe_read_filter_63.py`, `test_secret_typing.py` |
+| `cycle_coexisting_legacy_soundness_probe.py` | 3 | no | `test_blocks_edge.py` |
+| `probe_supersede_throw_rollback.py` | 1 | no | `test_secret_typing.py` |
+| `esc1_write_path_cycle_closure.py` | 8 | no | nothing |
+
+Six of seven are imported by test code, and two are named in the store reference as re-runnable receipts. So
+option (b) has no candidate I can show is unused, and "nobody runs it" is not mine or the lead's to declare:
+retiring an instrument is a scope decision for the operator, with a removed-behaviour inventory.
+
+### 11.1 Ruling
+- **(a) FIX NOW, one one-concern commit in this wave, for the 14 sites in the six imported probes.** Fourteen
+  mechanical edits cost less than adjudicating which to keep, and a probe that returns a false clear when re-run
+  is the trust definition's losing case. Each site routes through `_txn.one_statement_result` — REUSE, no
+  script-local unwrap helper.
+- **`esc1_write_path_cycle_closure.py`'s 8 sites ride am-8 §5**, which already makes 58's builder re-key that
+  script to the current contract or archive it with a DUAL header. If it is re-keyed, its 8 reads are converted in
+  that edit; if archived, they are not fixed and the header says the script predates SDK 3.0. Not a separate fix.
+- **(b) none retired here; (c) nothing ledgered** except a site the builder cannot show wrong (below).
+- **Scope, as a question for the lead to carry:** #616 is outside packet 58's mission; it was found by 58's
+  class sweep. I rule it fixed in this wave because the fix is known and small. If the operator would rather it
+  not ride 58, the minimum that should not wait is the three probes others depend on
+  (`probe_read_filter_63`, `probe_drain_read_63b_ii_b`, `probe_governed_63c`); the other three then stay open on
+  #616 with the trigger "before that probe's next run".
+
+### 11.2 The RED-first instrument — the probe's own run, before and after; no new standing test, no scanner
+- **Not a ∀ pin over `scripts/`.** A check that no raw `query()` result is indexed, `len`'d or truth-tested is a
+  source scanner (global law: operator approval, and it is coded around by re-spelling). And a test OF a probe is a
+  test of an instrument, which needs the same approval.
+- **The instrument is execution.** A probe is a script with controls and an exit code. Per site, the builder:
+  1. runs the probe at the pre-fix commit against `:18000` and records what that site produced (the RED: the
+     empty / `None` / always-true value, beside what the probe's own seed makes the right answer);
+  2. makes the edit;
+  3. re-runs and records the right value.
+  The receipt is a table: site · before · after · the seeded fact that says which is right.
+- **Rider — the positive control, in the same row:** each "after" value is one the probe's seed can distinguish
+  from the "before" (a count of seeded rows, a present table) — an after-value of 0 or empty proves nothing.
+- **A site the run cannot reach** (a branch the probe no longer takes) is recorded `NOT REACHED`, left unedited,
+  and stays on #616 by file:line. Editing code nobody can run, with no receipt, is how the next wrong shape gets in.
+- **STOP condition:** if a defective site is on a path an importing TEST executes and that test is green, the
+  suite has a false clear. The builder stops and reports it by test id; that is a new finding, not part of this fix.
+- **Verification (no cold audit):** the lead reads the diff and the receipt table and re-runs one probe chosen at
+  random. Then #616 is resolved with the commit, listing any `NOT REACHED` rows as its residual.
+
+### 11.3 The swallow test, red after `fix(614)` on the k=5 heal door — consistent with §10.3, with one check
+Yes: reading A is right. A leg that is red because 58's heal door does not exist yet is a 58 red, listed by node
+id under §10.2, and discharged by 58's build. **Rider — check the reason, not the colour:** the failure text at
+`3e003ef` must name the missing heal door (the door count or the k=5 observation), not the SDK-shape symptom
+(`-1 == 2`). The registry rationale records that reason beside the id, so a later red for a different reason in
+the same test is visible as a change.
+
 ## §INSTRUMENT — `probe_hub_txn_58.py`, pasted verbatim (run 2026-11-09 from the repo root with `uv run python`)
 
 Runs: `… probe_hub_txn_58.py 3 1665 3332`, `… 8000 16665`, `PROBE_TXN_TIMEOUT=30 PROBE_SETTLE=75 … 16665`,
