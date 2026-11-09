@@ -306,6 +306,56 @@ anchors A2 and A5 (constructor and raise-site reshape — mechanical).
 - No production code, test, registry or store schema touched. The probe wrote only throwaway databases under
   `lore_test` on `:18000` and removed each. No attribution trailer on the commit.
 
+## 8. Addendum (same day): contract-58-r5's A-9, A-10, A-11 and F-RB-5 (lore_comms #20001)
+
+Rules the four items in `REPORT-contract-58-r5.md` §INVENTORY's addendum. **§8.1 SUPERSEDES the shrunk-cap VALUES
+in §1.2, §3 row 5 and §6 items 1 and 5** (my generated `fixed(K) + per·4 + r` and `fixed + per·2`). Everything
+else in those items stands, and §1.4's real-cap legs become load-bearing rather than supplementary.
+
+### 8.1 F-RB-5 — ACCEPTED: one support fixture shrinks the bounds to the scales r1–r4 were graded at
+- **Ruling.** ONE fixture in `_reanchor_58_support.py` monkeypatches `_txn.TXN_ROW_HARD_CAP` to 5,000 and
+  `_txn.TXN_ROW_WARN_THRESHOLD` to 800, each a named constant citing F19/F21. 58's fragments are un-annotated, so
+  rows == statements and every r1–r4 fixture keeps the scale and the discriminator it was graded with (AM2C's
+  4,999-row single chunk, PR16's K-blind accessor, PR18/PR19's multi-blocker population, the 1,700-blocker row).
+- **Why this beats my generated tiny caps.** Mine would have re-sized every graded fixture — new, ungraded
+  arithmetic on three rounds of adversary-verified pins. F19 asks for a shrunk monkeypatched cap, not a minimal
+  one; 5,000 is shrunk. The alignment worry I gave for generating residues is already met by the graded K set:
+  `(5000 − (4 + K)) mod 3` is 1, 0, 2 for K = 0, 1, 2.
+- **What wrong build passes this?** One that never left the statement cap: a literal 5,000, or
+  `min(5000-derived, row-derived)`. At a 5,000 shrink it is indistinguishable everywhere. **Rider — so §1.4's
+  L1–L3 are REQUIRED and run WITHOUT the fixture** (the unpatched 50,000): L1 the accessor's arithmetic, L2 a
+  1,666-dependent supersede succeeds, L3 a >5,000-row straggler population heals in one transaction. L4 (shrink
+  again by `per·d` from inside the fixture → the accessor drops by `d`) kills the literal from the other side.
+- **Rider — and pin the fixture like this:** it is requested explicitly by each leg, never autouse; the L-legs
+  assert `_txn.TXN_ROW_HARD_CAP` is the unpatched value before they run (a leg that silently inherited the shrink
+  would pass for the fixture's reason); an import-time copy of either constant in the build reds the cap+1
+  refusal and the WARN crossing, because the patch lands after import.
+- **WARN boundary under 800:** the crossing N is computed as today from the builder's measured `fixed`/`per`;
+  the zero-WARNING control is N = crossing − 1 (rows == threshold is not reachable at every K, so the control is
+  "one dependent fewer", not "exactly at").
+
+### 8.2 A-9 — the hub refusal's negative check: by TYPE, with a control
+The check that the caller never sees `compose`'s bare refusal keyed on retired message text ("statements,
+exceeding the hard cap"), so it can no longer fail. **Re-key to the type, and pin it like this:** at cap+1 the
+raised error is the ledger's teaching error, `not isinstance(error, TxnRowCapExceededError)`, and neither is its
+`__cause__`; positive control in the same leg — composing the fragments the ledger built for cap+1 directly
+raises `TxnRowCapExceededError`, so the negative half is shown able to fire. No assertion on message text.
+
+### 8.3 A-10 — PR13's private-warn kill leg: re-keyed by §8.1
+At ~900 rows against the real 10,000 threshold the leg cannot cross and kills nothing. Under the fixture's 800 it
+crosses as graded: a build with its own comparison (a private 800, a private 10,000, an import-time copy) emits
+no WARNING or the wrong one and reds. No further ruling.
+
+### 8.4 A-11 — PR14 monkeypatches the deleted constant: re-key to `TXN_ROW_HARD_CAP`
+It becomes §1.4's L4. Same assertion, the live constant's name.
+
+### 8.5 Fold-list deltas (amending §6)
+- **Item 1** — shrunk cap = the §8.1 fixture's 5,000 (not generated values); K set and the three-point assertions
+  unchanged; the negative check per §8.2.
+- **Item 2** — L1–L3 run without the fixture and assert the unpatched cap first; L4 = A-11.
+- **Item 5** — shrunk warn = the fixture's 800; control = crossing − 1.
+- **New item 13** — the ONE fixture (§8.1), with its two riders (explicit request; L-legs assert unpatched).
+
 ## §INSTRUMENT — `probe_hub_txn_58.py`, pasted verbatim (run 2026-11-09 from the repo root with `uv run python`)
 
 Runs: `… probe_hub_txn_58.py 3 1665 3332`, `… 8000 16665`, `PROBE_TXN_TIMEOUT=30 PROBE_SETTLE=75 … 16665`,
