@@ -170,6 +170,11 @@ _LEGACY_ROOT = "root"
 _LEGACY_DEPENDENT_A = "dependent_a"
 _LEGACY_DEPENDENT_B = "dependent_b"
 _LEGACY_EXPECTED_EDGES = 2
+#: packet 58 amendment 15 §10.3 — the straggler world's three extra rows: an open HEAD, a LEGACY blocker
+#: superseded by it (before 58 deployed), and a DEPENDENT whose ``blocked_by`` still names the legacy row.
+_STRAGGLER_HEAD = "straggler_head"
+_STRAGGLER_LEGACY = "straggler_legacy"
+_STRAGGLER_DEPENDENT = "straggler_dependent"
 
 
 class InjectedStoreFault(Exception):
@@ -713,7 +718,9 @@ async def _apply_ddl(connection: Any, ddl: str, *, url: str) -> None:
     )
 
 
-async def _seed_legacy_task(connection: Any, task_id: str, *, blocked_by: list[str]) -> None:
+async def _seed_legacy_task(
+    connection: Any, task_id: str, *, blocked_by: list[str], superseded_by: str | None = None
+) -> None:
     """RAW-CREATE a ``task`` row carrying an arbitrary ``blocked_by``, bypassing every guard.
 
     Not a contrivance — the PRODUCTION state. Every task row written before packet 04b was
@@ -733,6 +740,9 @@ async def _seed_legacy_task(connection: Any, task_id: str, *, blocked_by: list[s
         "provenance": {"created_by": "forgery_door_sweep", "created_at": now.isoformat()},
         "created_at": now,
     }
+    if superseded_by is not None:
+        # packet 58 (am-15 §10.3): a row superseded BEFORE 58 deployed — the straggler world's legacy blocker.
+        content["superseded_by"] = superseded_by
     await connection.query(
         f"CREATE type::record('{TASK_TABLE}', $id) CONTENT $content",
         {"id": task_id, "content": content},
@@ -770,6 +780,23 @@ async def _blocks_edge_count(connection: Any) -> int:
 
 @asynccontextmanager
 async def legacy_task_store() -> AsyncIterator[Subject]:
+    """The world 04b-1 DEPLOYS INTO — see :func:`_task_store_world` (``straggler=False``)."""
+    async with _task_store_world(straggler=False) as subject:
+        yield subject
+
+
+@asynccontextmanager
+async def straggler_task_store() -> AsyncIterator[Subject]:
+    """The legacy world PLUS one STRAGGLER (packet 58 amendment 15 §10.3): a dependent whose ``blocked_by``
+    names a row superseded before 58 deployed, with a resolvable open head — so ``ensure_ready``'s boot heal
+    has a row to re-anchor and its APPLY door is ON the path (in the plain legacy world the heal reads,
+    finds nothing and never applies: the one condition under which that door is invisible)."""
+    async with _task_store_world(straggler=True) as subject:
+        yield subject
+
+
+@asynccontextmanager
+async def _task_store_world(*, straggler: bool) -> AsyncIterator[Subject]:
     """A throwaway store in the world 04b-1 DEPLOYS INTO, and ``ensure_ready`` over it.
 
     ``blocked_by`` COLUMNS on three rows, ZERO ``blocks`` edges, no ``blocks`` table at all,
@@ -798,6 +825,14 @@ async def legacy_task_store() -> AsyncIterator[Subject]:
         await _seed_legacy_task(
             connection, ids[_LEGACY_DEPENDENT_B], blocked_by=[ids[_LEGACY_ROOT], phantom]
         )
+        if straggler:
+            head = f"{_STRAGGLER_HEAD}_{uuid.uuid4().hex}"
+            superseded = f"{_STRAGGLER_LEGACY}_{uuid.uuid4().hex}"
+            await _seed_legacy_task(connection, head, blocked_by=[])
+            await _seed_legacy_task(connection, superseded, blocked_by=[], superseded_by=head)
+            await _seed_legacy_task(
+                connection, f"{_STRAGGLER_DEPENDENT}_{uuid.uuid4().hex}", blocked_by=[superseded]
+            )
         ledger = TaskLedger(
             url=env.url,
             namespace=env.namespace,

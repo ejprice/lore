@@ -133,6 +133,11 @@ _REGISTRY_YAML = textwrap.dedent(
         rationale: "contract committed ahead of a build blocked on #296"
         files:
           - path: {_REGISTERED_FILE}
+            # ⚠ DUAL (contract-58-r5, lead grant #20021, finding #615 / am-15 §10.2): this entry's
+            # pytest red is owned by its LISTED id, no longer by the file-level fallback #615 removes
+            # ("an entry with no red_nodeids owns no pytest red"); three gate tests fail test_pin here.
+            red_nodeids:
+              - '{_REGISTERED_FILE}::test_pin'
             missing_symbols:
               - lorerunes.FixturePlaceholder
               - lorerunes.SCOPE_READ

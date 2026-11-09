@@ -548,3 +548,106 @@ class TestTheDoorSweepOverTheRealLedger:
             "see — was not among the silent doors, so this sweep is no better than the list "
             "it replaces.\n" + report.render()
         )
+
+
+async def _sweep(world: Any, name: str) -> Any:
+    """One ``ensure_ready`` door sweep over ``world`` (a ``fds`` Subject factory)."""
+    return await fds.sweep_doors(world, entry_point="ensure_ready", world=name, observable="edges")
+
+
+def _transaction_seam(report: Any) -> str:
+    """The seam the boot's FIRST door (the DDL apply — a composed transaction) goes through, MEASURED off
+    the report itself — so a heal APPLY is identified by the seam a write transaction uses, never by a
+    literal."""
+    assert report.doors, "the sweep derived no door at all"
+    seam = report.doors[0].seam_called
+    assert seam is not None, report.render()
+    return str(seam)
+
+
+class TestTheHealDOORSAreOnTheStragglerPath:
+    """Packet 58 amendment 15 §10.3 (fold item 14; contract-58-r5 r5.1) — RED until 58's boot heal is built.
+
+The plain legacy world has no superseded blocker, so the heal reads, finds nothing and never applies:
+    the one condition under which a heal that SWALLOWS its apply fault is invisible to this sweep. The
+    straggler world (``fds.straggler_task_store``: one dependent naming a row superseded before 58
+    deployed, with an open head) puts the heal's APPLY on the path. Already pinned, and CITED rather
+    than twinned: the heal's READ door on the legacy world —
+    ``TestTheDoorSweepOverTheRealLedger::test_every_store_door_in_ensure_ready_over_a_legacy_store_FAILS_LOUD``
+    (its ``control_calls == 5``) — and a heal store fault raising at either door —
+    ``test_reanchor_58_r2_rulings.py::TestAHealStoreFaultIsLOUD::test_every_heal_door_after_the_backfill_RAISES``.
+    """
+
+    async def test_i_the_straggler_world_adds_EXACTLY_the_heal_APPLY_door_and_every_derived_door_fires(
+        self,
+    ) -> None:
+        legacy = await _sweep(fds.legacy_task_store, "a legacy store")
+        straggler = await _sweep(fds.straggler_task_store, "a legacy store with one straggler")
+        assert straggler.control_calls == legacy.control_calls + 1, (
+            f"one straggler must add exactly ONE boot door (the heal's apply) to the legacy world's "
+            f"{legacy.control_calls}; observed {straggler.control_calls}.\n" + straggler.render()
+        )
+        # reach as a CHECKED variable: every door the control derived was faulted as its own leg
+        assert len(straggler.doors) == straggler.control_calls, straggler.render()
+        kept = [door.seam_called for door in straggler.doors[:-1]]
+        assert kept == [door.seam_called for door in legacy.doors], (
+            "the straggler world must keep the legacy world's doors, in order, and add one AFTER them "
+            "(am-3 §2: backfill → heal read → heal apply).\n" + straggler.render()
+        )
+        assert straggler.doors[-1].seam_called == _transaction_seam(straggler), (
+            "the added door must be a composed WRITE transaction — the heal's apply.\n" + straggler.render()
+        )
+
+    async def test_ii_every_door_over_the_straggler_world_FAILS_LOUD_the_heal_APPLY_included(self) -> None:
+        legacy = await _sweep(fds.legacy_task_store, "a legacy store")
+        straggler = await _sweep(fds.straggler_task_store, "a legacy store with one straggler")
+        assert straggler.control_calls == legacy.control_calls + 1, (
+            "non-vacuity: the heal's apply door must be ON the path before its loudness means anything.\n"
+            + straggler.render()
+        )
+        assert straggler.all_doors_loud, straggler.render()
+        apply_door = straggler.doors[-1]
+        assert apply_door.loud and apply_door.fault_traceable, (
+            "a store fault at the heal's APPLY must reach the caller as THAT fault (am-3 §2).\n"
+            + straggler.render()
+        )
+
+    async def test_iii_a_heal_that_SWALLOWS_its_APPLY_fault_is_CAUGHT(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The positive control for leg (ii), on the real ledger (the instrument's idiom above): a heal
+        wrapped in a catch-all is installed at runtime over the captured original — no shipped line edited."""
+        from loremaster.tasks import TaskLedger
+
+        original = getattr(TaskLedger, "_reanchor_stragglers")  # noqa: B009 - a ruled, not-yet-built name
+
+        async def _swallowing_heal(ledger: TaskLedger, *args: Any, **kwargs: Any) -> Any:
+            """The defensive line that makes a failed heal silent."""
+            try:
+                return await original(ledger, *args, **kwargs)
+            except Exception:  # noqa: BLE001 - the wrong build catches everything
+                return None
+
+        monkeypatch.setattr(TaskLedger, "_reanchor_stragglers", _swallowing_heal)
+        report = await _sweep(fds.straggler_task_store, "a legacy store with one straggler")
+        silent = [door.k for door in report.silent_doors]
+        assert report.control_calls in silent, (
+            "a heal that swallows its APPLY fault was swept and the apply door was not reported silent — "
+            "the sweep cannot see the defect §10.3 exists to expose.\n" + report.render()
+        )
+        assert 1 not in silent, (
+            "the DDL door is outside the swallowed heal and must still fail loud; a sweep calling it "
+            "silent is broken, not discriminating.\n" + report.render()
+        )
+
+    async def test_iv_CONTROL_without_the_straggler_the_sweep_never_reaches_the_heal_APPLY(self) -> None:
+        legacy = await _sweep(fds.legacy_task_store, "a legacy store")
+        straggler = await _sweep(fds.straggler_task_store, "a legacy store with one straggler")
+        seam = _transaction_seam(straggler)
+        legacy_writes = sum(1 for door in legacy.doors if door.seam_called == seam)
+        straggler_writes = sum(1 for door in straggler.doors if door.seam_called == seam)
+        assert legacy_writes == straggler_writes - 1, (
+            f"the world WITHOUT the straggler must observe one FEWER write-transaction door "
+            f"({legacy_writes} vs {straggler_writes}): the world, not luck, exposes the heal's apply.\n"
+            + legacy.render()
+        )

@@ -410,8 +410,20 @@ bounds:
   - path: scripts/test_forgery_door_sweep.py
     red_nodeids:
     - "scripts/test_forgery_door_sweep.py::TestThisInstrumentIsTYPECHECKED::test_mypy_is_clean_over_the_sweep_and_its_contract"
+    - "scripts/test_forgery_door_sweep.py::TestTheDoorSweepOverTheRealLedger::test_a_ledger_that_SWALLOWS_its_backfill_failure_is_CAUGHT"
+    - "scripts/test_forgery_door_sweep.py::TestTheDoorSweepOverTheRealLedger::test_every_store_door_in_ensure_ready_over_a_legacy_store_FAILS_LOUD"
+    - "scripts/test_forgery_door_sweep.py::TestTheHealDOORSAreOnTheStragglerPath::test_i_the_straggler_world_adds_EXACTLY_the_heal_APPLY_door_and_every_derived_door_fires"
+    - "scripts/test_forgery_door_sweep.py::TestTheHealDOORSAreOnTheStragglerPath::test_ii_every_door_over_the_straggler_world_FAILS_LOUD_the_heal_APPLY_included"
+    - "scripts/test_forgery_door_sweep.py::TestTheHealDOORSAreOnTheStragglerPath::test_iii_a_heal_that_SWALLOWS_its_APPLY_fault_is_CAUGHT"
+    - "scripts/test_forgery_door_sweep.py::TestTheHealDOORSAreOnTheStragglerPath::test_iv_CONTROL_without_the_straggler_the_sweep_never_reaches_the_heal_APPLY"
     missing_symbols:
     - loremaster.tasks.SupersedeResult
+  # finding #615 (packet 58 amendment 15 §10.2, contract-58-r5 r5.1 step 3(c)): the contract-ahead pin for
+  # "an entry with no red_nodeids owns no pytest red" — RED until a builder removes the file-level fallback in
+  # PendingContractGate.partition_pytest (lead routing: the 58 wave, before the adversary grade).
+  - path: scripts/test_pending_contract_gate_f6.py
+    red_nodeids:
+    - "scripts/test_pending_contract_gate_f6.py::test_615_an_entry_with_no_red_nodeids_owns_NO_pytest_red"
 # Packet 64b-i contract r2 (contract-64b-r2, 2026-09-27 — the adversary-64b survivors + packet-64 amendments 7-10 +
 # 63c amendment 35 §6, the #461 shape, lead #17055). Every file listed below: the 64b-i contract files declare 64b-i's
 # RULED, not-yet-built symbols as TYPED CALLS in a runtime-inert `if TYPE_CHECKING:` block, and the two CONVERTED
@@ -441,22 +453,150 @@ bounds:
     — a renamed kwarg is a mypy [call-arg] line, never a silent discharge
   files:
   - path: loremaster/tests/test_comms_footer.py
+    red_nodeids:
+    - "loremaster/tests/test_comms_footer.py::TestABatchThatWroteNOTHINGServesNoFooter::test_the_footer_follows_the_WRITE_COUNT_not_the_CALL[asyncio-0-False-acknowledge_many]"
+    - "loremaster/tests/test_comms_footer.py::TestABatchThatWroteNOTHINGServesNoFooter::test_the_footer_follows_the_WRITE_COUNT_not_the_CALL[asyncio-0-False-resolve_many]"
+    - "loremaster/tests/test_comms_footer.py::TestABatchThatWroteNOTHINGServesNoFooter::test_the_footer_follows_the_WRITE_COUNT_not_the_CALL[asyncio-1-True-acknowledge_many]"
+    - "loremaster/tests/test_comms_footer.py::TestABatchThatWroteNOTHINGServesNoFooter::test_the_footer_follows_the_WRITE_COUNT_not_the_CALL[asyncio-1-True-resolve_many]"
+    - "loremaster/tests/test_comms_footer.py::TestABatchThatWroteNOTHINGServesNoFooter::test_the_footer_follows_the_WRITE_COUNT_not_the_CALL[asyncio-4-True-acknowledge_many]"
+    - "loremaster/tests/test_comms_footer.py::TestABatchThatWroteNOTHINGServesNoFooter::test_the_footer_follows_the_WRITE_COUNT_not_the_CALL[asyncio-4-True-resolve_many]"
+    - "loremaster/tests/test_comms_footer.py::TestABatchThatWroteNOTHINGServesNoFooter::test_the_footer_follows_the_WRITE_COUNT_not_the_CALL[asyncio-5-True-acknowledge_many]"
+    - "loremaster/tests/test_comms_footer.py::TestABatchThatWroteNOTHINGServesNoFooter::test_the_footer_follows_the_WRITE_COUNT_not_the_CALL[asyncio-5-True-resolve_many]"
+    - "loremaster/tests/test_comms_footer.py::TestAHostileIdentityIsREFUSEDAtEveryLink0Member::test_PER_PARAMETER_CONTROL_a_LEGAL_identity_is_NOT_refused[asyncio-lore_findings-agent]"
+    - "loremaster/tests/test_comms_footer.py::TestAHostileIdentityIsREFUSEDAtEveryLink0Member::test_PER_PARAMETER_CONTROL_a_LEGAL_identity_is_NOT_refused[asyncio-lore_findings-session]"
+    - "loremaster/tests/test_comms_footer.py::TestAHostileIdentityIsREFUSEDAtEveryLink0Member::test_a_charset_illegal_identity_is_REFUSED_before_any_use[asyncio-lore_findings-agent]"
+    - "loremaster/tests/test_comms_footer.py::TestAHostileIdentityIsREFUSEDAtEveryLink0Member::test_a_charset_illegal_identity_is_REFUSED_before_any_use[asyncio-lore_findings-session]"
+    - "loremaster/tests/test_comms_footer.py::TestAHostileIdentityIsREFUSEDAtEveryLink0Member::test_perturbing_the_SHARED_predicate_moves_EVERY_members_refusal[asyncio]"
+    - "loremaster/tests/test_comms_footer.py::TestAHostileIdentityIsREFUSEDAtEveryLink0Member::test_the_refusal_renders_NO_RAW_VALUE_on_a_BARE_LINE[asyncio-lore_findings-agent]"
+    - "loremaster/tests/test_comms_footer.py::TestAHostileIdentityIsREFUSEDAtEveryLink0Member::test_the_refusal_renders_NO_RAW_VALUE_on_a_BARE_LINE[asyncio-lore_findings-session]"
+    - "loremaster/tests/test_comms_footer.py::TestEveryDispatchActionIsDrivableWithoutAMissingArgOrMethod::test_every_FINDING_action_is_driven_by_its_own_fixture[asyncio-acknowledge]"
+    - "loremaster/tests/test_comms_footer.py::TestEveryDispatchActionIsDrivableWithoutAMissingArgOrMethod::test_every_FINDING_action_is_driven_by_its_own_fixture[asyncio-acknowledge_many]"
+    - "loremaster/tests/test_comms_footer.py::TestEveryDispatchActionIsDrivableWithoutAMissingArgOrMethod::test_every_FINDING_action_is_driven_by_its_own_fixture[asyncio-annotate]"
+    - "loremaster/tests/test_comms_footer.py::TestEveryDispatchActionIsDrivableWithoutAMissingArgOrMethod::test_every_FINDING_action_is_driven_by_its_own_fixture[asyncio-chain_head]"
+    - "loremaster/tests/test_comms_footer.py::TestEveryDispatchActionIsDrivableWithoutAMissingArgOrMethod::test_every_FINDING_action_is_driven_by_its_own_fixture[asyncio-get]"
+    - "loremaster/tests/test_comms_footer.py::TestEveryDispatchActionIsDrivableWithoutAMissingArgOrMethod::test_every_FINDING_action_is_driven_by_its_own_fixture[asyncio-report]"
+    - "loremaster/tests/test_comms_footer.py::TestEveryDispatchActionIsDrivableWithoutAMissingArgOrMethod::test_every_FINDING_action_is_driven_by_its_own_fixture[asyncio-resolve]"
+    - "loremaster/tests/test_comms_footer.py::TestEveryDispatchActionIsDrivableWithoutAMissingArgOrMethod::test_every_FINDING_action_is_driven_by_its_own_fixture[asyncio-resolve_many]"
+    - "loremaster/tests/test_comms_footer.py::TestEveryDispatchActionIsDrivableWithoutAMissingArgOrMethod::test_every_FINDING_action_is_driven_by_its_own_fixture[asyncio-set_scope]"
+    - "loremaster/tests/test_comms_footer.py::TestEveryDispatchActionIsDrivableWithoutAMissingArgOrMethod::test_every_FINDING_action_is_driven_by_its_own_fixture[asyncio-wontfix]"
+    - "loremaster/tests/test_comms_footer.py::TestTheAgentParameterDescriptionIsSHAREDAndStatesThePayoff::test_all_three_tools_share_ONE_agent_description[asyncio]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFallbackIsThirdPersonWithNoDrainImperative::test_a_findings_write_with_NO_agent_serves_the_capabilitys_RESOLVED_footer[asyncio]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterIsAPPENDEDExactlyOnceAtTheEND::test_exactly_ONE_footer_line_is_served[asyncio-caller0-lore_findings]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterIsAPPENDEDExactlyOnceAtTheEND::test_exactly_ONE_footer_line_is_served[asyncio-caller1-lore_findings]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterIsAPPENDEDExactlyOnceAtTheEND::test_the_footer_is_the_LAST_line[asyncio-caller0-lore_findings]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterIsAPPENDEDExactlyOnceAtTheEND::test_the_footer_is_the_LAST_line[asyncio-caller1-lore_findings]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterIsAPPENDEDExactlyOnceAtTheEND::test_the_underlying_answer_SURVIVES_the_footer[asyncio-caller0-lore_findings]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterIsAPPENDEDExactlyOnceAtTheEND::test_the_underlying_answer_SURVIVES_the_footer[asyncio-caller1-lore_findings]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterRidesTheOUTCOMENotTheVERB::test_EVERY_findings_WRITE_action_footers[asyncio-acknowledge-caller0]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterRidesTheOUTCOMENotTheVERB::test_EVERY_findings_WRITE_action_footers[asyncio-acknowledge-caller1]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterRidesTheOUTCOMENotTheVERB::test_EVERY_findings_WRITE_action_footers[asyncio-acknowledge_many-caller0]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterRidesTheOUTCOMENotTheVERB::test_EVERY_findings_WRITE_action_footers[asyncio-acknowledge_many-caller1]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterRidesTheOUTCOMENotTheVERB::test_EVERY_findings_WRITE_action_footers[asyncio-annotate-caller0]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterRidesTheOUTCOMENotTheVERB::test_EVERY_findings_WRITE_action_footers[asyncio-annotate-caller1]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterRidesTheOUTCOMENotTheVERB::test_EVERY_findings_WRITE_action_footers[asyncio-report-caller0]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterRidesTheOUTCOMENotTheVERB::test_EVERY_findings_WRITE_action_footers[asyncio-report-caller1]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterRidesTheOUTCOMENotTheVERB::test_EVERY_findings_WRITE_action_footers[asyncio-resolve-caller0]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterRidesTheOUTCOMENotTheVERB::test_EVERY_findings_WRITE_action_footers[asyncio-resolve-caller1]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterRidesTheOUTCOMENotTheVERB::test_EVERY_findings_WRITE_action_footers[asyncio-resolve_many-caller0]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterRidesTheOUTCOMENotTheVERB::test_EVERY_findings_WRITE_action_footers[asyncio-resolve_many-caller1]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterRidesTheOUTCOMENotTheVERB::test_EVERY_findings_WRITE_action_footers[asyncio-set_scope-caller0]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterRidesTheOUTCOMENotTheVERB::test_EVERY_findings_WRITE_action_footers[asyncio-set_scope-caller1]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterRidesTheOUTCOMENotTheVERB::test_EVERY_findings_WRITE_action_footers[asyncio-wontfix-caller0]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterRidesTheOUTCOMENotTheVERB::test_EVERY_findings_WRITE_action_footers[asyncio-wontfix-caller1]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterRidesTheOUTCOMENotTheVERB::test_a_findings_READ_action_NEVER_footers[asyncio-chain_head]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterRidesTheOUTCOMENotTheVERB::test_a_findings_READ_action_NEVER_footers[asyncio-get]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterRidesTheOUTCOMENotTheVERB::test_the_declared_action_PARTITION_covers_the_dispatchers_OWN_action_set"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterServesTheLEDGERSTwoCounts::test_the_RESOLVED_footer_carries_both_counts_in_their_own_roles[asyncio-caller0-lore_findings-traffic0]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterServesTheLEDGERSTwoCounts::test_the_RESOLVED_footer_carries_both_counts_in_their_own_roles[asyncio-caller0-lore_findings-traffic1]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterServesTheLEDGERSTwoCounts::test_the_RESOLVED_footer_carries_both_counts_in_their_own_roles[asyncio-caller0-lore_findings-traffic2]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterServesTheLEDGERSTwoCounts::test_the_RESOLVED_footer_carries_both_counts_in_their_own_roles[asyncio-caller0-lore_findings-traffic3]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterServesTheLEDGERSTwoCounts::test_the_RESOLVED_footer_carries_both_counts_in_their_own_roles[asyncio-caller1-lore_findings-traffic0]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterServesTheLEDGERSTwoCounts::test_the_RESOLVED_footer_carries_both_counts_in_their_own_roles[asyncio-caller1-lore_findings-traffic1]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterServesTheLEDGERSTwoCounts::test_the_RESOLVED_footer_carries_both_counts_in_their_own_roles[asyncio-caller1-lore_findings-traffic2]"
+    - "loremaster/tests/test_comms_footer.py::TestTheFooterServesTheLEDGERSTwoCounts::test_the_RESOLVED_footer_carries_both_counts_in_their_own_roles[asyncio-caller1-lore_findings-traffic3]"
+    - "loremaster/tests/test_comms_footer.py::TestTheProductionSeamEXISTSAndIsTheThingDriven::test_the_FOOTERS_counts_come_THROUGH_the_ledger_seam[asyncio-caller0-lore_findings]"
+    - "loremaster/tests/test_comms_footer.py::TestTheProductionSeamEXISTSAndIsTheThingDriven::test_the_FOOTERS_counts_come_THROUGH_the_ledger_seam[asyncio-caller1-lore_findings]"
+    - "loremaster/tests/test_comms_footer.py::TestTheREADBudgetHoldsOnALLTHREEDispatchers::test_a_governed_findings_write_spends_NO_footer_registry_read[asyncio-acknowledge-agent-omitted]"
+    - "loremaster/tests/test_comms_footer.py::TestTheREADBudgetHoldsOnALLTHREEDispatchers::test_a_governed_findings_write_spends_NO_footer_registry_read[asyncio-acknowledge-agent-supplied]"
+    - "loremaster/tests/test_comms_footer.py::TestTheREADBudgetHoldsOnALLTHREEDispatchers::test_a_governed_findings_write_spends_NO_footer_registry_read[asyncio-acknowledge_many-agent-omitted]"
+    - "loremaster/tests/test_comms_footer.py::TestTheREADBudgetHoldsOnALLTHREEDispatchers::test_a_governed_findings_write_spends_NO_footer_registry_read[asyncio-acknowledge_many-agent-supplied]"
+    - "loremaster/tests/test_comms_footer.py::TestTheREADBudgetHoldsOnALLTHREEDispatchers::test_a_governed_findings_write_spends_NO_footer_registry_read[asyncio-annotate-agent-omitted]"
+    - "loremaster/tests/test_comms_footer.py::TestTheREADBudgetHoldsOnALLTHREEDispatchers::test_a_governed_findings_write_spends_NO_footer_registry_read[asyncio-annotate-agent-supplied]"
+    - "loremaster/tests/test_comms_footer.py::TestTheREADBudgetHoldsOnALLTHREEDispatchers::test_a_governed_findings_write_spends_NO_footer_registry_read[asyncio-report-agent-omitted]"
+    - "loremaster/tests/test_comms_footer.py::TestTheREADBudgetHoldsOnALLTHREEDispatchers::test_a_governed_findings_write_spends_NO_footer_registry_read[asyncio-report-agent-supplied]"
+    - "loremaster/tests/test_comms_footer.py::TestTheREADBudgetHoldsOnALLTHREEDispatchers::test_a_governed_findings_write_spends_NO_footer_registry_read[asyncio-resolve-agent-omitted]"
+    - "loremaster/tests/test_comms_footer.py::TestTheREADBudgetHoldsOnALLTHREEDispatchers::test_a_governed_findings_write_spends_NO_footer_registry_read[asyncio-resolve-agent-supplied]"
+    - "loremaster/tests/test_comms_footer.py::TestTheREADBudgetHoldsOnALLTHREEDispatchers::test_a_governed_findings_write_spends_NO_footer_registry_read[asyncio-resolve_many-agent-omitted]"
+    - "loremaster/tests/test_comms_footer.py::TestTheREADBudgetHoldsOnALLTHREEDispatchers::test_a_governed_findings_write_spends_NO_footer_registry_read[asyncio-resolve_many-agent-supplied]"
+    - "loremaster/tests/test_comms_footer.py::TestTheREADBudgetHoldsOnALLTHREEDispatchers::test_a_governed_findings_write_spends_NO_footer_registry_read[asyncio-set_scope-agent-omitted]"
+    - "loremaster/tests/test_comms_footer.py::TestTheREADBudgetHoldsOnALLTHREEDispatchers::test_a_governed_findings_write_spends_NO_footer_registry_read[asyncio-set_scope-agent-supplied]"
+    - "loremaster/tests/test_comms_footer.py::TestTheREADBudgetHoldsOnALLTHREEDispatchers::test_a_governed_findings_write_spends_NO_footer_registry_read[asyncio-wontfix-agent-omitted]"
+    - "loremaster/tests/test_comms_footer.py::TestTheREADBudgetHoldsOnALLTHREEDispatchers::test_a_governed_findings_write_spends_NO_footer_registry_read[asyncio-wontfix-agent-supplied]"
+    - "loremaster/tests/test_comms_footer.py::TestTheREADBudgetHoldsOnALLTHREEDispatchers::test_the_FK8_axis_IS_the_spec_dicts_capability_set"
+    - "loremaster/tests/test_comms_footer.py::TestTheRESOLVEDFooterIsACTIONABLE::test_the_RESOLVED_footer_names_the_drain_CALL[asyncio-caller0-lore_findings]"
+    - "loremaster/tests/test_comms_footer.py::TestTheRESOLVEDFooterIsACTIONABLE::test_the_RESOLVED_footer_names_the_drain_CALL[asyncio-caller1-lore_findings]"
     missing_symbols:
     - _finding_fakes.arm_finding_identity
   # packet 58 amendment 12 §4 item 3 (contract-58-r4): 58's files RED on 64b's discovered driver
   # `findings.py::_run_guarded` until 64b-i's build lands `FindingLedger._run_guarded` (lore_verify not_found at
   # a77dc00). ONE path may sit in two bounds (the gate refuses duplicate IDS only); spelled as mypy names it.
   - path: loremaster/tests/test_reanchor_58_r3_cas_seam.py
+    red_nodeids:
+    - "loremaster/tests/test_reanchor_58_r3_cas_seam.py::TestTheCASPopulationIsDrivenBothWays::test_every_static_CAS_member_has_a_driver_and_every_driver_a_static_member[findings.py::_run_guarded]"
     missing_symbols:
     - type[FindingLedger]._run_guarded
   - path: loremaster/tests/test_reanchor_58_r4_state.py
+    red_nodeids:
+    - "loremaster/tests/test_reanchor_58_r4_state.py::TestTheFiredLedgerEqualsTheDerivedDomain::test_every_root_verb_and_write_index_fires_and_the_caller_gets_the_SAME_instance[findings.py::_run_guarded -> findings.py::_run_guarded]"
     missing_symbols:
     - type[FindingLedger]._run_guarded
   - path: loremaster/tests/test_findings_adversary_pins_64b.py
+    red_nodeids:
+    - "loremaster/tests/test_findings_adversary_pins_64b.py::test_MP11_migrate_finding_leaves_every_other_governed_table_byte_identical"
+    - "loremaster/tests/test_findings_adversary_pins_64b.py::test_MP1_set_scope_on_an_invisible_row_is_not_found_byte_identical_by_id_and_number"
+    - "loremaster/tests/test_findings_adversary_pins_64b.py::test_MP2_a_visible_but_unwritable_row_by_ID_is_denied_never_not_found[acknowledge]"
+    - "loremaster/tests/test_findings_adversary_pins_64b.py::test_MP2_a_visible_but_unwritable_row_by_ID_is_denied_never_not_found[annotate]"
+    - "loremaster/tests/test_findings_adversary_pins_64b.py::test_MP2_a_visible_but_unwritable_row_by_ID_is_denied_never_not_found[set_scope]"
+    - "loremaster/tests/test_findings_adversary_pins_64b.py::test_MP3_supersedes_an_invisible_ID_is_not_found_byte_identical_and_writes_nothing"
+    - "loremaster/tests/test_findings_adversary_pins_64b.py::test_MP4_rescoped_to_readable_but_unwritable_is_a_governed_conflict"
+    - "loremaster/tests/test_findings_adversary_pins_64b.py::test_MP5_a_revoked_household_member_is_refused_on_its_next_write"
+    - "loremaster/tests/test_findings_adversary_pins_64b.py::test_MP6_every_appended_event_carries_the_actor_agent_link[acknowledge-open-extra0]"
+    - "loremaster/tests/test_findings_adversary_pins_64b.py::test_MP6_every_appended_event_carries_the_actor_agent_link[annotate-resolved-extra2]"
+    - "loremaster/tests/test_findings_adversary_pins_64b.py::test_MP6_every_appended_event_carries_the_actor_agent_link[wontfix-open-extra1]"
+    - "loremaster/tests/test_findings_adversary_pins_64b.py::test_MP7_a_governed_write_reads_the_agent_row_at_most_once"
+    - "loremaster/tests/test_findings_adversary_pins_64b.py::test_MP8_exactly_one_identity_compare_site_in_production"
     missing_symbols:
     - findings.capability
     - findings.scope
   - path: loremaster/tests/test_findings_classes_64b.py
+    red_nodeids:
+    - "loremaster/tests/test_findings_classes_64b.py::TestAMigrateLegWritesOnlyItsOwnTable::test_every_leg"
+    - "loremaster/tests/test_findings_classes_64b.py::TestAParamOutsideItsVerbsSpecIsRefused::test_every_verb_param_pair"
+    - "loremaster/tests/test_findings_classes_64b.py::TestAVanishedRowIsTheLedgersNotFoundForEveryCasVerb::test_every_cas_verb"
+    - "loremaster/tests/test_findings_classes_64b.py::TestEveryAppendedEventCarriesTheDerivedActor::test_every_observed_event"
+    - "loremaster/tests/test_findings_classes_64b.py::TestEveryAuthorizationInputIsReadPerCall::test_the_next_call_sees_the_degradation[agent-retired]"
+    - "loremaster/tests/test_findings_classes_64b.py::TestEveryAuthorizationInputIsReadPerCall::test_the_next_call_sees_the_degradation[capability-expired]"
+    - "loremaster/tests/test_findings_classes_64b.py::TestEveryAuthorizationInputIsReadPerCall::test_the_next_call_sees_the_degradation[household-removed]"
+    - "loremaster/tests/test_findings_classes_64b.py::TestEveryAuthorizationInputIsReadPerCall::test_the_next_call_sees_the_degradation[principal-suspended]"
+    - "loremaster/tests/test_findings_classes_64b.py::TestEveryRowVerbPreReadsItsRowOnce::test_every_verb_and_address_form"
+    - "loremaster/tests/test_findings_classes_64b.py::TestEveryWriteVerbTreatsAnInvisibleRowAsNonexistent::test_every_address_form_and_state[acknowledge]"
+    - "loremaster/tests/test_findings_classes_64b.py::TestEveryWriteVerbTreatsAnInvisibleRowAsNonexistent::test_every_address_form_and_state[acknowledge_many]"
+    - "loremaster/tests/test_findings_classes_64b.py::TestEveryWriteVerbTreatsAnInvisibleRowAsNonexistent::test_every_address_form_and_state[annotate]"
+    - "loremaster/tests/test_findings_classes_64b.py::TestEveryWriteVerbTreatsAnInvisibleRowAsNonexistent::test_every_address_form_and_state[report]"
+    - "loremaster/tests/test_findings_classes_64b.py::TestEveryWriteVerbTreatsAnInvisibleRowAsNonexistent::test_every_address_form_and_state[resolve]"
+    - "loremaster/tests/test_findings_classes_64b.py::TestEveryWriteVerbTreatsAnInvisibleRowAsNonexistent::test_every_address_form_and_state[resolve_many]"
+    - "loremaster/tests/test_findings_classes_64b.py::TestEveryWriteVerbTreatsAnInvisibleRowAsNonexistent::test_every_address_form_and_state[set_scope]"
+    - "loremaster/tests/test_findings_classes_64b.py::TestEveryWriteVerbTreatsAnInvisibleRowAsNonexistent::test_every_address_form_and_state[wontfix]"
+    - "loremaster/tests/test_findings_classes_64b.py::TestTheEdgeIsCheckedOnlyAfterAuthorization::test_every_state_on_an_illegal_edge"
+    - "loremaster/tests/test_findings_classes_64b.py::TestTheIdentityCompareLivesInOneFunction::test_every_compare_site_is_allowlisted_and_the_policy_is_in_the_one_helper"
+    - "loremaster/tests/test_findings_classes_64b.py::TestTheKeepSeamTakesExactlyOneIdentity::test_CONTROL_each_single_identity_resolves_the_same_keeps[keeps.KeepStore.list_keeps_for_member]"
+    - "loremaster/tests/test_findings_classes_64b.py::TestTheKeepSeamTakesExactlyOneIdentity::test_CONTROL_each_single_identity_resolves_the_same_keeps[visible_keeps.resolve_visible_keeps]"
+    - "loremaster/tests/test_findings_classes_64b.py::TestTheKeepSeamTakesExactlyOneIdentity::test_both_or_neither_is_refused_before_any_read[both-keeps.KeepStore.list_keeps_for_member]"
+    - "loremaster/tests/test_findings_classes_64b.py::TestTheKeepSeamTakesExactlyOneIdentity::test_both_or_neither_is_refused_before_any_read[both-visible_keeps.resolve_visible_keeps]"
+    - "loremaster/tests/test_findings_classes_64b.py::TestTheKeepSeamTakesExactlyOneIdentity::test_both_or_neither_is_refused_before_any_read[neither-keeps.KeepStore.list_keeps_for_member]"
+    - "loremaster/tests/test_findings_classes_64b.py::TestTheKeepSeamTakesExactlyOneIdentity::test_both_or_neither_is_refused_before_any_read[neither-visible_keeps.resolve_visible_keeps]"
+    - "loremaster/tests/test_findings_classes_64b.py::TestTheRegistryIsReadOncePerGovernedCall::test_exactly_one_agent_and_one_principal_statement"
+    - "loremaster/tests/test_findings_classes_64b.py::TestTheZeroRowClassifierAuthorizesThePassedAction::test_every_served_action_discriminates_read_from_the_action"
     missing_symbols:
     - list_keeps_for_member.principal_id
     - resolve_visible_keeps.principal_id
@@ -466,15 +606,68 @@ bounds:
       reason: the class sweep calls governed.resource_from_row (unbuilt) through the module object; mypy reports the missing
         attribute without a symbol — the same unbuilt resource_from_row the substrate file names
   - path: loremaster/tests/test_findings_enforcement_64b.py
+    red_nodeids:
+    - "loremaster/tests/test_findings_enforcement_64b.py::TestEveryDerivedFindingSiteIsAllowlisted::test_no_site_backed_entry_is_a_ghost"
+    - "loremaster/tests/test_findings_enforcement_64b.py::TestEveryDerivedFindingSiteIsAllowlisted::test_the_migrate_exempt_entry_is_self_contained"
+    - "loremaster/tests/test_findings_enforcement_64b.py::TestTheFindingTableJoinsTheGovernedPopulation::test_finding_is_a_governed_population"
+    - "loremaster/tests/test_findings_enforcement_64b.py::TestTheLiveFindingWritesClassifyUnderF5::test_every_driven_write_verb_is_observed_and_classifies"
     missing_symbols:
     - FindingLedger.set_scope
   - path: loremaster/tests/test_findings_governance_64b.py
+    red_nodeids:
+    - "loremaster/tests/test_findings_governance_64b.py::TestAStatusVerbPreReadsItsRowOnce::test_one_read_of_the_row_before_the_transaction"
+    - "loremaster/tests/test_findings_governance_64b.py::TestAZeroRowCasIsClassifiedByTheOneHelper::test_a_concurrent_status_winner_is_the_ledgers_own_illegal_transition"
+    - "loremaster/tests/test_findings_governance_64b.py::TestAZeroRowCasIsClassifiedByTheOneHelper::test_a_rescope_between_the_gate_and_the_cas_is_a_governed_conflict"
+    - "loremaster/tests/test_findings_governance_64b.py::TestAZeroRowCasIsClassifiedByTheOneHelper::test_an_annotate_on_a_row_rescoped_away_is_a_governed_conflict"
+    - "loremaster/tests/test_findings_governance_64b.py::TestReportStampsTheSubjectAndResolvesItsScope::test_a_hostile_scope_is_refused_and_never_forged_into_the_served_text[report]"
+    - "loremaster/tests/test_findings_governance_64b.py::TestReportStampsTheSubjectAndResolvesItsScope::test_a_hostile_scope_is_refused_and_never_forged_into_the_served_text[set_scope]"
+    - "loremaster/tests/test_findings_governance_64b.py::TestReportStampsTheSubjectAndResolvesItsScope::test_a_report_is_owned_by_the_subject_and_defaults_to_the_project_keep"
+    - "loremaster/tests/test_findings_governance_64b.py::TestReportStampsTheSubjectAndResolvesItsScope::test_a_supersede_mints_a_row_in_the_superseders_scope_never_the_predecessors"
+    - "loremaster/tests/test_findings_governance_64b.py::TestReportStampsTheSubjectAndResolvesItsScope::test_a_supersede_of_an_invisible_finding_is_byte_identical_to_a_nonexistent_one"
+    - "loremaster/tests/test_findings_governance_64b.py::TestReportStampsTheSubjectAndResolvesItsScope::test_an_explicit_scope_is_a_pdp_validated_request[A-True]"
+    - "loremaster/tests/test_findings_governance_64b.py::TestReportStampsTheSubjectAndResolvesItsScope::test_an_explicit_scope_is_a_pdp_validated_request[AB-True]"
+    - "loremaster/tests/test_findings_governance_64b.py::TestReportStampsTheSubjectAndResolvesItsScope::test_an_explicit_scope_is_a_pdp_validated_request[B-False]"
+    - "loremaster/tests/test_findings_governance_64b.py::TestReportStampsTheSubjectAndResolvesItsScope::test_an_explicit_scope_is_a_pdp_validated_request[principal-private-True]"
+    - "loremaster/tests/test_findings_governance_64b.py::TestReportStampsTheSubjectAndResolvesItsScope::test_an_explicit_scope_is_a_pdp_validated_request[server-True]"
+    - "loremaster/tests/test_findings_governance_64b.py::TestSetScopeIsOwnerOnlyToAGrantableTarget::test_the_owner_admin_and_the_refusals"
+    - "loremaster/tests/test_findings_governance_64b.py::TestTheBatchesAreBestEffortPerItem::test_a_denied_item_is_its_own_failure[acknowledge_many-open-acknowledged]"
+    - "loremaster/tests/test_findings_governance_64b.py::TestTheBatchesAreBestEffortPerItem::test_a_denied_item_is_its_own_failure[resolve_many-acknowledged-resolved]"
+    - "loremaster/tests/test_findings_governance_64b.py::TestTheBatchesAreBestEffortPerItem::test_acknowledge_many_routes_each_item_through_the_gate"
+    - "loremaster/tests/test_findings_governance_64b.py::TestTheBatchesAreBestEffortPerItem::test_resolve_many_routes_each_item_through_the_gate"
+    - "loremaster/tests/test_findings_governance_64b.py::TestTheGuardIsAndBoundAtTheTopLevelOfTheShell::test_the_executed_update_carries_the_plans_guard_and_bound"
+    - "loremaster/tests/test_findings_governance_64b.py::TestTheStatusVerbsFollowTheThreeWayRule::test_acknowledge"
+    - "loremaster/tests/test_findings_governance_64b.py::TestTheStatusVerbsFollowTheThreeWayRule::test_annotate_is_a_status_preserving_write"
+    - "loremaster/tests/test_findings_governance_64b.py::TestTheStatusVerbsFollowTheThreeWayRule::test_resolve"
+    - "loremaster/tests/test_findings_governance_64b.py::TestTheStatusVerbsFollowTheThreeWayRule::test_wontfix_is_a_write_never_a_soft_delete"
     missing_symbols:
     - FindingLedger.set_scope
     - acknowledge.subject
     - annotate.subject
     - loremaster.governed.classify_zero_row_cas
   - path: loremaster/tests/test_findings_identity_64b.py
+    red_nodeids:
+    - "loremaster/tests/test_findings_identity_64b.py::TestAgentAndSessionAreSelfConsistencyChecks::test_a_foreign_agent_name_is_denied_and_writes_nothing"
+    - "loremaster/tests/test_findings_identity_64b.py::TestAgentAndSessionAreSelfConsistencyChecks::test_a_foreign_session_is_denied"
+    - "loremaster/tests/test_findings_identity_64b.py::TestAgentAndSessionAreSelfConsistencyChecks::test_the_dispatcher_routes_identity_through_the_one_helper"
+    - "loremaster/tests/test_findings_identity_64b.py::TestAgentAndSessionAreSelfConsistencyChecks::test_the_matching_agent_and_session_and_the_omitted_pair_are_accepted"
+    - "loremaster/tests/test_findings_identity_64b.py::TestEveryCapabilityRequiredWriteVerbDeniesWithoutOne::test_every_true_write_verb_denies_without_a_capability"
+    - "loremaster/tests/test_findings_identity_64b.py::TestProvenanceIsDerivedFromTheCapability::test_a_status_edge_records_the_actor_name_and_the_actor_agent_link"
+    - "loremaster/tests/test_findings_identity_64b.py::TestProvenanceIsDerivedFromTheCapability::test_report_stamps_the_capabilitys_agent_name"
+    - "loremaster/tests/test_findings_identity_64b.py::TestTheFindingDispatchTableIsATypedSpecDict::test_the_capability_set_is_EXACTLY_the_eight_write_verbs_in_64b_i"
+    - "loremaster/tests/test_findings_identity_64b.py::TestTheFindingDispatchTableIsATypedSpecDict::test_the_finding_table_is_a_dict_of_governed_verb_specs"
+    - "loremaster/tests/test_findings_identity_64b.py::TestTheFindingDispatchTableIsATypedSpecDict::test_the_one_flag_reader_agrees_with_the_spec_and_the_dispatcher_calls_it"
+    - "loremaster/tests/test_findings_identity_64b.py::TestTheFindingRoutingLegsAreHonestBothWays::test_every_write_leg_is_routed_and_observed"
+    - "loremaster/tests/test_findings_identity_64b.py::TestTheFindingVerbPartitionIsExhaustive::test_write_and_read_partition_the_dispatch_table_exactly"
+    - "loremaster/tests/test_findings_identity_64b.py::TestTheFooterFallbackIsDeletedForFindings::test_the_findings_dispatcher_passes_no_attributions_to_the_footer"
+    - "loremaster/tests/test_findings_identity_64b.py::TestTheReadVerbsRefuseACapabilityUntilTheirFilterLands::test_a_capability_on_a_read_verb_is_a_foreign_param_teaching_refusal[chain_head]"
+    - "loremaster/tests/test_findings_identity_64b.py::TestTheReadVerbsRefuseACapabilityUntilTheirFilterLands::test_a_capability_on_a_read_verb_is_a_foreign_param_teaching_refusal[get]"
+    - "loremaster/tests/test_findings_identity_64b.py::TestTheReadVerbsRefuseACapabilityUntilTheirFilterLands::test_a_capability_on_a_read_verb_is_a_foreign_param_teaching_refusal[query]"
+    - "loremaster/tests/test_findings_identity_64b.py::TestTheReadVerbsRefuseACapabilityUntilTheirFilterLands::test_the_finding_dispatcher_builds_the_refusal_through_the_shared_idiom"
+    - "loremaster/tests/test_findings_identity_64b.py::TestTheRetiredIdentityArgsLeaveTheServedSchema::test_a_retired_argument_is_refused_by_the_mcp_layer_naming_the_field[actor]"
+    - "loremaster/tests/test_findings_identity_64b.py::TestTheRetiredIdentityArgsLeaveTheServedSchema::test_a_retired_argument_is_refused_by_the_mcp_layer_naming_the_field[created_by]"
+    - "loremaster/tests/test_findings_identity_64b.py::TestTheRetiredIdentityArgsLeaveTheServedSchema::test_the_served_parameter_set_is_exactly_the_post_retirement_set"
+    - "loremaster/tests/test_findings_identity_64b.py::TestTheRetiredIdentityArgsLeaveTheServedSchema::test_the_served_prose_teaches_no_retired_arg_and_no_R8_fallback"
+    - "loremaster/tests/test_findings_identity_64b.py::TestTheRetiredIdentityArgsLeaveTheServedSchema::test_the_shared_teaching_constant_rides_the_description_and_is_spelled_once"
     missing_symbols:
     - AppContext._resolve_identity
     - findings.capability
@@ -488,9 +681,56 @@ bounds:
       reason: 'the typed declaration''s `spec: GovernedVerbSpec` becomes Any while GovernedVerbSpec is unbuilt — the same
         missing symbol, surfacing as a type line'
   - path: loremaster/tests/test_findings_migrate_64b.py
+    red_nodeids:
+    - "loremaster/tests/test_findings_migrate_64b.py::TestAJunkStatusLegacyFindingRefusesTheBackfill::test_CONTROL_a_legal_status_fixture_migrates_cleanly"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestAJunkStatusLegacyFindingRefusesTheBackfill::test_a_legacy_junk_status_row_refuses_the_real_migrate"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestAnOwnedButUnscopedRowIsAHalfPairForEveryUnownedLegacyTable::test_CONTROL_without_the_trap_the_same_store_backfills[finding]"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestAnOwnedButUnscopedRowIsAHalfPairForEveryUnownedLegacyTable::test_a_scoped_but_ownerless_finding_is_the_MIGRATED_state_not_a_half_pair"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestAnOwnedButUnscopedRowIsAHalfPairForEveryUnownedLegacyTable::test_the_trap_refuses_byte_inert_naming_count_and_ids[finding]"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestAnOwnedButUnscopedRowIsAHalfPairForEveryUnownedLegacyTable::test_the_trap_refuses_byte_inert_naming_count_and_ids[memory]"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestTheFindingAssertsDropFromADirtyStore::test_the_assert_DROPS_and_the_blank_survives_byte_intact[area- \\t ]"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestTheFindingAssertsDropFromADirtyStore::test_the_assert_DROPS_and_the_blank_survives_byte_intact[area-]"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestTheFindingAssertsDropFromADirtyStore::test_the_assert_DROPS_and_the_blank_survives_byte_intact[category- \\t ]"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestTheFindingAssertsDropFromADirtyStore::test_the_assert_DROPS_and_the_blank_survives_byte_intact[category-]"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestTheFindingAssertsDropFromADirtyStore::test_the_assert_DROPS_and_the_blank_survives_byte_intact[created_by- \\t ]"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestTheFindingAssertsDropFromADirtyStore::test_the_assert_DROPS_and_the_blank_survives_byte_intact[created_by-]"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestTheFindingAssertsDropFromADirtyStore::test_the_assert_DROPS_and_the_blank_survives_byte_intact[kind- \\t ]"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestTheFindingAssertsDropFromADirtyStore::test_the_assert_DROPS_and_the_blank_survives_byte_intact[kind-]"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestTheFindingAssertsDropFromADirtyStore::test_the_assert_DROPS_and_the_blank_survives_byte_intact[subject- \\t ]"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestTheFindingAssertsDropFromADirtyStore::test_the_assert_DROPS_and_the_blank_survives_byte_intact[subject-]"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestTheFindingBackfillCountIsMeasured::test_backfilled_equals_the_rows_the_update_changed"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestTheFindingLegSharesTheUnownedLegacyPolicyWithMemory::test_both_legs_call_one_shared_policy_helper"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestTheFindingMigrateLegIsTheUnownedLegacyShape::test_legacy_rows_get_the_project_scope_and_NO_owner_even_when_created_by_names_an_agent"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestTheFindingMigrateLegIsTheUnownedLegacyShape::test_report_unmigrated_counts_the_legacy_findings_then_zero"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestTheFindingMigrateLegIsTheUnownedLegacyShape::test_the_executed_backfill_IS_the_scope_keyed_self_guarding_golden_under_the_named_exempt"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestTheFindingMigrateLegIsTheUnownedLegacyShape::test_the_migrate_is_idempotent"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestTheFindingMigrateLegIsTheUnownedLegacyShape::test_there_is_no_order_precondition_unmigrated_agents_do_not_block_findings"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestTheGovernedFindingSchemaLandsOnAnOldStore::test_the_trio_lands_and_a_legacy_row_stays_writable"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestTheRealFindingMigrateSurvivesLegacyViolators::test_C_CONTROL_the_frozen_asserted_ddl_makes_the_migrate_RAISE"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestTheRealFindingMigrateSurvivesLegacyViolators::test_all_six_are_stamped_and_the_blanks_survive"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestTheRestoreDriverSliceDecaysForFinding::test_finding_is_derived_governed_and_has_left_the_pending_list"
+    - "loremaster/tests/test_findings_migrate_64b.py::TestTheUnownedLegacySetIsDerivedFromTheGoldens::test_the_golden_map_covers_every_derived_leg"
     missing_symbols:
     - loremaster.principals._migrate_finding_scope
   - path: loremaster/tests/test_findings_schema_64b.py
+    red_nodeids:
+    - "loremaster/tests/test_findings_schema_64b.py::TestTheDroppedAssertsMoveIntoTheWriter::test_report_refuses_a_blank_before_any_store_io[area-   ]"
+    - "loremaster/tests/test_findings_schema_64b.py::TestTheDroppedAssertsMoveIntoTheWriter::test_report_refuses_a_blank_before_any_store_io[area-\\t\\n]"
+    - "loremaster/tests/test_findings_schema_64b.py::TestTheDroppedAssertsMoveIntoTheWriter::test_report_refuses_a_blank_before_any_store_io[area-]"
+    - "loremaster/tests/test_findings_schema_64b.py::TestTheDroppedAssertsMoveIntoTheWriter::test_report_refuses_a_blank_before_any_store_io[category-   ]"
+    - "loremaster/tests/test_findings_schema_64b.py::TestTheDroppedAssertsMoveIntoTheWriter::test_report_refuses_a_blank_before_any_store_io[category-\\t\\n]"
+    - "loremaster/tests/test_findings_schema_64b.py::TestTheDroppedAssertsMoveIntoTheWriter::test_report_refuses_a_blank_before_any_store_io[category-]"
+    - "loremaster/tests/test_findings_schema_64b.py::TestTheDroppedAssertsMoveIntoTheWriter::test_report_refuses_a_blank_before_any_store_io[created_by-   ]"
+    - "loremaster/tests/test_findings_schema_64b.py::TestTheDroppedAssertsMoveIntoTheWriter::test_report_refuses_a_blank_before_any_store_io[created_by-\\t\\n]"
+    - "loremaster/tests/test_findings_schema_64b.py::TestTheDroppedAssertsMoveIntoTheWriter::test_report_refuses_a_blank_before_any_store_io[created_by-]"
+    - "loremaster/tests/test_findings_schema_64b.py::TestTheDroppedAssertsMoveIntoTheWriter::test_report_refuses_a_blank_before_any_store_io[kind-   ]"
+    - "loremaster/tests/test_findings_schema_64b.py::TestTheDroppedAssertsMoveIntoTheWriter::test_report_refuses_a_blank_before_any_store_io[kind-\\t\\n]"
+    - "loremaster/tests/test_findings_schema_64b.py::TestTheDroppedAssertsMoveIntoTheWriter::test_report_refuses_a_blank_before_any_store_io[kind-]"
+    - "loremaster/tests/test_findings_schema_64b.py::TestTheDroppedAssertsMoveIntoTheWriter::test_report_refuses_a_blank_before_any_store_io[subject-   ]"
+    - "loremaster/tests/test_findings_schema_64b.py::TestTheDroppedAssertsMoveIntoTheWriter::test_report_refuses_a_blank_before_any_store_io[subject-\\t\\n]"
+    - "loremaster/tests/test_findings_schema_64b.py::TestTheDroppedAssertsMoveIntoTheWriter::test_report_refuses_a_blank_before_any_store_io[subject-]"
+    - "loremaster/tests/test_findings_schema_64b.py::TestTheDroppedAssertsMoveIntoTheWriter::test_report_uses_the_shared_blankness_predicate"
+    - "loremaster/tests/test_findings_schema_64b.py::TestTheFindingTableCarriesNoConstraintALegacyRowCanViolate::test_no_finding_field_carries_a_constraint_a_legacy_row_can_violate"
     missing_symbols:
     - report.scope
     - report.title
@@ -500,9 +740,37 @@ bounds:
       reason: 'FK-1 (amendment 7 §2): at HEAD `report`''s `subject` is the str TITLE, so the ruled `subject=<Subject>` is
         an arg-type line until the build renames the title to `title` — the same ruled shape as report.title'
   - path: loremaster/tests/test_findings_scope_domain_64b.py
+    red_nodeids:
+    - "loremaster/tests/test_findings_scope_domain_64b.py::TestEveryCallerSuppliedScopeWriterRefusesAnOutOfDomainValue::test_every_out_of_domain_kind[admin-set_scope]"
+    - "loremaster/tests/test_findings_scope_domain_64b.py::TestEveryCallerSuppliedScopeWriterRefusesAnOutOfDomainValue::test_every_out_of_domain_kind[member-report]"
+    - "loremaster/tests/test_findings_scope_domain_64b.py::TestEveryCallerSuppliedScopeWriterRefusesAnOutOfDomainValue::test_every_out_of_domain_kind[member-set_scope]"
+    - "loremaster/tests/test_findings_scope_domain_64b.py::TestTheClassifierRefusesAnOutOfDomainLandedScope::test_a_well_formed_scope_naming_a_missing_keep_is_unclassified[created-exempt]"
+    - "loremaster/tests/test_findings_scope_domain_64b.py::TestTheClassifierRefusesAnOutOfDomainLandedScope::test_a_well_formed_scope_naming_a_missing_keep_is_unclassified[created-label]"
+    - "loremaster/tests/test_findings_scope_domain_64b.py::TestTheClassifierRefusesAnOutOfDomainLandedScope::test_a_well_formed_scope_naming_a_missing_keep_is_unclassified[updated-exempt]"
+    - "loremaster/tests/test_findings_scope_domain_64b.py::TestTheClassifierRefusesAnOutOfDomainLandedScope::test_a_well_formed_scope_naming_a_missing_keep_is_unclassified[updated-label]"
+    - "loremaster/tests/test_findings_scope_domain_64b.py::TestTheClassifierRefusesAnOutOfDomainLandedScope::test_an_out_of_shape_landed_scope_is_unclassified[created-exempt]"
+    - "loremaster/tests/test_findings_scope_domain_64b.py::TestTheClassifierRefusesAnOutOfDomainLandedScope::test_an_out_of_shape_landed_scope_is_unclassified[created-label]"
+    - "loremaster/tests/test_findings_scope_domain_64b.py::TestTheClassifierRefusesAnOutOfDomainLandedScope::test_an_out_of_shape_landed_scope_is_unclassified[updated-exempt]"
+    - "loremaster/tests/test_findings_scope_domain_64b.py::TestTheClassifierRefusesAnOutOfDomainLandedScope::test_an_out_of_shape_landed_scope_is_unclassified[updated-label]"
+    - "loremaster/tests/test_findings_scope_domain_64b.py::TestTheClassifierRefusesAnOutOfDomainLandedScope::test_live_every_governed_population_under_the_real_observer[agent]"
+    - "loremaster/tests/test_findings_scope_domain_64b.py::TestTheClassifierRefusesAnOutOfDomainLandedScope::test_live_every_governed_population_under_the_real_observer[briefed]"
+    - "loremaster/tests/test_findings_scope_domain_64b.py::TestTheClassifierRefusesAnOutOfDomainLandedScope::test_live_every_governed_population_under_the_real_observer[memory]"
+    - "loremaster/tests/test_findings_scope_domain_64b.py::TestTheClassifierRefusesAnOutOfDomainLandedScope::test_live_every_governed_population_under_the_real_observer[message]"
+    - "loremaster/tests/test_findings_scope_domain_64b.py::TestTheClassifierRefusesAnOutOfDomainLandedScope::test_live_every_governed_population_under_the_real_observer[to]"
+    - "loremaster/tests/test_findings_scope_domain_64b.py::TestTheClassifierRefusesAnOutOfDomainLandedScope::test_the_leg_routes_through_the_one_shape_predicate"
+    - "loremaster/tests/test_findings_scope_domain_64b.py::TestTheScopeShapeIsOnePredicate::test_resource_validation_routes_through_the_predicate"
+    - "loremaster/tests/test_findings_scope_domain_64b.py::TestTheScopeShapeIsOnePredicate::test_the_corpus"
+    - "loremaster/tests/test_findings_scope_domain_64b.py::TestTheScopeShapeIsOnePredicate::test_the_predicate_is_pure_stdlib"
+    - "loremaster/tests/test_findings_scope_domain_64b.py::TestTheScopeShapeIsOnePredicate::test_the_shape_agrees_with_every_scope_the_pdp_core_pins_rule_on"
+    - "loremaster/tests/test_findings_scope_domain_64b.py::TestTheScopeWriterSetIsComplete::test_every_derived_scope_writer_is_listed"
+    - "loremaster/tests/test_findings_scope_domain_64b.py::TestTheStoreDerivedScopeWritersRefuseAForgedProjectKeep::test_a_member_report_defaulting_to_a_forged_project_keep"
+    - "loremaster/tests/test_findings_scope_domain_64b.py::TestTheStoreDerivedScopeWritersRefuseAForgedProjectKeep::test_the_system_writer_with_a_forged_project_keep"
     missing_symbols:
     - lorerunes.pdp.scope_shape_ok
   - path: loremaster/tests/test_findings_signatures_64b.py
+    red_nodeids:
+    - "loremaster/tests/test_findings_signatures_64b.py::TestTheIdentityKwargIsSubjectOnEveryLedger::test_every_dispatcher_called_write_method_takes_a_keyword_only_Subject"
+    - "loremaster/tests/test_findings_signatures_64b.py::TestTheIdentityKwargIsSubjectOnEveryLedger::test_the_report_title_is_title"
     missing_symbols:
     - report.title
     - resolve.subject
@@ -512,10 +780,55 @@ bounds:
       count: 1
       reason: 'FK-1 (amendment 7 §2): the same `subject=<Subject>` vs HEAD''s str title as the schema file''s line'
   - path: loremaster/tests/test_findings_system_writer_64b.py
+    red_nodeids:
+    - "loremaster/tests/test_findings_system_writer_64b.py::TestAnUnprovisionedProjectKeepIsLoudAndNonFatal::test_CONTROL_provisioned"
+    - "loremaster/tests/test_findings_system_writer_64b.py::TestAnUnprovisionedProjectKeepIsLoudAndNonFatal::test_unprovisioned"
+    - "loremaster/tests/test_findings_system_writer_64b.py::TestTheSystemWriterClassifiesUnderItsOwnExempt::test_CONTROL_without_the_token_the_write_is_unclassified"
+    - "loremaster/tests/test_findings_system_writer_64b.py::TestTheSystemWriterClassifiesUnderItsOwnExempt::test_the_adapter_driven_write_classifies_via_the_exempt"
+    - "loremaster/tests/test_findings_system_writer_64b.py::TestTheSystemWriterClassifiesUnderItsOwnExempt::test_the_token_statement_IS_the_observed_statement"
+    - "loremaster/tests/test_findings_system_writer_64b.py::TestTheSystemWriterHasOneProducer::test_exactly_one_production_caller"
+    - "loremaster/tests/test_findings_system_writer_64b.py::TestTheSystemWriterSharesTheOneReportFragment::test_both_writers_execute_the_golden_transaction"
+    - "loremaster/tests/test_findings_system_writer_64b.py::TestTheSystemWriterWritesTheUnownedShape::test_one_unowned_row_in_the_project_keep"
+    - "loremaster/tests/test_findings_system_writer_64b.py::TestTheSystemWriterWritesTheUnownedShape::test_the_signature_carries_no_identity_scope_or_supersedes"
     missing_symbols:
     - FindingLedger.report_system
     - type[FindingLedger].report_system
   - path: loremaster/tests/test_governed_substrate_64b.py
+    red_nodeids:
+    - "loremaster/tests/test_governed_substrate_64b.py::TestASetScopeWithoutATargetIsALoudRefusal::test_no_target_no_read[authorize_guarded]"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestASetScopeWithoutATargetIsALoudRefusal::test_no_target_no_read[guarded_write]"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestAuthorizeGuardedProjectsTheLedgersColumnsInOneRead::test_a_projection_rides_the_single_governed_pre_read"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestAuthorizeGuardedProjectsTheLedgersColumnsInOneRead::test_the_default_projection_reads_only_the_governed_columns"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestGuardedPlanExposesTheGuardAndTheOneAuditAttachSite::test_compose_attaches_nothing_when_no_audit_is_required"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestGuardedPlanExposesTheGuardAndTheOneAuditAttachSite::test_compose_attaches_the_audit_exactly_once_and_fragments_never_does"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestGuardedPlanExposesTheGuardAndTheOneAuditAttachSite::test_guard_returns_the_plans_own_fragment_and_params"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestGuardedPlanExposesTheGuardAndTheOneAuditAttachSite::test_guarded_write_attaches_its_audit_through_compose"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestInvisibilityIsDerivedFromTheOnePreRead::test_invisible_vs_visible_denied_in_one_read[DELETE]"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestInvisibilityIsDerivedFromTheOnePreRead::test_invisible_vs_visible_denied_in_one_read[SET_SCOPE]"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestInvisibilityIsDerivedFromTheOnePreRead::test_invisible_vs_visible_denied_in_one_read[WRITE]"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestResourceFromRowDerivesTheTable::test_a_dirty_row_maps_absent_columns_to_None"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestResourceFromRowDerivesTheTable::test_authorize_guarded_refuses_a_pre_read_row_from_another_table"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestResourceFromRowDerivesTheTable::test_resource_from_row_is_the_only_production_Resource_constructor"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestResourceFromRowDerivesTheTable::test_the_table_comes_from_the_row_id[audit-principal-private]"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestResourceFromRowDerivesTheTable::test_the_table_comes_from_the_row_id[finding-server]"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestResourceFromRowDerivesTheTable::test_the_table_comes_from_the_row_id[memory-keep:keepalphabravo]"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestSetScopeBranchIsExercised::test_a_non_owner_household_member_may_not_re_scope"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestSetScopeBranchIsExercised::test_an_admin_re_scopes_a_foreign_row_and_is_audited"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestSetScopeBranchIsExercised::test_the_owner_may_not_move_its_row_to_a_keep_it_is_not_householded_in"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestSetScopeBranchIsExercised::test_the_owner_moves_its_row_to_a_keep_it_is_householded_in_unaudited"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestTheEmptyPredicateIsTheIdentityElement::test_empty_And_emits_true_and_matches_everything"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestTheEmptyPredicateIsTheIdentityElement::test_empty_Or_emits_false_and_matches_nothing"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestTheEmptyPredicateIsTheIdentityElement::test_the_empty_nodes_run_on_the_engine_as_their_identities"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestTheFindingLedgerExposesItsDriverAndAuditSink::test_the_audit_sink_is_built_from_the_ledgers_own_wiring"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestTheFindingLedgerExposesItsDriverAndAuditSink::test_the_handle_is_wired_to_the_ledgers_own_driver"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestThePreReadTakesAnAddress::test_a_number_address_is_one_read_and_resolves_the_row_id"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestThePreReadTakesAnAddress::test_both_or_neither_is_refused_before_any_read[address0]"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestThePreReadTakesAnAddress::test_both_or_neither_is_refused_before_any_read[address1]"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestTheZeroRowCasClassifierIsOneHelper::test_a_fresh_row_the_subject_may_no_longer_write_is_a_governed_conflict"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestTheZeroRowCasClassifierIsOneHelper::test_a_fresh_row_the_subject_may_still_write_gets_the_ledger_verdict_on_the_FRESH_row"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestTheZeroRowCasClassifierIsOneHelper::test_a_vanished_row_gets_the_ledger_verdict_on_None"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestTheZeroRowCasClassifierIsOneHelper::test_an_admin_is_never_a_conflict_on_a_foreign_row"
+    - "loremaster/tests/test_governed_substrate_64b.py::TestTheZeroRowCasClassifierIsOneHelper::test_the_helper_never_routes_through_wrap_store_rejection_and_builds_its_resource_in_one_place"
     missing_symbols:
     - FindingLedger.audit_store
     - FindingLedger.handle
@@ -530,6 +843,35 @@ bounds:
     - loremaster.governed.classify_zero_row_cas
     - loremaster.governed.resource_from_row
   - path: loremaster/tests/test_mcp_server.py
+    red_nodeids:
+    - "loremaster/tests/test_mcp_server.py::TestResolveManyAcknowledgeManyDispatch::test_a_contended_item_FAILS_per_item_without_aborting_the_rest"
+    - "loremaster/tests/test_mcp_server.py::TestResolveManyAcknowledgeManyDispatch::test_a_plain_store_error_item_FAILS_per_item_without_aborting_the_rest"
+    - "loremaster/tests/test_mcp_server.py::TestResolveManyAcknowledgeManyDispatch::test_acknowledge_many_also_degrades_per_item_on_contention"
+    - "loremaster/tests/test_mcp_server.py::TestResolveManyAcknowledgeManyDispatch::test_acknowledge_many_empty_items_uses_its_own_verb_in_the_text"
+    - "loremaster/tests/test_mcp_server.py::TestResolveManyAcknowledgeManyDispatch::test_acknowledge_many_uses_the_acknowledged_verb"
+    - "loremaster/tests/test_mcp_server.py::TestResolveManyAcknowledgeManyDispatch::test_all_succeed_renders_the_full_success_header_and_rows"
+    - "loremaster/tests/test_mcp_server.py::TestResolveManyAcknowledgeManyDispatch::test_an_illegal_item_fails_without_aborting_the_rest"
+    - "loremaster/tests/test_mcp_server.py::TestResolveManyAcknowledgeManyDispatch::test_connection_loss_aborts_remaining_as_render_not_raise"
+    - "loremaster/tests/test_mcp_server.py::TestResolveManyAcknowledgeManyDispatch::test_duplicate_refs_in_one_batch_process_twice"
+    - "loremaster/tests/test_mcp_server.py::TestResolveManyAcknowledgeManyDispatch::test_empty_items_list_is_refused_with_the_exact_text"
+    - "loremaster/tests/test_mcp_server.py::TestResolveManyAcknowledgeManyDispatch::test_hostile_caller_ref_is_echoed_sanitised_in_a_failed_row"
+    - "loremaster/tests/test_mcp_server.py::TestResolveManyAcknowledgeManyDispatch::test_over_cap_batch_is_refused_naming_the_actual_count"
+    - "loremaster/tests/test_mcp_server.py::TestToolBehaviourEndToEnd::test_findings_annotate_action_routes_to_the_ledger_and_returns_detail"
+    - "loremaster/tests/test_mcp_server.py::TestToolBehaviourEndToEnd::test_findings_annotate_requires_a_nonblank_note_at_the_served_boundary[ ]"
+    - "loremaster/tests/test_mcp_server.py::TestToolBehaviourEndToEnd::test_findings_annotate_requires_a_nonblank_note_at_the_served_boundary[None]"
+    - "loremaster/tests/test_mcp_server.py::TestToolBehaviourEndToEnd::test_findings_annotate_requires_a_nonblank_note_at_the_served_boundary[\\t]"
+    - "loremaster/tests/test_mcp_server.py::TestToolBehaviourEndToEnd::test_findings_annotate_requires_a_nonblank_note_at_the_served_boundary[]"
+    - "loremaster/tests/test_mcp_server.py::TestToolBehaviourEndToEnd::test_findings_annotate_response_and_get_never_fabricate_a_transition"
+    - "loremaster/tests/test_mcp_server.py::TestToolBehaviourEndToEnd::test_findings_chain_head_surfaces_a_fork"
+    - "loremaster/tests/test_mcp_server.py::TestToolBehaviourEndToEnd::test_findings_get_and_chain_head_by_number"
+    - "loremaster/tests/test_mcp_server.py::TestToolBehaviourEndToEnd::test_findings_get_and_chain_head_fence_a_multiline_body_and_never_forge_a_row"
+    - "loremaster/tests/test_mcp_server.py::TestToolBehaviourEndToEnd::test_findings_get_and_chain_head_render_the_body_query_stays_summarised"
+    - "loremaster/tests/test_mcp_server.py::TestToolBehaviourEndToEnd::test_findings_lifecycle_acknowledge_then_resolve"
+    - "loremaster/tests/test_mcp_server.py::TestToolBehaviourEndToEnd::test_findings_report_requires_nonempty_fields[area]"
+    - "loremaster/tests/test_mcp_server.py::TestToolBehaviourEndToEnd::test_findings_report_requires_nonempty_fields[category]"
+    - "loremaster/tests/test_mcp_server.py::TestToolBehaviourEndToEnd::test_findings_report_requires_nonempty_fields[subject]"
+    - "loremaster/tests/test_mcp_server.py::TestToolBehaviourEndToEnd::test_findings_report_then_query_roundtrips"
+    - "loremaster/tests/test_mcp_server.py::TestToolBehaviourEndToEnd::test_findings_report_without_body_defaults_to_empty_string"
     missing_symbols:
     - _finding_fakes.arm_finding_identity
     - _finding_fakes.armed_agent_row

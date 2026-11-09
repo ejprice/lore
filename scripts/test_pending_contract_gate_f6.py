@@ -31,8 +31,8 @@ without them:
 
 * a node-listed file is adjudicated PER NODE — an unlisted red in it is orphaned (else ``red_nodeids`` would
   be the file-only matching the existing refusal forbids, re-entered through a new key);
-* a file registered by symbols only keeps TODAY's file-level pytest adjudication (packet 58 owns its pytest
-  reds that way; a universal per-node rule would orphan them overnight) — the control below;
+* a file registered by symbols only owns NO pytest red (#615, contract-ahead — r5.1 converted every registry
+  entry to ``red_nodeids``, so the file-level fallback that used to keep packet 58's reds owned has no user);
 * a ``red_nodeids``-only file does NOT self-destruct on the typecheck leg for having no mypy error (it never
   claimed one).
 
@@ -237,12 +237,25 @@ def test_a_failing_node_outside_the_registry_is_RED_ORPHANED(tmp_path: Path) -> 
     assert any(_UNREGISTERED_FILE in orphan for orphan in currency.orphans), currency.orphans
 
 
-def test_CONTROL_a_symbols_only_file_keeps_file_level_pytest_adjudication(tmp_path: Path) -> None:
-    """Per-node matching is for node-listed files only: packet 58's file-level ownership is unchanged."""
+def test_615_an_entry_with_no_red_nodeids_owns_NO_pytest_red(tmp_path: Path) -> None:
+    """Finding #615 (packet 58 amendment 15 §10.2; contract-58-r5, CONTRACT-AHEAD — RED until a builder
+    removes the file-level fallback in ``PendingContractGate.partition_pytest``): an entry that claims
+    only mypy symbols (no ``red_nodeids``) owns NO pytest red. A typing claim never becomes pytest
+    ownership — the mask that made packet 66's close-out ``RED_ORPHANED 0`` a false clear over
+    ``scripts/test_forgery_door_sweep.py`` (#614).
+
+    ⚠ DUAL (contract-58-r5, lead grant #20014 step 3(c)): REPLACES
+    ``test_CONTROL_a_symbols_only_file_keeps_file_level_pytest_adjudication``, which pinned the
+    fallback (its premise — "a universal per-node rule would orphan packet 58's reds overnight" —
+    retired when every registry entry gained its ``red_nodeids``, r5.1 steps 1 and 3(a); #615's trigger
+    "the last file-level entry converts" is met)."""
     gate = _gate(tmp_path, [_LISTED_CLASS_NODE, _LISTED_PARAM_NODE])
     symbol_red = f"{_SYMBOL_FILE}::test_any_packet_58_red"
     currency = _pytest_currency(tmp_path, gate, [*_ALL_LISTED_RED, (symbol_red, True)])
-    assert currency.verdict == "RED_ADJUDICATED" and currency.ok, currency.orphans
+    assert currency.verdict == "RED_ORPHANED" and not currency.ok, (currency.verdict, currency.orphans)
+    assert any("test_any_packet_58_red" in orphan for orphan in currency.orphans), currency.orphans
+    # CONTROL, same run (a different reason to red): the node-listed file's LISTED reds stay adjudicated.
+    assert not any(_NODE_FILE in orphan for orphan in currency.orphans), currency.orphans
 
 
 # --------------------------------------------------------------------------------------------------------
