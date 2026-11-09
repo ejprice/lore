@@ -406,6 +406,87 @@ Rules `REPORT-contract-58-r5.md` §FLAGS F-1 and F-4 (read 2026-11-09). Sources 
 - B-6 (the chain's two-argument `_log_transaction_size` call) and §HELD part 4 (the EXPLAIN walker moved by
   `c9bc2c6`) are mechanical re-bases in 58's own files: no ruling needed, correctly handled.
 
+## 10. Q2 (lead-58, lore_comms #20011): finding #614 — owner, the registry mask, the heal-door pin; and the delta grade's mutation scope
+
+Sources read 2026-11-09 at `99044d0`: finding #614; `scripts/forgery_door_sweep.py::_blocks_edge_count`;
+`scripts/pending_contract_gate.py::partition_pytest`; `scripts/pending_contracts.yaml` (the
+`scripts/test_forgery_door_sweep.py` row under `packet-58-contract`); am-3 §2.
+
+### 10.0 The cause (HIGH confidence from reading the code; NOT executed — the fix's RED→GREEN is the proof)
+`_blocks_edge_count` does `info = await connection.query("INFO FOR DB")` and then `isinstance(info, dict)`.
+SDK 3.0's `query()` answers a LIST with one entry per statement (store reference §0b, storeref-66 S1), so the
+check is false and the reader returns `TABLE_ABSENT`. Its second read has the same defect (`rows[0]` is now the
+statement's list, not a row dict) and would return 0. Packet 66's rule for exactly this is
+`_txn.one_statement_result` (R2, F13). The sweep's own control caught it; the gate hid the control.
+
+### 10.1 (a) Owner and when — 58, as a PRE-STEP, its own commit, before r5 is graded
+- **Owner: packet 58.** The lead's two reasons hold, and there is a third: 58's contract cannot be shown
+  satisfiable on a base where the instrument for its new boot door is red for an unrelated reason.
+- **When: before the adversary's delta grade, not inside 58's build.** An instrument repaired in the same commit
+  as the code it checks never shows the state "instrument green, 58's door not yet there". One-concern commit
+  `fix(614)`.
+- **Who:** a builder (`tdd-implementer`). The two reds at HEAD are the failing tests; it edits
+  `scripts/forgery_door_sweep.py` only, routing both reads through `_txn.one_statement_result` (REUSE — no local
+  unwrap). It edits no test.
+- **Rider — fix the class, and pin it like this:** in the same pre-step, a literal sweep of `scripts/*.py` for
+  `.query(` call sites whose result is used without `one_statement_result` (rename-class exhaustiveness, grep is
+  right; coverage line; every hit listed file:line with its own verdict). The suite's SDK3 conversion covered
+  `loremaster/`; #614 shows `scripts/` instruments were reachable only through tests the registry was masking.
+- **Verification:** small fix, no cold audit — the lead runs `scripts/test_forgery_door_sweep.py` (count line),
+  reads the diff, and resolves #614 with the receipt.
+
+### 10.2 (b) The registry — 58's entries own the node ids they name, nothing else
+- **Mechanism, read:** `partition_pytest` adjudicates a failure as EXPECTED when ANY entry for its file has no
+  `red_nodeids` ("file-level"), else only when the node id is listed. Every `packet-58-contract` entry is
+  file-level, so every red in 18 files is 58's by default — including two that fail with no 58 code present.
+- **Ruling:** r5 gives EVERY `packet-58-contract` file entry its `red_nodeids`, declared from r5's RED@HEAD set
+  (taken from `--collect-only` ids, fixed before the run that confirms them). `missing_symbols` stay as the
+  typecheck claim. For `scripts/test_forgery_door_sweep.py` the list holds only the legs that are red for a 58
+  reason; #614's two ids are NOT listed.
+- **Rider — and pin it like this:** after the edit and BEFORE the `fix(614)` commit, a targeted
+  `pending_contract_gate.py` pytest partition over `scripts/test_forgery_door_sweep.py` renders #614's two ids
+  **RED_ORPHANED** — the mask is shown removed by watching the gate go red once. After `fix(614)` they are green
+  and the partition is clean. (This is a scoped gate run over one file, not the full-suite currency leg.)
+- **The class, one level up — surfaced, not ruled (it touches another packet's entries):** the file-level
+  fallback itself is the defect: a typing claim silently becomes pytest ownership. `packet-64b-i-contract` uses it
+  too. Filed as finding **#615** with the closing rule "an entry with no `red_nodeids` owns no pytest red" and the
+  trigger "the last file-level entry converts". Do you want that done now (64b-i's node lists derived in this
+  wave) or at 64b-i's own re-base?
+- **Stated plainly for the record:** packet 66's close-out `RED_ORPHANED 0` was a false clear on this file. Under
+  the trust definition that is a STOP naming a gap in the derived failure set; the gap is #615.
+
+### 10.3 (c) The pin that proves the sweep sees 58's heal doors
+- am-3 §2 already rules the property: a store fault at either heal door (the straggler READ, a chunk's APPLY)
+  fails the boot loud, and the sweep's enumeration gains both.
+- **What wrong build passes today's sweep?** A heal that swallows a store fault at its APPLY door. The sweep's
+  legacy world has no superseded blocker, so the heal reads, finds nothing and never applies: the fixture
+  guarantees the one condition under which that door is invisible.
+- **Ruling (fold item 14, contract-author work — the world is the test's condition, not production):** the
+  sweep's legacy world gains one straggler (a dependent whose `blocked_by` names a superseded row with a resolvable
+  head). **Pin it like this:** (i) the doors the sweep OBSERVES over that world, by its own fault-injection
+  derivation, include the heal's read and the heal's apply, by name — and the observed count equals the derived
+  count (reach as a checked variable; a door that was derived but never fired is a failure naming it); (ii) each
+  FAILS LOUD under an injected store fault; (iii) the existing swallow control is extended: a ledger whose heal
+  swallows its apply fault is CAUGHT; (iv) control for the fixture: the same sweep over the world WITHOUT the
+  straggler does not observe the apply door — proof the world, not luck, is what exposes it.
+  If r1–r4's D12 edit already pins any of (i)–(iv), r5 cites the test id instead of adding a twin.
+- These legs are RED until 58's build and are listed by node id under §10.2.
+
+### 10.4 Order
+1. r5: registry `red_nodeids` for all 58 entries (§10.2) → the scoped gate run shows #614's ids RED_ORPHANED.
+2. `fix(614)` pre-step (§10.1) → those ids green; lead verifies and commits.
+3. r5: the straggler world + heal-door legs (§10.3), RED for 58's reason, listed.
+4. The adversary's delta grade (§5) on that base.
+
+### 10.5 The delta grade's scope — confirmed and made explicit (amends §5)
+Yes. Every mutation proof contract-58-r5 declined under the role boundary (a proof that needs a wrong
+implementation built or replayed) is in the adversary's scope. Mechanically: the adversary enumerates its own
+wrong builds for the delta FIRST (§5 item 2), then reads r5's declined list and diffs the two — a build on r5's
+list that the adversary did not think of is added; one the adversary found that r5 did not anticipate is a
+finding. r5's report therefore carries a `§DECLINED` list (proof · the pin it would prove · why declined). The
+adversary's set also gains two from this section: a heal that swallows its apply fault (§10.3), and a gate
+partition that still adjudicates an unlisted red in a 58 file (§10.2).
+
 ## §INSTRUMENT — `probe_hub_txn_58.py`, pasted verbatim (run 2026-11-09 from the repo root with `uv run python`)
 
 Runs: `… probe_hub_txn_58.py 3 1665 3332`, `… 8000 16665`, `PROBE_TXN_TIMEOUT=30 PROBE_SETTLE=75 … 16665`,
