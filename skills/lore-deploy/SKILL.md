@@ -337,7 +337,8 @@ whose briefs are self-contained.
 If lore is unreachable, say so in your first reply and never proceed as if there were no
 landmines. Start it with
 `python3 ~/.claude/skills/lore-deploy/scripts/lore_deploy.py start --project <abs-dir>`,
-then reload the session (`claude --continue`) and recall. Save a new landmine with
+then run `/mcp reconnect all` (if lore's tools still do not appear, reload the session with
+`claude --continue`) and recall. Save a new landmine with
 `lore_remember(..., kind="gotcha", labels=["harness_type=landmine", ...])`; without that
 label this recall does not load it.
 ```
