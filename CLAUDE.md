@@ -780,10 +780,19 @@ them. Therefore:
   imagination.** C1's contract writers found precisely what the briefs told them to look
   for, and nothing else. Delegate frontier-generation to the contract adversary rather
   than relying on the lead to enumerate it.
-- **BUILDERS ARE OPUS TOO, AND A DESIGN PROBLEM NEVER REACHES A BUILDER (operator, 2026-07-14
-  — packet 01, the three-scanner chain).** Roster is now Opus end to end: **Opus contract
-  authors · OPUS BUILDERS · Opus contract-adversary · Opus cold code-audits · Opus lead**
-  (Fable = design sidecar + escalation valve only). Sonnet is retired from the builder slot.
+- **A DESIGN PROBLEM NEVER REACHES A BUILDER (operator, 2026-07-14 — packet 01, the
+  three-scanner chain; roster re-ruled 2026-11-09).** Roster: **contract authors on the
+  LEAD's model · SONNET builders · Opus contract-adversary · Opus cold code-audits · Opus
+  lead** (Fable = design sidecar + escalation valve only).
+  - `tdd-contract` and `tdd-light-contract` are **deliberately unpinned** (operator,
+    2026-11-09): an Opus lead gets Opus contract authors, and a Fable lead gets Fable ones.
+    Never add a `model:` line to them.
+  - The builder slot is the `tdd-implementer`, `tdd-refactorer` and `tdd-stub` agents.
+  - They pin `model: sonnet` in their definitions, which overrides
+    `CLAUDE_CODE_SUBAGENT_MODEL`.
+  - The operator ruled (2026-11-09) that those pins are correct. That supersedes the
+    2026-07-14 "Opus builders" half of this ruling.
+
   **The routing rule is the half that matters, and it binds the LEAD:** if a contract's
   central requirement is a **property to INVENT** rather than a **spec to IMPLEMENT**, it is a
   DESIGN question — it escalates to the operator as a fork, or goes to an Opus author who must
@@ -800,12 +809,15 @@ them. Therefore:
   forbidden; the safe set is one file") and its author was required to BUILD and ATTACK its own
   design (2 of its own 23 invented shapes broke its first attempt; it fixed them before
   shipping). **The variable was never the model. It was the frame, and the frame is the lead's
-  job.** The operator ruled BOTH fixes: Opus builders *and* the routing rule — belt and braces,
-  because build work in this repo is routinely not mechanical.
+  job.** The operator first ruled BOTH fixes, Opus builders *and* the routing rule. On
+  2026-11-09 they kept the routing rule and returned builders to Sonnet, which is what these
+  receipts support: the frame failed, not the model, so the routing rule is the fix.
   **Corollary — the lead's own tell:** when the same class of defect survives TWO waves, STOP
   briefing a third fix and escalate the DESIGN. Packet 01 ran three waves on one file before
   the operator's reframe settled it in one.
-- **CONTRACT AUTHORS ARE OPUS (operator, 2026-07-12).** Rationale, measured: the contract is where the thinking is and where the
+- **CONTRACT AUTHORS ARE OPUS OR ABOVE (operator, 2026-07-12; since 2026-11-09 they inherit
+  the lead's model, Opus or Fable, via the unpinned `tdd-contract` agents).** Rationale,
+  measured: the contract is where the thinking is and where the
   defects are born, and Sonnet contracts kept shipping the same *class* of gap — small-N
   fixtures that cannot discriminate. Twice: (1) the #94 contract went green (561 passed,
   exit 0) with the defect fully intact — every pin tested a new method *nothing required
@@ -898,7 +910,9 @@ assert it: `assert Path(loremaster.__file__).resolve().is_relative_to(SCRATCH_RO
   residuals). The safeguards that once demanded a heavier lead are procedural law the
   lead RUNS, not IS.
 - **THE FABLE-SIDECAR PATTERN (operator, 2026-07-14):** spawn ONCE per session as a
-  **general-purpose agent — NEVER a fork** (forks inherit orchestrator identity; memory:
+  **`fable-worker` agent (`model: fable`, the newest Fable), with no per-call `model`, and
+  NEVER a fork**. A plain general-purpose agent runs on the LEAD's model, so under an Opus
+  lead it is not Fable at all. (Forks inherit orchestrator identity; memory:
   orchestration-fork-and-path-hazards) — and keep it **LONG-RUNNING for the whole
   packet** so follow-up questions answer from already-loaded context instead of
   re-reading the world. Front-load the spawn brief: the design question, the exact file
