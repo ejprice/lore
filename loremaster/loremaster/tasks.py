@@ -364,10 +364,11 @@ _DEPENDENCY_COLUMNS_STATEMENT = (
     f"SELECT record::id({_ID_KEY}) AS {_ID_KEY}, {_COL_BLOCKED_BY} FROM {TASK_TABLE} "
     f"WHERE array::len({_COL_BLOCKED_BY}) > 0"
 )
-#: ``task.guard.graph_large`` fires when the dependency-bearing row count exceeds this — the largest size the
-#: guard's input was measured at (amendment 17 §14.1: full read + predicate about 0.18 s at 19 200 rows; the
-#: measurement ran at 300 / 2 400 / 19 200). A boot that emits it must re-run
-#: ``scripts/probe_guard_input_58.py`` at that size before the guard's cost is trusted again.
+#: ``task.guard.graph_large`` fires when the dependency-bearing row count exceeds this. What was measured:
+#: the guard's input at 300 / 2 400 / 19 200 rows (amendment 17 §14.1: full read + predicate about 0.18 s at
+#: 19 200), and 0.18 s at 20 000 rows by the delta cold audit (``coldaudit-58-delta2.md``). A boot that emits
+#: it has a graph beyond what was measured and must re-run ``scripts/probe_guard_input_58.py`` at its size
+#: before the guard's cost is trusted again.
 TASK_GUARD_GRAPH_LARGE_ROWS = 20_000
 _GUARD_GRAPH_LARGE_EVENT = "task.guard.graph_large"
 #: The ``source`` extra the task ledger stamps on ``store.apply.large_transaction`` (am-17 §14.7 item 4):
@@ -830,7 +831,9 @@ def find_row_blocked_by_cycles(
     A legacy loop that touches no asked row is therefore never refused (it shares no component with one).
 
     Args:
-        stored: ``{row: its persisted blocked_by}`` — the bounded ancestor closure of the proposed blockers.
+        stored: ``{row: its persisted blocked_by}`` — the WHOLE graph: every row with a non-empty column,
+            as :meth:`TaskLedger._read_dependency_graph` reads it in one statement (a row with an empty
+            column, or a blocker naming no row, is only ever a leaf).
         proposed: ``{row: the blocked_by column the write would give it}``.
         asked: The rows to answer for (create / create_many: every proposed row; supersede: the successor
             only, am-3 §4; the heal: every pending straggler).
@@ -946,8 +949,9 @@ class TaskLedger:
         # never each open their own underlying SDK connection (mirrors
         # ``SurrealStore`` / ``LocalMemoryBackend``'s double-checked lock).
         self._connect_lock = asyncio.Lock()
-        # Serialises :meth:`supersede_task`'s guard-then-write IN THIS PROCESS (finding #634: two processes on
-        # one database remain a named bound — see that method's docstring and its re-open trigger).
+        # Serialises :meth:`supersede_task`'s guard-then-write THROUGH THIS INSTANCE only (finding #634): a
+        # write from outside this TaskLedger object — another process, or another TaskLedger in this
+        # process — is not serialised; see that method's docstring for the bound and its re-open trigger.
         self._supersede_lock = asyncio.Lock()
 
     # -- connection lifecycle ----------------------------------------------
@@ -2107,14 +2111,15 @@ class TaskLedger:
                 ``blocked_by`` cycle, OR names the very task being superseded (a successor
                 blocked by its predecessor is unclaimable forever).
 
-        ⚠ **KNOWN BOUND (finding #634): two PROCESSES writing one database can still write a joint
-        cycle.** Supersedes on ONE ledger run one at a time (``self._supersede_lock``, held from before
-        the guard read until the transaction returns), so the second supersede reads the first one's
-        writes and is refused. The lock is in-process: two lore servers writing the same database can
-        each pass the guard before either commits. The served shape is one lore server per project.
-        Re-open trigger: any deployment with two task-writing processes on one database — packet 39
-        consults it. The held lock makes other supersedes on this ledger wait (a 3 332-dependent hub
-        holds it about 10 s); claims, transitions, creates and reads are not held.
+        ⚠ **KNOWN BOUND (finding #634): a write from OUTSIDE this TaskLedger instance can still write a joint
+        cycle.** Supersedes through ONE ledger object run one at a time (``self._supersede_lock``, held from
+        before the guard read until the transaction returns), so the second supersede reads the first one's
+        writes and is refused. The lock belongs to the instance: a supersede from another process, or from
+        another TaskLedger object in this process, is not serialised, and two of them can each pass the guard
+        before either commits. The served shape is one lore server, one ledger, per project. Re-open
+        trigger: any deployment with two task-writing processes (or two ledger objects) on one database —
+        packet 39 consults it. The held lock makes other supersedes on this ledger wait (a 3 332-dependent
+        hub holds it about 10 s); claims, transitions, creates and reads are not held.
         """
         async with self._supersede_lock:
             row = await self._select_row(task_id)
@@ -2287,10 +2292,10 @@ class TaskLedger:
         live ``_txn.TXN_ROW_HARD_CAP`` (a build-time bound, never a promise that a smaller supersede
         succeeds).
 
-        ⚠ KNOWN BOUND (packet 58 amendment 17 §4, correcting amendment 15 §1.3): near the cap a supersede
-        times out BEFORE it is refused. Measured 2026-11-09 on the REAL schema (TEST store, engine 3.3.5,
-        SDK 3.0.0, a real ``supersede_task`` of a hub under the served 30 s timeout; amendment 17 §1.4, from
-        ``scripts/probe_heal_curve_58.py`` part C — NOT ``probe_hub_txn_58.py``, whose ``task`` table is
+        ⚠ KNOWN BOUND (finding #628; packet 58 amendment 17 §4, correcting amendment 15 §1.3): near the cap a
+        supersede times out BEFORE it is refused. Measured 2026-11-09 on the REAL schema (TEST store, engine
+        3.3.5, SDK 3.0.0, a real ``supersede_task`` of a hub under the served 30 s timeout; amendment 17 §1.4,
+        from ``scripts/probe_heal_curve_58.py`` part C — NOT ``probe_hub_txn_58.py``, whose ``task`` table is
         schemaless and un-indexed): 1 665 dependents (5 000 rows) commit in 2.82 s; 3 332 dependents
         (10 001 rows) commit in 10.15 s; 6 000 dependents (18 005 rows) time out at 30.34 s with
         ``SurrealOutcomeUnknownError`` and nothing committed. The 30 s line interpolates to about 5 700
@@ -2590,9 +2595,10 @@ class TaskLedger:
 
         The heal is a second writer of ``blocked_by``, so it asks the SAME predicate the live writers do
         (:func:`find_row_blocked_by_cycles`, ``all_or_nothing=False`` — a chunk can be rejected alone, so a
-        pending row keeps its stored edges as well). ONE closure read seeded by every proposed blocker and ONE
-        predicate call over the whole pending set (two stragglers can close a loop jointly that neither
-        closes alone). A hit row is skipped WHOLE: its column, edges and ``updated_at`` are untouched, it is
+        pending row keeps its stored edges as well). ONE full-column read
+        (:meth:`_read_dependency_graph`, every dependency-bearing row) and ONE predicate call over the whole
+        pending set (two stragglers can close a loop jointly that neither closes alone). A hit row is
+        skipped WHOLE: its column, edges and ``updated_at`` are untouched, it is
         counted nowhere and sits in no chunk; the WARNING ``task.backfill.straggler_would_close_cycle`` is
         emitted at every boot until the data is repaired (am-17 §12.2, §13.4).
         """

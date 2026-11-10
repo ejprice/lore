@@ -5325,8 +5325,10 @@ class AppContext:
             for item in parsed
             if item.key is not None
         }
-        # ⚠ ONE cycle detector and ONE refusal SHAPE, both ledger-owned (operator ruling
-        # **R6**, 2026-07-28). This dispatcher used to own a SECOND cycle policy — its own
+        # ⚠ ONE detector per QUESTION and ONE refusal SHAPE, all ledger-owned (operator ruling **R6**,
+        # 2026-07-28, amended by amendment 17 §13.3: this check — cycles among batch KEYS — is
+        # ``find_blocked_by_cycle``; the persisted-rows question is ``find_row_blocked_by_cycles``).
+        # This dispatcher used to own a SECOND cycle policy — its own
         # DFS, its own sentence and a bare ``ValueError`` — and it fires FIRST, so a
         # ``lore_tasks`` caller never met the ledger's vocabulary at all and every cycle
         # pin that called the ledger directly observed neither of the two refusals an
@@ -12086,7 +12088,8 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             Field(
                 description=(
                     "For 'query', an optional filter to genuinely blocked (True) or "
-                    "unblocked (False) tasks. Omit for no dependency filter."
+                    "unblocked (False) tasks; a blocked (or status) filter excludes "
+                    "SUPERSEDED tasks. Omit for no dependency filter."
                 )
             ),
         ] = None,

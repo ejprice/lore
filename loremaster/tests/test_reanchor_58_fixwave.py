@@ -802,7 +802,11 @@ class TestTheCycleAnswerIsDeterministicAndAskedOnceBeforePacking:
     ) -> None:
         """At least 3 permutations of the insertion order of ``stored`` and of ``proposed``: the
         predicate's answer, the served refusal sentence and the WARNING's ``cycle`` string are byte-identical.
-        Kills WB5 (the ``sorted()`` calls removed)."""
+        Kills a build whose answer follows the CALLER's insertion order (e.g. the first proposed blocker as
+        given). ⚠ It does NOT kill WB5 (the ``sorted()`` calls removed): WB5's order is ``set`` iteration,
+        fixed by the per-process hash seed, so every permutation inside one process agrees (second delta
+        audit F4, #638). WB5 is killed by
+        :meth:`test_638_i_the_cycle_answer_is_identical_across_HASH_SEEDS` below."""
         import itertools
 
         import loremaster.tasks as tasks_module
@@ -829,6 +833,55 @@ class TestTheCycleAnswerIsDeterministicAndAskedOnceBeforePacking:
                 answers.add(repr((sorted(hits.items()), sorted(served.items()), sorted(recorded.items()))))
         assert len(orders) >= 3
         assert len(answers) == 1, f"{writer}: the cycle answer depends on insertion order: {sorted(answers)}"
+
+    #: The cross-process world set, from the first delta audit's instrument (``test_ca58d_determinism.py``,
+    #: coldaudit-58-delta-ca58d-probes.md §INSTRUMENTS; measured by the second delta audit to separate WB5:
+    #: 4 hash seeds, 4 digests). Random small graphs with several equal candidate loops per row, both modes.
+    HASH_SEED_PROGRAM = r"""
+import hashlib, json, random
+from loremaster.tasks import CYCLE_NOUN_PERSISTED_IDS, find_row_blocked_by_cycles, format_cycle_refusal
+rng = random.Random(58)
+digest = hashlib.sha256()
+hits = 0
+for _ in range(3000):
+    n = rng.randint(4, 9)
+    ids = [f"{rng.getrandbits(32):08x}" for _ in range(n)]
+    stored = {t: [b for b in ids if b != t and rng.random() < 0.35] for t in ids}
+    proposed = {t: [b for b in ids if rng.random() < 0.4] for t in rng.sample(ids, rng.randint(1, n))}
+    for all_or_nothing in (True, False):
+        out = find_row_blocked_by_cycles(stored, proposed, list(proposed), all_or_nothing=all_or_nothing)
+        hits += len(out)
+        served = {r: format_cycle_refusal(noun=CYCLE_NOUN_PERSISTED_IDS, cycle=c) for r, c in out.items()}
+        digest.update(json.dumps([sorted(out.items()), sorted(served.items())]).encode())
+print(digest.hexdigest(), hits)
+"""
+    #: At least 3 interpreters (the directive's floor); four, as the instrument measured.
+    HASH_SEEDS = ("0", "1", "2", "3")
+
+    def test_638_i_the_cycle_answer_is_identical_across_HASH_SEEDS(self) -> None:
+        """am-17 §13.2 ("the answer is the same every run"): the predicate's rows, cycles and served
+        sentences over 3,000 worlds are byte-identical in interpreters with different ``PYTHONHASHSEED``.
+        Kills WB5 (the ``sorted()`` calls removed: ``set`` iteration then follows the hash seed). Non-vacuous:
+        the worlds must produce hits."""
+        import os
+        import subprocess
+        import sys
+
+        answers: dict[str, tuple[str, int]] = {}
+        for seed in self.HASH_SEEDS:
+            done = subprocess.run(
+                [sys.executable, "-c", self.HASH_SEED_PROGRAM],
+                capture_output=True,
+                text=True,
+                env={**os.environ, "PYTHONHASHSEED": seed},
+                check=True,
+            )
+            digest, hits = done.stdout.split()
+            answers[seed] = (digest, int(hits))
+        assert all(hits > 0 for _digest, hits in answers.values()), f"no world hit: {answers}"
+        assert len({digest for digest, _hits in answers.values()}) == 1, (
+            f"the cycle answer depends on the hash seed (set iteration order): {answers}"
+        )
 
     async def test_638_ii_leg_B_at_ONE_row_per_chunk_still_skips_and_records_both_rows(
         self,
@@ -863,3 +916,41 @@ class TestTheCycleAnswerIsDeterministicAndAskedOnceBeforePacking:
             assert await _row_state(ledger, row) == before[row], f"{row} changed at one row per chunk"
         _assert_one_skip_record(records, task_id=d1, blocker_ids={x1}, must_include={d1, h1}, where="D1")
         _assert_one_skip_record(records, task_id=d2, blocker_ids={x2}, must_include={d2, h2}, where="D2")
+
+
+#: §14.7 item 4 / #628's trigger: the source a task-ledger composed transaction stamps on its size record.
+TASK_LEDGER_SOURCE = "task_ledger"
+LARGE_TRANSACTION_EVENT = "store.apply.large_transaction"
+
+
+class TestATaskLedgerTransactionIsAttributedToTheTaskLedger:
+    """am-17 §14.7 item 4 (second delta audit F6, #628's trigger): a task-ledger composed transaction's
+    ``store.apply.large_transaction`` record carries ``source='task_ledger'``, so #628's re-open trigger ("a
+    record from the task ledger") can fire. Kills a ``TaskLedger._apply`` without ``source=`` (the record then
+    reads the index writer's default)."""
+
+    async def test_a_supersede_over_the_shrunk_threshold_records_source_task_ledger(
+        self,
+        ledger58: tuple[TaskLedger, SurrealEnv],
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A supersede re-anchoring two dependents, with ``TXN_ROW_WARN_THRESHOLD`` shrunk to 0 so every
+        composed transaction is "large": at least one record, and every one says ``task_ledger``."""
+        from loremaster.store import _txn
+
+        ledger, _env = ledger58
+        old = await create(ledger, "fw14 source old")
+        for index in range(2):
+            await create(ledger, f"fw14 source dependent {index}", blocked_by=[old])
+        monkeypatch.setattr(_txn, "TXN_ROW_WARN_THRESHOLD", 0, raising=True)
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG):
+            await supersede(ledger, old, blocked_by=[])
+        records = [r for r in _records(caplog, LARGE_TRANSACTION_EVENT) if r.levelno == logging.WARNING]
+        assert records, f"the supersede's composed transaction logged no {LARGE_TRANSACTION_EVENT} WARNING"
+        sources = [getattr(record, "source", None) for record in records]
+        assert sources == [TASK_LEDGER_SOURCE] * len(records), (
+            f"{LARGE_TRANSACTION_EVENT} from the task ledger carries source={sources}, not "
+            f"{TASK_LEDGER_SOURCE!r}"
+        )

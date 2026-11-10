@@ -3,13 +3,13 @@
 # FORK A (packet 04b-3, ESC-1: "a closure-bounded read keeps the write guard from scaling with the
 # backlog") was OVERTURNED ON MEASUREMENT (amendment 17 §14.1: the bounded closure read measured slower
 # than reading every column, and scaled with the seed count). This probe exercises
-# `TaskLedger._bounded_dependency_graph`, which §14.2 DELETED, so it fails at line 161 on the deleted
-# attribute.
+# `TaskLedger._bounded_dependency_graph`, which §14.2 DELETED, so it fails with AttributeError at its one
+# call of that method (`await ledger._bounded_dependency_graph(...)`, line 171 at 9cdc3fd).
 # WHAT REPLACED IT: `TaskLedger._read_dependency_graph` — every dependency-bearing row's `blocked_by`
 # column in ONE statement — pinned by `loremaster/tests/test_reanchor_58_fixwave.py` (the #635/#636 legs).
 # REMOVED BEHAVIOUR (not re-pinned): the closure-bounded read's soundness check; it is moot, the read is gone.
 # RE-OPEN TRIGGER: none — the question is discharged. Do not re-run; the file is kept as the receipt of what
-# FORK A claimed. (The lead moves it to `docs/plans/v2/receipts/2026-11-09-packet58/` at commit.)
+# FORK A claimed. (Moved here from `scripts/` in 8679385.)
 # ⚠ SDK-3 BOUND (packet 66, operator ruling R19 Q5) — NOT PORTED, NOT RE-RUN on surrealdb 3.0.0.
 # Written and last run against surrealdb 2.0.0. No cron or timer runs it (the R19 Q5 finding), so it was
 # left unported; its results describe the SDK and engine it ran on. SDK 3.0.0 differences a re-run meets:

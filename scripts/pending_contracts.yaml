@@ -73,27 +73,6 @@ version: 1
 # REPORT-contract-58-r53.md §RIDER3 — not a registry entry, because those legs are green on the committed tree.
 #
 bounds:
-# Packet 58 FIX WAVE §14 contract (contract-58-r53, 2026-11-10, lead #20092; am-17 §14.4 items 1, 2, 3, 5, 6 as amended
-# by §14.7). Owns exactly this pin set's RED@HEAD node ids (declared from --collect-only, red at b99f178 whose production
-# equals cdf1ce4). The §12/§13 ids this entry used to own went GREEN at cdf1ce4 and were removed (§14.7 registry handling).
-- id: packet-58-fixwave
-  owner: "packet 58 fix wave \u00a714 (one guard input, the supersede lock, task.guard.graph_large, one arrow direction) \u2014 the 58 fix-wave builder"
-  reopen_trigger: "the \u00a714 build lands am-17 \u00a714.2 (every blocked_by column in one statement; the closure read deleted; task.guard.graph_large above TASK_GUARD_GRAPH_LARGE_ROWS = 20,000), \u00a714.3 (an in-process lock serialises supersede_task's guard-then-write) and \u00a714.7 item 3 (both cycle refusals render row -> its blocker) \u2014 then every id below goes GREEN and this entry self-destructs and is deleted with the build"
-  ruling: "docs/design/2026-11-09-packet58-amendment-17.md \u00a714 + \u00a714.7 (b99f178); findings #634, #635, #636, #638; delta cold audit docs/plans/v2/receipts/2026-11-09-packet58/coldaudit-58-delta-ca58d-blind.md"
-  rationale: "contract-ahead \u2014 the \u00a714 targeted pin set is written before its build (lead #20092); receipts REPORT-contract-58-r53.md \u00a7FIXWAVE-14"
-  active: true
-  files:
-  - path: loremaster/tests/test_reanchor_58_fixwave.py
-    red_nodeids:
-    - "loremaster/tests/test_reanchor_58_fixwave.py::TestTheGuardsInputHasNoDepthBoundAndNoSeedCost::test_636_a_boot_with_300_stragglers_of_DISTINCT_heads_completes_and_heals_them_all"
-    - "loremaster/tests/test_reanchor_58_fixwave.py::TestTheGuardsInputHasNoDepthBoundAndNoSeedCost::test_635_S_the_live_supersede_refuses_a_cycle_through_a_LONG_chain[40_links]"
-    - "loremaster/tests/test_reanchor_58_fixwave.py::TestTheGuardsInputHasNoDepthBoundAndNoSeedCost::test_635_H_the_heal_skips_a_straggler_whose_reanchor_closes_a_LONG_cycle[40_links]"
-    - "loremaster/tests/test_reanchor_58_fixwave.py::TestTwoConcurrentSupersedesOnOneLedgerCannotJointlyWriteACycle::test_634_one_of_two_concurrent_supersedes_is_refused_every_time"
-    - "loremaster/tests/test_reanchor_58_fixwave.py::TestTheGraphLargeWarning::test_graph_large_is_emitted_once_when_shrunk_and_not_at_the_shipped_value[shrunk_below_the_fixture]"
-    - "loremaster/tests/test_reanchor_58_fixwave.py::TestTheGraphLargeWarning::test_graph_large_is_emitted_once_when_shrunk_and_not_at_the_shipped_value[shipped]"
-  - path: loremaster/tests/test_blocks_edge.py
-    red_nodeids:
-    - "loremaster/tests/test_blocks_edge.py::TestTheCyclePolicyHasONEImplementation::test_a_BATCH_KEY_cycle_is_served_in_the_PERSISTED_direction_row_then_its_blocker"
 # Packet 64b-i contract r2 (contract-64b-r2, 2026-09-27 — the adversary-64b survivors + packet-64 amendments 7-10 +
 # 63c amendment 35 §6, the #461 shape, lead #17055). Every file listed below: the 64b-i contract files declare 64b-i's
 # RULED, not-yet-built symbols as TYPED CALLS in a runtime-inert `if TYPE_CHECKING:` block, and the two CONVERTED
