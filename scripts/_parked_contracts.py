@@ -14,9 +14,9 @@ THE REGISTRY is read through :class:`pending_contract_gate.PendingContractRegist
 the parked set is its ``parked_node_owners`` method. A registry that is absent, unreadable or invalid
 deselects nothing and costs one warning line (S5); the plugin never forces an exit status.
 
-XDIST: workers collect, the controller owns the terminal. A worker ships its report through the shared
-``lorerunes.worker_output`` channel and the controller prints the FIRST report it receives (every worker
-collects the same items, so summing would multiply the count).
+XDIST: workers collect, the controller owns the terminal. A worker ships its report through xdist's own
+``config.workeroutput`` channel and the controller prints the FIRST report it receives (every worker collects
+the same items, so summing would multiply the count).
 
 This module imports nothing heavy at import time: ``gated_ground`` and ``concurrent_wire_acceptance`` import
 it only for the plugin name.
@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from lorerunes.worker_output import received_from_worker, ship_to_controller
+from xdist import is_xdist_worker  # type: ignore[import-untyped]  # xdist ships no py.typed marker
 
 #: The name the plugin registers under; ``-p no:<name>`` disables it (ruling A7).
 PARKED_CONTRACTS_PLUGIN_NAME = "lore-parked-contracts"
@@ -99,7 +99,9 @@ class ParkedContractsPlugin:
         return registry.parked_node_owners(), None
 
     @pytest.hookimpl(trylast=True)
-    def pytest_collection_modifyitems(self, config: pytest.Config, items: list[pytest.Item]) -> None:
+    def pytest_collection_modifyitems(
+        self, session: pytest.Session, config: pytest.Config, items: list[pytest.Item]
+    ) -> None:
         """Deselect the parked nodes still in ``items``; runs last, so it counts only the nodes it removes."""
         if config.getoption("run_parked"):
             return
@@ -112,13 +114,15 @@ class ParkedContractsPlugin:
         # Involvement is read from the DESELECTED items only (D3).
         entries = sorted({bound_id for item in parked for bound_id in owners[item.nodeid]})
         report = {_COUNT_FIELD: len(parked), _ENTRIES_FIELD: entries, _WARNING_FIELD: warning}
-        if not ship_to_controller(config, {WORKEROUTPUT_KEY: json.dumps(report)}):
+        if is_xdist_worker(session):
+            config.workeroutput[WORKEROUTPUT_KEY] = json.dumps(report)  # type: ignore[attr-defined]
+        else:
             self._report = report
 
     @pytest.hookimpl(optionalhook=True)
     def pytest_testnodedown(self, node: Any, error: Any) -> None:
         """xdist controller: keep the first worker's report; the others describe the same collection."""
-        shipped = received_from_worker(node).get(WORKEROUTPUT_KEY)
+        shipped = (getattr(node, "workeroutput", None) or {}).get(WORKEROUTPUT_KEY)
         if shipped is not None and self._report is None:
             self._report = json.loads(shipped)
 

@@ -1853,10 +1853,24 @@ def _report_keys(conftest: ModuleType) -> list[str]:
     return sorted(value for name, value in vars(conftest).items() if name.endswith(_REPORT_KEY_SUFFIX))
 
 
+def _a_worker_config() -> SimpleNamespace:
+    """A fake xdist WORKER config, modelled on what xdist itself builds: a real worker's config gets
+    ``workerinput`` (the controller's ``workerid`` / ``workercount`` / ``testrunuid`` / ``mainargv``,
+    ``xdist/workermanage.py`` ``WorkerController.__init__``) and an empty ``workeroutput`` TOGETHER
+    (``xdist/remote.py``, ``__channelexec__``). ``xdist.is_xdist_worker`` keys on ``workerinput``."""
+    workerinput = {
+        "workerid": _ACCOUNTED_WORKER,
+        "workercount": 1,
+        "testrunuid": uuid.uuid4().hex,
+        "mainargv": [sys.executable, "-m", "pytest"],
+    }
+    return SimpleNamespace(workerinput=workerinput, workeroutput={})
+
+
 def _a_complete_report(conftest: ModuleType) -> dict[str, Any]:
     """What a WORKER whose session went cleanly actually ships, produced by the conftest's own
     session-finish against a fake worker config and never written by hand."""
-    worker_session = SimpleNamespace(config=SimpleNamespace(workeroutput={}), exitstatus=pytest.ExitCode.OK)
+    worker_session = SimpleNamespace(config=_a_worker_config(), exitstatus=pytest.ExitCode.OK)
     conftest.pytest_sessionfinish(worker_session, pytest.ExitCode.OK)
     shipped: dict[str, Any] = worker_session.config.workeroutput
     return shipped
@@ -2051,6 +2065,36 @@ class TestEveryWorkerDoorIsAccounted:
         accounted = _door_named(conftest, _ACCOUNTED_DOOR_NAME)
         verdict = _drive_the_controller(conftest, {"gw0": accounted, "gw1": accounted, "gw2": accounted})
         assert verdict.exitstatus == pytest.ExitCode.OK and verdict.lines == [], verdict
+
+    def test_CONTROL_a_session_with_no_workerinput_records_in_process_and_ships_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CONTROL for the worker fake above: a session whose config has NO ``workerinput`` is not an
+        xdist worker, even when a ``workeroutput`` dict is present. Its session-finish records the leak
+        in THIS process (``_REAPED_LEAKS``), fails the session, and ships nothing, so a build that keyed
+        "am I a worker?" on ``workeroutput`` (or on anything but the worker identity) goes RED here.
+
+        The leak is a registry row a mid-session reaper call already marked reaped, so the store is
+        never dialed (nothing was opened this session)."""
+        conftest = _fresh_suite_conftest(monkeypatch)
+        # Minted into the registry ``_fresh_suite_conftest`` swapped in (restored by ``monkeypatch``), then
+        # marked reaped exactly as a mid-session ``reap_minted_databases`` call would mark it.
+        database = _surreal_harness.unique_database()
+        minted_by, _reaped = _surreal_harness._MINTED_DATABASES[database]
+        monkeypatch.setitem(_surreal_harness._MINTED_DATABASES, database, (minted_by, True))
+        leaked = (database, minted_by)
+        not_a_worker = SimpleNamespace(workeroutput={})
+        session = SimpleNamespace(config=not_a_worker, exitstatus=pytest.ExitCode.OK)
+        conftest.pytest_sessionfinish(session, pytest.ExitCode.OK)
+        assert not_a_worker.workeroutput == {}, (
+            f"a session with no `workerinput` shipped a worker report: {not_a_worker.workeroutput}"
+        )
+        assert conftest._REAPED_LEAKS == [leaked], (
+            f"the in-process branch did not record the reaped leak {leaked}: {conftest._REAPED_LEAKS}"
+        )
+        assert session.exitstatus == pytest.ExitCode.TESTS_FAILED, (
+            f"a reaped leak recorded in-process left the session {session.exitstatus!r}"
+        )
 
 
 class TestTheGapLineNeverContradictsItsCause:

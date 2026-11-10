@@ -22,8 +22,8 @@ import anyio
 import pytest
 from hypothesis.configuration import set_hypothesis_home_dir
 from loremaster.logging_setup import LORE_NAMESPACES
-from lorerunes.worker_output import received_from_worker, ship_to_controller
 from pydantic import TypeAdapter, ValidationError
+from xdist import is_xdist_worker  # type: ignore[import-untyped]  # xdist ships no py.typed marker
 
 # Make sibling test helper modules (e.g. ``_extension_helpers``) importable as
 # plain top-level modules under ``--import-mode=importlib``: that mode does NOT
@@ -514,13 +514,14 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
             if database in registry and not registry[database][1]
         )
         unreaped.append((_reap_failure_outcome(failure), f"{type(failure).__name__}: {failure}", unverified))
-    if ship_to_controller(
-        session.config,
-        {
-            _LEAK_REPORT_WORKEROUTPUT_KEY: json.dumps(report),
-            _UNREAPED_REPORT_WORKEROUTPUT_KEY: json.dumps(unreaped),
-        },
-    ):
+    if is_xdist_worker(session):
+        # xdist ships config.workeroutput to the controller when this worker finishes; merge, never replace.
+        session.config.workeroutput.update(  # type: ignore[attr-defined]
+            {
+                _LEAK_REPORT_WORKEROUTPUT_KEY: json.dumps(report),
+                _UNREAPED_REPORT_WORKEROUTPUT_KEY: json.dumps(unreaped),
+            }
+        )
         return
     _REAPED_LEAKS.extend(report)
     _UNREAPED_AT_SESSION_END.extend(unreaped)
@@ -561,7 +562,8 @@ def pytest_testnodedown(node: Any, error: Any) -> None:
     error but had shipped a readable report is accounted for, and one that went down cleanly
     without it is not.
     """
-    workeroutput = received_from_worker(node)
+    # A worker that crashed before xdist's workerfinished event has no ``workeroutput`` attribute.
+    workeroutput = getattr(node, "workeroutput", None) or {}
     try:
         leaks = _LEAK_REPORT_SHAPE.validate_json(workeroutput[_LEAK_REPORT_WORKEROUTPUT_KEY])
         unreaped = _UNREAPED_REPORT_SHAPE.validate_json(workeroutput[_UNREAPED_REPORT_WORKEROUTPUT_KEY])
