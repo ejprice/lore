@@ -158,6 +158,10 @@ D_SIZES = (1000, 4000)
 E_SIZES = tuple(int(x) for x in (sys.argv[2] if len(sys.argv) > 2 else "4000,12500").split(","))
 INDEX_DDL = "DEFINE INDEX IF NOT EXISTS blocks_out ON blocks FIELDS out"
 _HEAL_DELETE = re.compile(r"DELETE blocks WHERE in = (\$\w+) AND out = (\$\w+)")
+#: R-2 (adversary-58-r53, lead #20074): the dependent-anchored form (V3) a built heal already sends. Part E counts both
+#: shapes in every transaction it sees; a V3 run that met NEITHER refuses (exit non-zero) instead of timing a heal
+#: whose DELETE it never saw — the swap keyed on V1 text silently no-ops on a tree that already sends V3.
+_HEAL_DELETE_V3 = re.compile(r"DELETE \$\w+<-blocks WHERE in = \$\w+")
 
 
 async def part_d() -> None:
@@ -207,13 +211,19 @@ async def part_e() -> None:
     """The REAL heal (built ledger, real schema, one chunk) with the edge DELETE swapped for V3 (statement
     rewrite at `_apply`, production untouched) or served by V4's index. n=12500 is the full 50,000-row chunk."""
     real_apply = TaskLedger._apply  # noqa: SLF001
+    seen = {"swapped_v1": 0, "native_v3": 0}
 
     async def rewriting_apply(self: TaskLedger, fragments: list[TxnFragment]) -> None:
-        swapped = [
-            dataclasses.replace(f, statements=[_HEAL_DELETE.sub(r"DELETE \2<-blocks WHERE in = \1", st)
-                                               for st in f.statements])
-            for f in fragments
-        ]
+        swapped = []
+        for f in fragments:
+            statements = []
+            for st in f.statements:
+                new, hits = _HEAL_DELETE.subn(r"DELETE \2<-blocks WHERE in = \1", st)
+                seen["swapped_v1"] += hits
+                if not hits and _HEAL_DELETE_V3.search(st):
+                    seen["native_v3"] += 1
+                statements.append(new)
+            swapped.append(dataclasses.replace(f, statements=statements))
         await real_apply(self, swapped)
 
     for n in E_SIZES:
@@ -226,6 +236,7 @@ async def part_e() -> None:
                 before = await edge_count(ledger)
                 spy = s.ComposeSpy()
                 if name == "V3":
+                    seen.update(swapped_v1=0, native_v3=0)
                     TaskLedger._apply = rewriting_apply  # type: ignore[method-assign]  # noqa: SLF001
                 t = time.monotonic()
                 try:
@@ -238,6 +249,17 @@ async def part_e() -> None:
                 finally:
                     TaskLedger._apply = real_apply  # type: ignore[method-assign]  # noqa: SLF001
                 wall = time.monotonic() - t
+                if name == "V3":
+                    if seen["swapped_v1"]:
+                        swap = f"V1->V3 swapped x{seen['swapped_v1']}"
+                    elif seen["native_v3"]:
+                        swap = f"none needed: the heal already sends V3 x{seen['native_v3']}"
+                    else:
+                        raise SystemExit(
+                            f"REFUSED (part E, V3, n={n}): no heal edge DELETE was seen in either form (V1 to swap, "
+                            f"or V3 already sent) — the timing would not be of a V3 heal; outcome={outcome}"
+                        )
+                    print(f"E V3 n={n} swap: {swap}", flush=True)
                 on_head = await s.raw(
                     ledger, "SELECT count() AS n FROM task WHERE blocked_by CONTAINS $h GROUP ALL", {"h": head})
                 legacy_edges = await s.raw(
