@@ -834,6 +834,16 @@ The house rules for reading and writing rows. Each one was found the hard way.
   truncated apply reads as green; `compose`'s envelope-integrity check should refuse it (finding
   [#501](#501)). This is how packet 58's padding mutation (`RETURN NONE` appended to a shell output)
   silently stranded stragglers instead of moving the cap: a measurement that reads as success.
+- **[MEASURED 2026-11-09, 3.3.5 + SDK 3.0.0 — packet 58 amendment 17 §1, finding #618] A transaction's
+  wall-clock grows roughly QUADRATICALLY in its one-row statement count.** One `BEGIN … COMMIT` of n
+  one-row statements on the task schema cost about `1e-7 × n²` s (10,000 rows ≈ 7–10 s; 50,000 ≈ 230 s);
+  cause not established. So `TXN_ROW_HARD_CAP` (50,000) admits a transaction far past the 30 s served
+  request timeout and near the 300 s `ensure_ready_operation` budget. Split work that need not be atomic
+  (packet 58's boot heal chunks at `TXN_ROW_WARN_THRESHOLD` for this reason). Batched `INSERT` rows (the
+  index writer) were NOT measured. Separately, a table-anchored `DELETE edge WHERE in = … AND out = …` on an
+  un-indexed relation table scans the whole table PER STATEMENT — anchor it on a record
+  (`DELETE $record<-edge WHERE in = $x`) so the cost is the record's degree (am-17 §3). Probe:
+  `scripts/probe_heal_curve_58.py`.
 
 ---
 
