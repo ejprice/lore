@@ -67,7 +67,7 @@ from _reanchor_58_support import (
 )
 from _surreal_harness import SurrealEnv
 from loremaster.store import _txn
-from loremaster.store._txn import SurrealConnectionError, SurrealStoreError
+from loremaster.store._txn import SurrealConnectionError, SurrealOutcomeUnknownError, SurrealStoreError
 from loremaster.store.surreal_schema import TASK_TABLE
 from loremaster.tasks import (
     STATUS_BLOCKED,
@@ -258,6 +258,22 @@ class TestTheHealPacksByItsOwnComposedCount:
 # =========================================================================== #
 
 
+#: r5.2 (am-16 §2.5): stragglers one heal chunk fits under the in-test shrink, and the chunks a
+#: ``2·fit + 1`` world therefore spans.
+_DOOR_FIT = 4
+_DOOR_CHUNKS = 3
+
+
+def _exception_chain(error: BaseException) -> list[BaseException]:
+    """``error`` and every exception it was raised from or during (``__cause__`` / ``__context__``)."""
+    chain: list[BaseException] = []
+    current: BaseException | None = error
+    while current is not None and current not in chain:
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    return chain
+
+
 class _HealDoors:
     """Fault injection at every store door the heal opens AFTER the backfill (the sweep's own idiom).
 
@@ -274,6 +290,9 @@ class _HealDoors:
         self.fault = fault
         self.armed = False
         self.calls = 0
+        #: r5.2 (am-16 §2.5): the seam each armed door went through, in order (``_query`` read · ``_apply``
+        #: write), so the control can show the heal's WRITE doors — one per chunk.
+        self.seams: list[str] = []
 
     def install(self, ledger: TaskLedger) -> None:
         original_backfill = ledger._backfill_blocks_edges  # noqa: SLF001
@@ -284,12 +303,13 @@ class _HealDoors:
 
         ledger._backfill_blocks_edges = _backfill  # type: ignore[method-assign]  # noqa: SLF001
         for name in ("_query", "_apply"):
-            setattr(ledger, name, self._wrap(getattr(ledger, name)))
+            setattr(ledger, name, self._wrap(getattr(ledger, name), name))
 
-    def _wrap(self, original: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
+    def _wrap(self, original: Callable[..., Awaitable[Any]], seam: str) -> Callable[..., Awaitable[Any]]:
         async def _door(*args: Any, **kwargs: Any) -> Any:
             if self.armed:
                 self.calls += 1
+                self.seams.append(seam)
                 if self.calls == self.fault_at and self.fault is not None:
                     raise self.fault
             return await original(*args, **kwargs)
@@ -302,15 +322,6 @@ class TestAHealStoreFaultIsLOUD:
     straggler read, a chunk's apply) RAISES — loud, as every ``ensure_ready`` door must"*.  The door set
     is DERIVED from a control boot (every armed call), and each door is faulted at its own k."""
 
-    async def _world(self, ledger: TaskLedger) -> str:
-        head = await create(ledger, "the successor")
-        legacy = "doorlegacyblocker000000000000000"
-        await raw_seed_row(ledger, legacy, blocked_by=[], superseded_by=head)
-        straggler = "doorstraggler0000000000000000000"
-        await raw_seed_row(ledger, straggler, blocked_by=[legacy])
-        await raw_relate(ledger, legacy, straggler)
-        return straggler
-
     async def _boot_with(self, env: SurrealEnv, doors: _HealDoors) -> None:
         booted = new_ledger(env)
         doors.install(booted)
@@ -322,36 +333,65 @@ class TestAHealStoreFaultIsLOUD:
     @pytest.mark.usefixtures("shrunk_row_caps")
     @pytest.mark.parametrize(
         "fault",
-        [SurrealStoreError("injected-58r2 store fault"), SurrealConnectionError("injected-58r2 transport")],
-        ids=["store", "transport"],
+        [
+            SurrealStoreError("injected-58r2 store fault"),
+            SurrealConnectionError("injected-58r2 transport"),
+            SurrealOutcomeUnknownError("injected-58r5.2 outcome unknown"),
+        ],
+        ids=["store", "transport", "outcome_unknown"],
     )
     async def test_every_heal_door_after_the_backfill_RAISES(
-        self, ledger58: tuple[TaskLedger, SurrealEnv], fault: Exception
+        self, ledger58: tuple[TaskLedger, SurrealEnv], monkeypatch: pytest.MonkeyPatch, fault: Exception
     ) -> None:
-        """Fault door k = 1, 2, … in turn: each faulted boot must RAISE and write nothing; the first k
-        the boot never reaches ends the sweep (that boot is the CONTROL — it completes and heals)."""
+        """r5.2 (packet 58 amendment 16 §2.5, MP-5): a store fault at ANY heal door raises, for EVERY chunk.
+
+        The row cap is shrunk INSIDE the test so one chunk fits :data:`_DOOR_FIT` stragglers (cap = the
+        measured ``fixed + fit·per``); the world is ``2·fit + 1`` stragglers — :data:`_DOOR_CHUNKS` chunks,
+        so the second and third chunk's applies are doors too. Door k = 1, 2, … is faulted in turn on a
+        FRESH world (an unfaulted boot first drains what the last faulted boot left, so every k boots the
+        same world): the boot must RAISE, open no armed door after the fault (nothing more is written),
+        and leave the world unhealed in part. The first k the boot never reaches is the CONTROL: it
+        completes, heals all ``2·fit + 1``, and shows ≥ :data:`_DOOR_CHUNKS` WRITE-seam doors (or the leg
+        fails naming the count). Fault classes: store, transport, and SDK3's
+        ``SurrealOutcomeUnknownError``."""
         ledger, env = ledger58
-        straggler = await self._world(ledger)
-        before = await snapshot(ledger)
+        fixed, per = await measure_heal_shape(ledger, env, "doorshape")
+        monkeypatch.setattr(_txn, "TXN_ROW_HARD_CAP", fixed + _DOOR_FIT * per, raising=True)
+        population = 2 * _DOOR_FIT + 1
         k = 0
         while True:
             k += 1
             assert k < 50, "runaway door count"
+            await boot(env)  # drain: heal whatever the previous faulted boot left behind
+            head, stragglers = await seed_stragglers(ledger, population, 1, f"door{k:02d}")
             doors = _HealDoors(k, fault)
             try:
                 await self._boot_with(env, doors)
-            except SurrealStoreError:
-                assert await snapshot(ledger) == before, f"a faulted heal door (k={k}) wrote something"
+            except SurrealStoreError as raised:
+                assert fault in _exception_chain(raised), (
+                    f"door k={k} raised {type(raised).__name__}: {raised} — not the injected fault "
+                    f"(nor caused by it)"
+                )
+                assert doors.calls == k, (
+                    f"after the fault at door k={k} the boot opened {doors.calls - k} more armed door(s) "
+                    f"({doors.seams}) — a heal fault was swallowed and the heal went on writing"
+                )
+                columns = await all_columns(ledger)
+                assert any(columns[s] != [head] for s in stragglers), (
+                    f"door k={k} ({doors.seams[-1]}) faulted, yet every straggler healed — the fault was "
+                    f"not at a heal door, or the heal re-ran past it"
+                )
                 continue
             break
         assert doors.calls == k - 1, f"the completing boot opened {doors.calls} doors, expected {k - 1}"
-        assert k - 1 >= 2, (
-            f"only {k - 1} heal door(s) opened after the backfill — the straggler READ and a chunk's "
-            f"APPLY are two; a heal that ran BEFORE the backfill opens none (amendment 3 §2: backfill "
-            f"→ heal)"
+        writes = doors.seams.count("_apply")
+        assert writes >= _DOOR_CHUNKS, (
+            f"non-vacuity: the control boot opened {writes} write-seam door(s) ({doors.seams}); "
+            f"{population} stragglers at fit {_DOOR_FIT} are {_DOOR_CHUNKS} chunks, one apply each"
         )
-        assert await column(ledger, straggler) != ["doorlegacyblocker000000000000000"], (
-            "CONTROL: the unfaulted boot heals the straggler (so the doors above were the heal's)"
+        columns = await all_columns(ledger)
+        assert all(columns[s] == [head] for s in stragglers), (
+            "CONTROL: the unfaulted boot heals every straggler (so the doors above were the heal's)"
         )
 
     @pytest.mark.usefixtures("shrunk_row_caps")

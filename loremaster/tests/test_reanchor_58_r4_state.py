@@ -143,35 +143,44 @@ def _finding_root(verb_call: str) -> RootDriver:
 async def _drive_heal_multi_chunk(env: SurrealEnv, ledger: TaskLedger, seam: DriverSeamInjection) -> None:
     """The heal at ``2·fit + 1`` rows of the one-entry shape: ≥ 2 heal transactions (am-12 §1 WRITES; F-E's
     scale).  Every leg seeds a FRESH population (distinct tag) and, after it, converges the store with an
-    unarmed boot, so every leg sees the same n."""
-    from test_reanchor_58_r3_convergence import SHAPES, _cap, seed_population
+    unarmed boot, so every leg sees the same n.
+
+    r5.2 (packet 58 amendment 16 §3 — this leg was SLOW, ~303 s at the 5 000 shrink's fit of ~1 250): the
+    row cap is shrunk INSIDE the leg to the measured ``fixed + fit·weight`` with
+    fit = :data:`_HEAL_DRIVER_FIT` (§2.5's shrink), so ``2·fit + 1`` is 9 rows in 3 chunks — the same
+    multi-chunk shape, in seconds."""
+    from loremaster.store import _txn as txn_module
+    from test_reanchor_58_r3_convergence import SHAPES, seed_population
 
     shape = next(shape for shape in SHAPES if shape.label == "e1-distinct-absent")
-    fit = _HEAL_FIT.get("fit")
-    if fit is None:
-        fit = await _measure_fit(ledger, env, shape)
-        _HEAL_FIT["fit"] = fit
-    assert fit > 1, fit
-    tag = f"r4k{seam.write_index}{'m' if seam.measuring else ''}{len(_HEAL_FIT)}"
-    _HEAL_FIT[tag] = fit
-    await seed_population(ledger, shape, 2 * fit + 1, tag)
-    booted = new_ledger(env)
-    seam.arm(HEAL_VERB)
-    try:
-        await seam.expect_the_SAME_instance(HEAL_VERB, booted.ensure_ready)
-    finally:
-        await booted.close()
-        await boot(env)  # converge the remainder, unarmed — the next leg starts from a healed store
-    assert _cap() > 0
+    measured = _HEAL_SHAPE.get("measured")
+    if measured is None:
+        measured = await _measure_shape(ledger, env, shape)
+        _HEAL_SHAPE["measured"] = measured
+    fixed, weight = measured
+    tag = f"r4k{seam.write_index}{'m' if seam.measuring else ''}{len(_HEAL_SHAPE)}"
+    _HEAL_SHAPE[tag] = measured
+    with pytest.MonkeyPatch.context() as shrink:
+        shrink.setattr(txn_module, "TXN_ROW_HARD_CAP", fixed + _HEAL_DRIVER_FIT * weight, raising=True)
+        await seed_population(ledger, shape, 2 * _HEAL_DRIVER_FIT + 1, tag)
+        booted = new_ledger(env)
+        seam.arm(HEAL_VERB)
+        try:
+            await seam.expect_the_SAME_instance(HEAL_VERB, booted.ensure_ready)
+        finally:
+            await booted.close()
+            await boot(env)  # converge the remainder, unarmed — the next leg starts from a healed store
 
 
-_HEAL_FIT: dict[str, int] = {}
+#: r5.2 (am-16 §2.5 / §3): the straggler rows one heal chunk fits under the driver's in-leg shrink.
+_HEAL_DRIVER_FIT = 4
+_HEAL_SHAPE: dict[str, tuple[int, int]] = {}
 
 
-async def _measure_fit(ledger: TaskLedger, env: SurrealEnv, shape: Any) -> int:
-    """fit = ``(cap − fixed) // weight`` (cap read live; r5: the §8.1 shrink), MEASURED off ``compose``."""
+async def _measure_shape(ledger: TaskLedger, env: SurrealEnv, shape: Any) -> tuple[int, int]:
+    """``(fixed, weight)`` of the shape's heal chunk, MEASURED off ``compose`` at 1 and 2 rows."""
     from _reanchor_58_support import ComposeSpy
-    from test_reanchor_58_r3_convergence import _cap, _heal_chunks, seed_population
+    from test_reanchor_58_r3_convergence import _heal_chunks, seed_population
 
     counts: list[int] = []
     for rows in (1, 2):
@@ -184,7 +193,8 @@ async def _measure_fit(ledger: TaskLedger, env: SurrealEnv, shape: Any) -> int:
         counts.append(chunks[0])
     weight = counts[1] - counts[0]
     fixed = counts[0] - weight
-    return int((_cap() - fixed) // weight)
+    assert weight > 0, counts
+    return fixed, weight
 
 
 #: THIS module's ROOT drivers, keyed ``"<root> -> <verb>"``.  A key the derivation does not produce reds BY

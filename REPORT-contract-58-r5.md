@@ -1101,3 +1101,361 @@ Written BEFORE the adversary's enumeration; the adversary diffs its own list aga
 - `scripts/test_pending_contract_gate_f6.py`, prose only (the diff touches no `assert` line): the header bullet now states the per-node rule as fixed by `c7f8f1d`; the fixture's `packet-58-contract` rationale reads "a symbols-only entry: it owns its mypy claim, and (#615) NO pytest red" (was "file-level owner of its pytest reds today"); the #615 pin's docstring drops "CONTRACT-AHEAD — RED until a builder …" for "fixed by `c7f8f1d` … this pin keeps it gone" (its DUAL note kept). Left as-is, still accurate: L7 (F6's general contract-ahead rationale) and the MP-F6-3 comment (it names the `f6_mixed_file_level` wrong build).
 - **Receipt** (`r51/run_gate_tests.sh` → `r51/run_gate_tests.log`, HEAD `5ff9209`, TREE `d83c6fe1…`): `scripts/test_pending_contract_gate.py` + `…_f6.py` **109 passed**, EXIT=0.
 - **Commit-ready:** `scripts/test_pending_contract_gate_f6.py` (+ `scripts/probe_hub_txn_58.py` from #20022 if not yet committed, + this report).
+
+## §R5.2 — amendment 16 §6 FOLD LIST items 1–11 (lead directive #20030, 2026-11-10; base HEAD `f5a9211`)
+
+**Graded inputs:** `docs/design/2026-11-09-packet58-amendment-16.md` §0–§6 (read in full) · `REPORT-adversary-58-r5-2.md` §MISSING PINS, §SAT FINDING, §RESIDUALS, §QUIET-VERDICTS. **Role boundary:** no wrong build built or run by me (item 9's verdicts are the adversary's).
+
+### Per fold item — what changed, and the wrong build each pin kills (analysis, not a build)
+| item | where | pin | kills |
+|---|---|---|---|
+| 1 door legs, no counts (§1) | `scripts/test_forgery_door_sweep.py` | legacy leg: `== 5` → REACH (`len(doors) == control_calls`) + LOUD + `calls_observed == 1..N`; (i) renamed `test_i_the_straggler_world_adds_heal_READ_and_WRITE_doors_and_every_derived_door_fires`: reach per world + the straggler world has strictly MORE write-seam AND MORE read-seam doors than its twin; (ii) non-vacuity = that write inequality, then all loud, every write door loud+traceable; (iii) "a write door after the DDL is silent" (was "the LAST door"); (iv) DELETED — its write-door comparison (`legacy == straggler − 1`, an `other + n`) is absorbed by (i)'s inequality. **Extension, same §1 class, my call:** the `SWALLOWS_its_backfill` control's `len(silent) == control_calls − 2` (the 58 DUAL's "outside the backfill are TWO") → "the silent doors are ONE contiguous run from k=2". | no heal (equal worlds → (i)/(ii) red); heal without apply (no extra write door); heal that swallows its apply ((iii)); and the over-fire is gone: a 3-read heal stays green |
+| 2 typed refusal (§2.1) | `test_supersede_reanchor_58.py::TestTheHubBoundIsDERIVED::test_one_past_the_cap_is_REFUSED_byte_inert_and_TEACHES[0,2]` | `isinstance(HubSupersedeRefusedError)`; `{dependents, rows, row_cap, cap_dependents} == {cap+1, fixed+per·(cap+1), TXN_ROW_HARD_CAP, cap}` with fixed/per from the compose spy at N=1,2,3; `str(error) ==` the ruled sentence built by `_reanchor_58_support.hub_refusal_sentence` (`<X>` = `render_attributed(task_id)`, the house rule for an id in a teaching error, #321). R-7's substring checks retired. | WD17 (false rows/cap + "a smaller supersede will succeed" → facts ≠ and text ≠); a build that omits rows/cap (attributes `None`); an appended promise or re-spelled number (exact text) |
+| 3 packer error (§2.1 sibling) | `test_reanchor_58_r3_convergence.py::TestARowOverTheCapFailsTheBootLOUD::…typed_packer_error…` | `{row_id, weight, row_cap} == {monster, one_row_weight(1700 entries), TXN_ROW_HARD_CAP}`; `one_row_weight` = the ROW count of a ONE-row heal chunk of the monster's own shape `Shape(e, shared, absent)`, measured at compose for e = 2, 3, 4 (linearity checked), extrapolated to 1 700. Text not pinned (ruling). | a weight in statements, or off by the relate fragment; an import-time cap copy in `row_cap`; the old untyped error |
+| 4 before compose (§2.2) | same cap+1 leg | `ComposeSpy.over_cap() == []` across the refused supersede (the spy records BEFORE compose runs, so a refused call is seen); control: the same hub superseded at the REAL cap (both caps lifted in a `monkeypatch.context`), its largest transaction captured, then composed DIRECTLY at the shrunk cap → `TxnRowCapExceededError` and `control.over_cap() == [expected_rows]`. Replaces the `__cause__` check and R-6's synthetic control. | WD16B (plain re-raise), `raise … from None`, and the X8 `from` form: all three ask compose for the over-cap transaction |
+| 5 kind guard (§2.3) | `test_fixwave_a28c_63c_i_a.py::…::test_am36_1_2_3_a_typed_kind_never_reaches_the_text_branch` | `_HOSTILE_TEXTS` gains `An error occurred: <marker>t:1` per 58 marker (`fifty_eight_thrown_markers()`, the served casing asserted to equal `_txn._ENGINE_THROW_PREFIX` lower-cased); `text_labels` gains `*fifty_eight_label_names()`. Both empty at HEAD (classes unbuilt) → 0 new ids at HEAD; 24 on the reference (typed kinds × 4 texts). | WD9 (kind-blind anchored prefix for 58's markers) |
+| 6 un-annotated at size (§2.4) | L2 `test_REAL_CAP_a_supersede_past_the_RETIRED_statement_cap_SUCCEEDS`, L3 `test_L3_REAL_CAP_…` | `spy.annotated_calls() == []` at 1 666 dependents / 1 251 stragglers. | WD15D (`rows=` above 1 500 statements). Stated bound (§2.4): above L2's 5 002 rows, unkilled. |
+| 7 every chunk's door (§2.5) | `test_reanchor_58_r2_rulings.py::TestAHealStoreFaultIsLOUD::test_every_heal_door_after_the_backfill_RAISES[store,transport,outcome_unknown]` | cap shrunk in-test to the measured `fixed + 4·per` (fit 4, **my reading of "four times one straggler's weight"**: the ruling's stated outcome is fit 4 / 9 stragglers / 3 chunks, and `4·per` alone gives fit 3 whenever `fixed > 0`); 9 stragglers; per k a FRESH world after an unfaulted drain boot (a fault at chunk j's apply commits chunks < j, so re-booting the same world would change the door sequence); each faulted boot raises the injected fault (or one caused by it), opens NO armed door after the fault, and leaves the world partly unhealed; control: completes, heals all 9, ≥ 3 `_apply` doors. `_HealDoors` records each door's seam. `SurrealOutcomeUnknownError` added. The one-straggler `_world` helper is deleted (no other caller). | WD12K (swallow at chunk ≥ 2: the boot does not raise / opens more doors); a swallow of `SurrealOutcomeUnknownError` only (the adversary's untried sibling) |
+| §3 slow leg | `test_reanchor_58_r4_state.py` `_drive_heal_multi_chunk` | the r4 heal driver takes the same in-leg shrink (`fixed + 4·weight` → 9 rows, 3 chunks) inside a `MonkeyPatch.context`; `_measure_fit` → `_measure_shape` (cached `(fixed, weight)`). | unchanged property (≥ 2 heal writes, Q-HEAL2) at a size that runs in seconds — **⚠ re-grade: W-HEAL2 / WD22H were killed by this leg at its OLD size; replay them on the shrunk leg** |
+| 8 sweep (§4) | see the table below | 2 sites must grow → both grown (item 5) | WD9 / WD8 / X7B replay at the re-grade |
+
+### Item 8 — the governed-member sweep (am-16 §4)
+**Coverage:** bare pattern `GOVERNED_CONFLICT|GovernedConflict|governed_conflict` (grep — rename-class exhaustiveness, the ruled instrument) over every tracked `*.py` under a `tests/` dir or named `test_*.py` (359 files) at `fef1b50`, before r5.2's `a28c` edit → **153 hits in 16 files, each with its own verdict below.** Must-grow: 2 (both in `a28c`'s typed-kind pin, both grown). Covers 58's four already (r5 §9 derived additions, or 58's own files): 10. Not a member list: 141 (counts derived from the table by `grep -c` on its verdict column, not typed). **Bound of the pattern, said plainly:** a hand-list that names other `_txn` members but not the governed one is outside it.
+**Observation (spec-silent, not pinned):** `test_retry_seam.py:3860` / `test_surreal_store.py:956` pin that the GOVERNED label never leaks its raw marker. No ruling extends that to 58's four labels (the reference's labels do not leak). A builder writing `claim_lost: …` as the label would serve the raw marker in a teaching error. → sidecar, if wanted.
+| # | file:line | verdict |
+|---|---|---|
+| 1 | `loremaster/tests/test_am37_13_3_63c_i_a.py:573` | covers 58's four — `_RULED_PROVEN_NO_KEY` grows by derivation (`| frozenset(fifty_eight_classes())`, r5 §9) |
+| 2 | `loremaster/tests/test_am37_13_3_63c_i_a.py:627` | covers 58's four — `_TYPED_PROVEN_SDK_ERROR` grows by derivation (r5 §9) below it |
+| 3 | `loremaster/tests/test_am37_13_3_63c_i_a.py:630` | covers 58's four — same table, grown by derivation (r5 §9) |
+| 4 | `loremaster/tests/test_exhaustion_fates.py:454` | not a member list — a local fake class inside a SYNTHETIC source string (the resolver's own fixture) |
+| 5 | `loremaster/tests/test_exhaustion_fates.py:512` | not a member list — a local fake class inside a SYNTHETIC source string (the resolver's own fixture) |
+| 6 | `loremaster/tests/test_findings_adversary_pins_64b.py:122` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 7 | `loremaster/tests/test_findings_adversary_pins_64b.py:124` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 8 | `loremaster/tests/test_findings_adversary_pins_64b.py:137` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 9 | `loremaster/tests/test_findings_classes_64b.py:20` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 10 | `loremaster/tests/test_findings_classes_64b.py:444` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 11 | `loremaster/tests/test_findings_classes_64b.py:481` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 12 | `loremaster/tests/test_findings_classes_64b.py:542` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 13 | `loremaster/tests/test_findings_governance_64b.py:23` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 14 | `loremaster/tests/test_findings_governance_64b.py:599` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 15 | `loremaster/tests/test_findings_governance_64b.py:603` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 16 | `loremaster/tests/test_findings_governance_64b.py:616` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 17 | `loremaster/tests/test_findings_governance_64b.py:629` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 18 | `loremaster/tests/test_findings_governance_64b.py:646` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 19 | `loremaster/tests/test_findings_governance_64b.py:650` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 20 | `loremaster/tests/test_findings_governance_64b.py:660` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 21 | `loremaster/tests/test_fixwave_a28b_63c_i_a.py:570` | not a member list — docstring prose |
+| 22 | `loremaster/tests/test_fixwave_a28b_63c_i_a.py:583` | not a member list — a non-vacuity witness over the DERIVED `_STORE_ERROR_CLASSES`; 58's classes join that domain unedited |
+| 23 | `loremaster/tests/test_fixwave_a28c_63c_i_a.py:73` | not a member list — an import |
+| 24 | `loremaster/tests/test_fixwave_a28c_63c_i_a.py:163` | not a member list for 58 — KB's single legacy echo instance; its CLASS is the widened KB, whose phrases derive from every `_txn` `*_MARKER` (58's four included) and whose hosts grew in r5 (`_ECHO_HOSTS`) |
+| 25 | `loremaster/tests/test_fixwave_a28c_63c_i_a.py:172` | not a member list for 58 — same KB instance (see :163) |
+| 26 | `loremaster/tests/test_fixwave_a28c_63c_i_a.py:203` | not a member list — comment prose |
+| 27 | `loremaster/tests/test_fixwave_a28c_63c_i_a.py:239` | covers 58's four — `_ECHO_HOSTS` grows by derivation directly below (r5 §9) |
+| 28 | `loremaster/tests/test_fixwave_a28c_63c_i_a.py:346` | covers 58's four — `hosted` carries `*fifty_eight_label_names()` (r5 §9) |
+| 29 | `loremaster/tests/test_fixwave_a28c_63c_i_a.py:375` | not a member list — docstring prose |
+| 30 | `loremaster/tests/test_fixwave_a28c_63c_i_a.py:628` | not a member list — `_ENGINE_NOUNS`, a table of live engine rejection SHAPES; a THROW is one shape whatever our marker (58's THROWs ride the same engine prefix) |
+| 31 | `loremaster/tests/test_fixwave_a28c_63c_i_a.py:755` | not a member list — comment on `_TEXT_DECIDED_KINDS` (SDK kinds, not classes) |
+| 32 | `loremaster/tests/test_fixwave_a28c_63c_i_a.py:794` | **must grow → GROWN (r5.2 item 5)**: `_HOSTILE_TEXTS` gains one THROW text per 58 marker, derived (`fifty_eight_thrown_markers()`); DUAL row: member 58's four markers · am-15 §4.1/§9.1 · test_am36_1_2_3_a_typed_kind_never_reaches_the_text_branch |
+| 33 | `loremaster/tests/test_fixwave_a28c_63c_i_a.py:865` | **must grow → GROWN (r5.2 item 5)**: `text_labels` gains `*fifty_eight_label_names()`; DUAL row: member 58's four labels · am-15 §4.1/§9.1 · test_am36_1_2_3_a_typed_kind_never_reaches_the_text_branch |
+| 34 | `loremaster/tests/test_governed_substrate_63a.py:251` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 35 | `loremaster/tests/test_governed_substrate_63a.py:258` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 36 | `loremaster/tests/test_governed_substrate_63a.py:319` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 37 | `loremaster/tests/test_governed_substrate_63a.py:322` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 38 | `loremaster/tests/test_governed_substrate_63a.py:338` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 39 | `loremaster/tests/test_governed_substrate_63a.py:343` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 40 | `loremaster/tests/test_governed_substrate_63a.py:358` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 41 | `loremaster/tests/test_governed_substrate_63a.py:380` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 42 | `loremaster/tests/test_governed_substrate_64b.py:14` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 43 | `loremaster/tests/test_governed_substrate_64b.py:446` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 44 | `loremaster/tests/test_governed_substrate_64b.py:461` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 45 | `loremaster/tests/test_governed_substrate_64b.py:465` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 46 | `loremaster/tests/test_governed_substrate_64b.py:479` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 47 | `loremaster/tests/test_governed_substrate_64b.py:525` | not a member list — names `governed.GovernedConflict` (loremaster/governed.py:86, an `Exception`: the substrate's 0-row guard conflict), a different class from `_txn`'s |
+| 48 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:19` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 49 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:23` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 50 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:33` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 51 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:403` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 52 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:425` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 53 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:427` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 54 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:439` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 55 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:440` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 56 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:442` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 57 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:443` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 58 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:444` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 59 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:473` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 60 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:474` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 61 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:475` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 62 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:476` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 63 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:477` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 64 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:483` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 65 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:484` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 66 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:490` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 67 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:492` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 68 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:493` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 69 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:540` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 70 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:543` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 71 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:546` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 72 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:547` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 73 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:548` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 74 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:549` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 75 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:573` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 76 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:578` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 77 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:581` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 78 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:582` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 79 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:583` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 80 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:584` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 81 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:586` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 82 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:587` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 83 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:659` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 84 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:663` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 85 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:702` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 86 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:949` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 87 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:957` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 88 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:959` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 89 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:973` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 90 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:974` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 91 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:990` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 92 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:998` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 93 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:999` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 94 | `loremaster/tests/test_memory_supersede_atomicity_63b_ib.py:1000` | not a member list — the memory supersede's governed guard and its governed-layer mapping (member-specific, 63b-ib) |
+| 95 | `loremaster/tests/test_mint_kind_carveout_q1b.py:94` | covers 58's four — `_RULED_CLASSIFIED_BY_CONSTRUCTION` grows by derivation (r5 §9) |
+| 96 | `loremaster/tests/test_mint_kind_carveout_q1b.py:110` | covers 58's four — `_RULED_CLASSIFIED_LABEL_NAMES` grows by `fifty_eight_label_names()` (r5 §9) |
+| 97 | `loremaster/tests/test_no_exact_type_check_on_surreal_store_error.py:11` | not a member list — module docstring prose |
+| 98 | `loremaster/tests/test_reanchor_58_r3_am6.py:54` | covers 58's four — 58's own transcribed tier oracle lists all four markers |
+| 99 | `loremaster/tests/test_reanchor_58_r3_tiers.py:75` | covers 58's four — 58's own transcribed tier oracle |
+| 100 | `loremaster/tests/test_reanchor_58_r3_tiers.py:261` | not a member list — the governed trigger's driver |
+| 101 | `loremaster/tests/test_reanchor_58_r3_tiers.py:267` | not a member list — the governed trigger's THROW |
+| 102 | `loremaster/tests/test_reanchor_58_r3_tiers.py:333` | covers 58's four — the trigger table lists all four |
+| 103 | `loremaster/tests/test_reanchor_58_r3_tiers.py:478` | not a member list — a sibling choice for the drop control |
+| 104 | `loremaster/tests/test_retry_seam.py:3831` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 105 | `loremaster/tests/test_retry_seam.py:3838` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 106 | `loremaster/tests/test_retry_seam.py:3839` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 107 | `loremaster/tests/test_retry_seam.py:3840` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 108 | `loremaster/tests/test_retry_seam.py:3841` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 109 | `loremaster/tests/test_retry_seam.py:3848` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 110 | `loremaster/tests/test_retry_seam.py:3849` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 111 | `loremaster/tests/test_retry_seam.py:3850` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 112 | `loremaster/tests/test_retry_seam.py:3856` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 113 | `loremaster/tests/test_retry_seam.py:3857` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 114 | `loremaster/tests/test_retry_seam.py:3860` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 115 | `loremaster/tests/test_retry_seam.py:3861` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 116 | `loremaster/tests/test_retry_seam.py:3862` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 117 | `loremaster/tests/test_surreal_store.py:891` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 118 | `loremaster/tests/test_surreal_store.py:896` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 119 | `loremaster/tests/test_surreal_store.py:898` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 120 | `loremaster/tests/test_surreal_store.py:903` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 121 | `loremaster/tests/test_surreal_store.py:905` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 122 | `loremaster/tests/test_surreal_store.py:907` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 123 | `loremaster/tests/test_surreal_store.py:909` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 124 | `loremaster/tests/test_surreal_store.py:917` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 125 | `loremaster/tests/test_surreal_store.py:918` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 126 | `loremaster/tests/test_surreal_store.py:926` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 127 | `loremaster/tests/test_surreal_store.py:927` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 128 | `loremaster/tests/test_surreal_store.py:929` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 129 | `loremaster/tests/test_surreal_store.py:934` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 130 | `loremaster/tests/test_surreal_store.py:938` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 131 | `loremaster/tests/test_surreal_store.py:953` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 132 | `loremaster/tests/test_surreal_store.py:956` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 133 | `loremaster/tests/test_surreal_store.py:958` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 134 | `loremaster/tests/test_surreal_store.py:962` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 135 | `loremaster/tests/test_surreal_store.py:964` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 136 | `loremaster/tests/test_surreal_store.py:966` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 137 | `loremaster/tests/test_surreal_store.py:967` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 138 | `loremaster/tests/test_surreal_store.py:973` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 139 | `loremaster/tests/test_surreal_store.py:982` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 140 | `loremaster/tests/test_surreal_store.py:990` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 141 | `loremaster/tests/test_surreal_store.py:1022` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 142 | `loremaster/tests/test_surreal_store.py:1023` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 143 | `loremaster/tests/test_surreal_store.py:1025` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 144 | `loremaster/tests/test_surreal_store.py:1028` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 145 | `loremaster/tests/test_surreal_store.py:1034` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 146 | `loremaster/tests/test_surreal_store.py:1036` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 147 | `loremaster/tests/test_surreal_store.py:1038` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 148 | `loremaster/tests/test_surreal_store.py:1048` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 149 | `loremaster/tests/test_surreal_store.py:1054` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 150 | `loremaster/tests/test_surreal_store.py:1055` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 151 | `loremaster/tests/test_surreal_store.py:1059` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 152 | `loremaster/tests/test_surreal_store.py:1097` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+| 153 | `loremaster/tests/test_surreal_store.py:1099` | not a member list — a governed-MEMBER-specific pin (its classifier / label hygiene / seam mapping); 58's per-class counterparts are test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored + test_reanchor_58_r3_tiers.py |
+
+### Item 9 — the six unresolved builds and the slow-or-hung leg (verdicts are the ADVERSARY's, `REPORT-adversary-58-r5-2.md` §QUIET-VERDICTS)
+| build / leg | verdict (adversary, quiet run) | r5.2 consequence |
+|---|---|---|
+| r4 heal leg `[ensure_ready -> _reanchor_stragglers]` | SLOW, not hung (302.55 s call on a near-quiet host) | takes §2.5's in-leg shrink (table above, row §3) |
+| WD22 (heal via `getattr` from a dict) | GREEN — a correct build | none. The adversary notes BC-r4-3(c) over-states ("derives no root and its legs red"): a BUILDER CONSTRAINT wording question for the sidecar, not a pin |
+| WD22H | KILLED (r4 Q-HEAL2) | killed on the OLD-size leg → replay on the shrunk leg |
+| W-HEAL2 | KILLED (r4 Q-HEAL2) | same — replay on the shrunk leg |
+| W-F3-ROOT | KILLED (PB) | none |
+| W-F4-PREFIX | KILLED ×6 | none |
+| W-NOOP-DRIVERS | KILLED ×3 | none |
+**Still open: none.**
+
+### Item 10 — §DECLINED, refreshed (proof · the pin it would prove · why declined)
+All declined under the tdd-contract role boundary (no wrong build built or run by the author); each is in the am-16 §5 replay scope or names the leg it needs.
+| proof | pin | note |
+|---|---|---|
+| WD17 replayed | item 2 cap+1 leg | am-16 §5 item 2 |
+| a refusal that omits `rows` / `row_cap` (attributes absent) | item 2 | §6 item 2 names it |
+| a refusal with the ruled sentence + an appended promise | item 2 (exact text) | — |
+| WD16B · `raise … from None` · X8 (`raise … from`) | item 4 spy | am-16 §5 item 2 for WD16B; the other two are its siblings |
+| a packer whose `weight` counts statements, or omits the row's relate fragment | item 3 | — |
+| WD9 · WD8 · X7B on the grown `a28c` sets | item 5 | am-16 §5 items 2 and 4 |
+| WD15D | item 6 (L2 / L3) | am-16 §5 item 2 |
+| WD12K · a swallow of `SurrealOutcomeUnknownError` only at chunk ≥ 2 | item 7 | am-16 §5 item 2 + the adversary's NOT-TRIED sibling |
+| W-HEAL2 · WD22H on the SHRUNK r4 heal leg | r4 Q-HEAL2 | their kill receipts predate the shrink |
+| a heal with no apply door · a heal that swallows its apply · the over-fire's 3-read heal (must stay GREEN) | item 1 (i)–(iii) | the last is the SAT run below |
+| a backfill swallow over PART of the backfill (a non-contiguous silent set) | the `SWALLOWS_its_backfill` contiguity rewrite | my §1-class extension — not in the am-16 scope; flagged for the lead |
+
+### The reference delta (lead #20030: "paste the delta verbatim + md5") — `my_ref_r5.py`, applied after `build_ref_r5.py` v4
+md5 `b54d8d7587b529dc58e00542942470ca` · REF `tasks.py` after it: `401fb950e4e6f6c379ef18c1db815cc7` (identical to a dry build in `reftry_v5`) · `_txn.py` unchanged by it (`8d37d2f4432276637bf9187bbcd21a6e`). A SAT host, NOT A SPEC: the ruling is am-16 §2.1, never this file.
+
+```python
+#!/usr/bin/env python3
+"""my_ref_r5.py <tree-root> — contract-58-r5 r5.2's reference delta, applied AFTER build_ref_r5.py v4 (a SAT
+host, NOT A SPEC). Packet 58 amendment 16 §2.1: the hub refusal and the packer error carry TYPED facts, derived
+by the builder's own pricing, and the refusal renders the ruled sentence from them. Exact-once anchors (#194)."""
+import sys
+from pathlib import Path
+
+TASKS = Path(sys.argv[1]) / "loremaster/loremaster/tasks.py"
+src = TASKS.read_text()
+
+
+def sub(old: str, new: str) -> None:
+    global src
+    count = src.count(old)
+    assert count == 1, f"anchor occurs {count}x: {old[:90]!r}"
+    src = src.replace(old, new)
+
+
+sub('''class StragglerHealPackerError(TaskLedgerError):
+    """A single straggler row composes more statements than one transaction may carry (am-3 §1)."""
+''', '''class StragglerHealPackerError(TaskLedgerError):
+    """A single straggler row composes more ROWS than one transaction may carry (am-3 §1; am-16 §2.1 sibling).
+
+    Typed facts: ``row_id`` (the straggler), ``weight`` (its ``fragment_rows``), ``row_cap`` (the live cap)."""
+
+    def __init__(self, *, row_id: str, weight: int, row_cap: int) -> None:
+        self.row_id, self.weight, self.row_cap = row_id, weight, row_cap
+        super().__init__(
+            f"straggler {render_attributed(row_id)} alone composes {weight} rows, over the {row_cap}-row "
+            f"transaction cap — the heal cannot pack it"
+        )
+''')
+sub('''class HubSupersedeRefusedError(TaskLedgerError):
+    """A supersede whose re-anchor would exceed the derived transaction bound (F-1)."""
+''', '''class HubSupersedeRefusedError(TaskLedgerError):
+    """A supersede whose re-anchor would exceed the derived transaction bound (F-1; am-16 §2.1).
+
+    Typed facts, each derived by the ledger's own pricing: ``dependents`` (N), ``rows`` (``fragment_rows`` of the
+    supersede it would compose), ``row_cap`` (the live ``TXN_ROW_HARD_CAP``), ``cap_dependents`` (the accessor).
+    The message is rendered FROM them, as the ruled sentence."""
+
+    def __init__(self, *, task_id: str, dependents: int, rows: int, row_cap: int, cap_dependents: int) -> None:
+        self.task_id, self.dependents, self.rows = task_id, dependents, rows
+        self.row_cap, self.cap_dependents = row_cap, cap_dependents
+        super().__init__(
+            f"task {render_attributed(task_id)} has {dependents} dependents; re-anchoring them composes {rows} "
+            f"rows, over the {row_cap}-row transaction cap (the build-time bound admits at most {cap_dependents} "
+            f"dependents) — refused, nothing changed. This is a pinned KNOWN BOUND (58 F-1); file it with "
+            f"lore_findings."
+        )
+''')
+sub('''            raise HubSupersedeRefusedError(
+                f"task {render_attributed(task_id)} has {len(dependent_ids)} dependents; one "
+                f"supersede re-anchors at most {cap} dependents (the store's transaction bound, "
+                f"derived) — refused, nothing changed. This is a pinned KNOWN BOUND (58 F-1); a hub "
+                f"this size is not expected in the fleet — file it; this refusal is the bound's "
+                f"re-open trigger"
+            )''', '''            raise HubSupersedeRefusedError(
+                task_id=task_id,
+                dependents=len(dependent_ids),
+                rows=self._supersede_rows(len(dependencies), len(dependent_ids)),
+                row_cap=_txn_module.TXN_ROW_HARD_CAP,
+                cap_dependents=cap,
+            )''')
+sub('''        deps = [f"k{index}" for index in range(successor_blocked_by_count)]
+        now = datetime.now(UTC).isoformat()
+
+        def _count(n: int) -> int:
+            fragments = self._supersede_transaction(
+                "x", "y", {}, {}, deps, [f"d{index}" for index in range(n)], actor="a", at=now
+            )
+            return _txn_module.fragment_rows(fragments)
+
+        fixed = _count(0)
+        per = _count(1) - fixed
+        return (_txn_module.TXN_ROW_HARD_CAP - fixed) // per
+''', '''        fixed = self._supersede_rows(successor_blocked_by_count, 0)
+        per = self._supersede_rows(successor_blocked_by_count, 1) - fixed
+        return (_txn_module.TXN_ROW_HARD_CAP - fixed) // per
+
+    def _supersede_rows(self, successor_blocked_by_count: int, dependents: int) -> int:
+        """``fragment_rows`` of the supersede transaction for this shape — the ONE pricing the accessor and the
+        refusal share (placeholder ids: the row count depends on the shape only)."""
+        deps = [f"k{index}" for index in range(successor_blocked_by_count)]
+        fragments = self._supersede_transaction(
+            "x", "y", {}, {}, deps, [f"d{index}" for index in range(dependents)], actor="a",
+            at=datetime.now(UTC).isoformat(),
+        )
+        return _txn_module.fragment_rows(fragments)
+''')
+sub('''            raise StragglerHealPackerError(
+                f"straggler {render_attributed(worst[0])} alone composes {worst[3]} statements, over the "
+                f"{cap}-statement transaction cap — the heal cannot pack it"
+            ) from error''', '''            raise StragglerHealPackerError(row_id=worst[0], weight=worst[3], row_cap=cap) from error''')
+TASKS.write_text(src)
+print("contract-58-r5 r5.2 reference delta applied:", TASKS)
+```
+
+### Item 11 — receipts (logs under `…/27ef6c0a-…/scratchpad/r52/`)
+| run | tree | result |
+|---|---|---|
+| **RED@HEAD** (`run_base.sh` → `run_base.log`, junit `run_base.xml`): the 45 delta ids on BASE = `f5a9211`'s code + §HELD 1/3/4 + the r5.2 tests; declaration written from `--collect-only` BEFORE the run (`declared_base.json`, md5 `53aba4e7…`: 14 red, 31 green) | TREE `6ef93147…`, `loremaster.__file__` in `r52/b52` | **14 failed / 31 passed, EXIT=1 — the observed red set equals the declared one both ways.** Every red is 58's reason: no heal (`measuring the heal shape: 0 heal chunks`, `0 chunks`), no re-anchor (`c1=c2=c3` — the linearity probe sees no per-dependent cost), (i)/(ii) `{'legacy': 2, 'straggler': 2}` write doors, (iii) `_reanchor_stragglers` absent, the SWALLOWS control's heal-door assertion, r4's `WRITES(R, v) measured 0` / STALE root. The legacy `FAILS_LOUD` leg is GREEN at HEAD as declared → its id left `red_nodeids` (item 1 rider). ⚠ One mid-run resync to BASE: `cap_dependents: cap` for `ledger.max_reanchor_dependents(successor_deps)` (the same value) — it cannot change an outcome; the BASE tree now equals the working tree byte-for-byte. |
+| **SAT** (`run_sat.sh` → `run_sat.log`, `run_sat.xml`): the 117-file declared targeted set (`declare_set_r5.py`, re-derived in REF: identical to r5's list) on REF = BASE + `build_ref_r5.py` v4 + `my_ref_r5.py`; `-n 8`, `--timeout=300`, cgroup-capped | TREE `16f943b3…`, `loremaster.__file__` = `…/scratchpad/r52/r52/loremaster/loremaster/__init__.py` | **188 failed / 8334 passed / 47 skipped, EXIT=1, 2051 s. All 188 reds are listed under `packet-64b-i-contract`; 0 under packet 58; 0 unowned → 0 attributable.** All 68 delta ids on REF are GREEN (0 missing, 0 red), none above 60 s — the r4 heal leg included (was ~303 s). The r5.1 over-fire is gone: the reference's 3-read heal passes (i)/(ii). |
+| currency `--legs typecheck,ruff` (`gate-currency-2.log`) | HEAD `f5a9211`, TREE `30e6694a…` | typecheck RED_ADJUDICATED 84 (owned by packet-58-contract; r5.2 adds none — one transient extra, a second accessor call, was folded into `cap`), ruff GREEN, **RED_ORPHANED 0** (EXIT=1 only for the leg-filtered pytest NOT_RUN) |
+| `--verify-registry` (`verify-registry-2.log`) | same | EXIT=0 |
+
+**Registry delta (packet-58-contract `red_nodeids`):** + `test_every_heal_door_after_the_backfill_RAISES[outcome_unknown]` · + `test_i_the_straggler_world_adds_heal_READ_and_WRITE_doors_and_every_derived_door_fires` · − `test_i_…_adds_EXACTLY_the_heal_APPLY_door_…` (renamed) · − `test_iv_CONTROL_…` (deleted; covered by the new (i)) · − `test_every_store_door_in_ensure_ready_over_a_legacy_store_FAILS_LOUD` (GREEN at HEAD).
+
+**Runs used:** 2 harness runs (RED@HEAD on BASE, SAT on REF) through `haiku-runner`, plus 2 currency runs and 2 `--verify-registry` (no pytest), and 2 `--collect-only`. No other run.
+
+### PACKAGE SURVEY (mechanisms r5.2 specifies)
+| mechanism | libraries evaluated | what I READ | verdict |
+|---|---|---|---|
+| restore a monkeypatched module constant for one block (the item-4 control; the r4 in-leg shrink) | pytest 9.0.3 `MonkeyPatch.context()` | installed: `pytest.MonkeyPatch.context` is a classmethod (`inspect.ismethod` → True, probed); exercised by this SAT, both legs green | **replace** — no hand-rolled save/restore |
+| exception cause/context chain walk (item 7's "the injected fault, or one caused by it") | stdlib `traceback.TracebackException` (it walks `__cause__`/`__context__` to render) | its API renders a chain; it returns no exception objects to test membership against | **bespoke** (6 lines, `_exception_chain`): the identity test needs the objects, which no stdlib API returns |
+| everything else | — | — | domain logic (pins over the ledger's own behaviour) |
+
+**Odoo-20 portability: n/a — no Odoo seam touched.**
+
+### ∀-vs-GUARDED (r5.2's load-bearing rows)
+| invariant | property | ∀ / GUARDED | fixture forcing each fate | wrong build it kills |
+|---|---|---|---|---|
+| typed refusal | the served facts equal their derivations; the text is the ruled sentence | ∀ over K ∈ {0, 2} at cap+1 (the only refusing size) | cap+1 hub per K | WD17; omitted facts; appended promise |
+| decided before compose | no over-cap transaction reaches compose | ∀ calls during the refused supersede | spy over every compose call + the direct-compose control | WD16B, `from None`, X8 |
+| packer error facts | weight = the row's own heal cost | GUARDED to the one over-cap row — reason: a second over-cap row is the same packer branch; F19 forbids larger fixtures | the 1 700-entry monster + 3 one-row probes | statement-weight, relate-less weight, import-time cap |
+| kind guard | no typed non-THROW kind reaches a text label | ∀ SDK kinds × ∀ markers (derived) | 24 new cells on REF | WD9 |
+| un-annotated | `fragment_rows == statements` | ∀ sizes the contract builds (3, L2, L3); above L2 stated bound (§2.4) | L2, L3 | WD15D |
+| heal door loud | every heal door raises ∀ chunks ∀ fault classes | ∀ doors (derived from the control) × 3 classes, 3 chunks | 9-straggler world at fit 4, fresh per k | WD12K, OutcomeUnknown-only swallow |
+| door legs | reach + loud per world; the heal shown by the measured difference | ∀ derived doors; no literal | legacy vs straggler world | no heal, no apply, swallowed apply; the 3-read heal stays green |
+
+### Realism-&-independence checklist
+- ☑ **Production-realistic inputs** — the row cap is the live `_txn` value or the ruled 5 000 shrink / an in-test shrink derived from measured weights; no literal counts; ids follow the 32-char house shape.
+- ☑ **Independent expected values** — rows / weights / caps are MEASURED at the compose spy (never read from the builder); the refusal text is built from the ruling's sentence.
+- ☑ **Seam coverage** — compose (spy), the ledger's `_query`/`_apply` (heal doors), the sweep's three store seams, the classifier (typed kinds).
+- ☑ **Magnitude bounds** — `expected_rows > TXN_ROW_HARD_CAP`, `derived_weight > _cap()`, `≥ 3` write doors, strict inequalities between worlds.
+- ☑ **Shared conventions** — `render_attributed` for `<X>`; markers/labels derived from `_txn`; the THROW prefix asserted against `_txn._ENGINE_THROW_PREFIX`.
+- ☐ **Hostile free text** — not applicable: no new render of stored free text (the refusal renders an id through the house containment seam).
+- ☐ **Input accounting** — not applicable: no collection transform is pinned in r5.2 (the heal's accounting is r3/r4's, unchanged).
+
+### Deviations / flags for the lead (each its own verdict)
+1. **Item 7 reading:** "four times one straggler's measured weight" is implemented as `fixed + 4·per` so that fit is 4 (the ruling's stated outcome: 9 stragglers, 3 chunks); `4·per` alone gives fit 3 when `fixed > 0`. Intent-faithful; the sidecar may overrule.
+2. **§1-class extension (mine):** the `SWALLOWS_its_backfill` control's `control_calls − 2` rewritten count-free (contiguous silent run) — not named by am-16 §6; same rule. Its id stays red at HEAD (still listed).
+3. **(iv) deleted, (i) renamed** — covering test named above; registry updated in the same change.
+4. **Re-grade scope note:** W-HEAL2 / WD22H were killed on the r4 heal leg at its OLD size; the leg is now shrunk → replay both (am-16 §5 item 3 already covers "the six").
+5. **Spec-silent observation:** 58's labels have no "never leaks the raw marker" pin (the governed label does).
+6. **WD22 / BC-r4-3(c):** the adversary reports the constraint over-states ("derives no root and its legs red") — a builder-constraint wording item for the sidecar.
+
+### §R5.2 — commit-ready paths (the lead commits with `git commit -- <paths>`)
+`loremaster/tests/_reanchor_58_support.py` · `loremaster/tests/test_supersede_reanchor_58.py` · `loremaster/tests/test_reanchor_58_r3_convergence.py` · `loremaster/tests/test_reanchor_58_r2_scale.py` · `loremaster/tests/test_reanchor_58_r2_rulings.py` · `loremaster/tests/test_reanchor_58_r4_state.py` · `loremaster/tests/test_fixwave_a28c_63c_i_a.py` (item-8 grant: member additions only) · `scripts/test_forgery_door_sweep.py` · `scripts/pending_contracts.yaml` · `REPORT-contract-58-r5.md`. No production code.

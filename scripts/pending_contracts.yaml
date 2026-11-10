@@ -218,6 +218,7 @@ bounds:
     - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestAHealStoreFaultIsLOUD::test_a_chunk_DOMAIN_rejection_is_isolated_WARNED_and_healed_next_boot"
     - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestAHealStoreFaultIsLOUD::test_every_heal_door_after_the_backfill_RAISES[store]"
     - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestAHealStoreFaultIsLOUD::test_every_heal_door_after_the_backfill_RAISES[transport]"
+    - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestAHealStoreFaultIsLOUD::test_every_heal_door_after_the_backfill_RAISES[outcome_unknown]"
     - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestAHealStoreFaultIsLOUD::test_the_heal_READS_what_the_backfill_minted_in_the_SAME_boot"
     - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestAHeldSupersededRowUnderOwnerQueries::test_blocked_False_excludes_it_get_serves_it_and_the_holder_cannot_transition_it"
     - "loremaster/tests/test_reanchor_58_r2_rulings.py::TestAPhantomChainHeadIsSkippedAndRECORDED::test_phantom_head_skipped_recorded_every_boot_sibling_healed_and_hand_fix_heals"
@@ -411,11 +412,9 @@ bounds:
     red_nodeids:
     - "scripts/test_forgery_door_sweep.py::TestThisInstrumentIsTYPECHECKED::test_mypy_is_clean_over_the_sweep_and_its_contract"
     - "scripts/test_forgery_door_sweep.py::TestTheDoorSweepOverTheRealLedger::test_a_ledger_that_SWALLOWS_its_backfill_failure_is_CAUGHT"
-    - "scripts/test_forgery_door_sweep.py::TestTheDoorSweepOverTheRealLedger::test_every_store_door_in_ensure_ready_over_a_legacy_store_FAILS_LOUD"
-    - "scripts/test_forgery_door_sweep.py::TestTheHealDOORSAreOnTheStragglerPath::test_i_the_straggler_world_adds_EXACTLY_the_heal_APPLY_door_and_every_derived_door_fires"
+    - "scripts/test_forgery_door_sweep.py::TestTheHealDOORSAreOnTheStragglerPath::test_i_the_straggler_world_adds_heal_READ_and_WRITE_doors_and_every_derived_door_fires"
     - "scripts/test_forgery_door_sweep.py::TestTheHealDOORSAreOnTheStragglerPath::test_ii_every_door_over_the_straggler_world_FAILS_LOUD_the_heal_APPLY_included"
     - "scripts/test_forgery_door_sweep.py::TestTheHealDOORSAreOnTheStragglerPath::test_iii_a_heal_that_SWALLOWS_its_APPLY_fault_is_CAUGHT"
-    - "scripts/test_forgery_door_sweep.py::TestTheHealDOORSAreOnTheStragglerPath::test_iv_CONTROL_without_the_straggler_the_sweep_never_reaches_the_heal_APPLY"
     missing_symbols:
     - loremaster.tasks.SupersedeResult
 # Packet 64b-i contract r2 (contract-64b-r2, 2026-09-27 — the adversary-64b survivors + packet-64 amendments 7-10 +

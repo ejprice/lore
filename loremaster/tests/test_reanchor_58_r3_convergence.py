@@ -48,7 +48,6 @@ from __future__ import annotations
 
 import itertools
 import logging
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -139,6 +138,10 @@ SCALES: dict[str, Callable[[int], int]] = {
 # ``_cap()`` — never a module-level copy taken at import (the wrong build F21 forbids).
 
 
+#: The over-cap row's entry count (am-8 §2 edge) — under the 5 000 shrink one such row cannot be packed.
+_MONSTER_ENTRIES = 1700
+
+
 def _cap() -> int:
     """The row cap as ``compose`` and the packer see it right now (read live — F21)."""
     return _txn.TXN_ROW_HARD_CAP
@@ -225,6 +228,32 @@ async def measure_weight(
         f"{shape.label}: the heal chunk's composed count is not linear in its rows (c1..c3 = {counts})"
     )
     return fixed, weight
+
+
+#: r5.2 (am-16 §2.1 sibling): the entry counts the monster's per-row weight is measured at (a one-row heal
+#: chunk each), then extrapolated linearly to the monster's own entry count.
+_WEIGHT_PROBE_ENTRIES = (2, 3, 4)
+
+
+async def one_row_weight(
+    ledger: TaskLedger, env: SurrealEnv, entries: int, tag: str, caplog: pytest.LogCaptureFixture
+) -> int:
+    """The ROW count of a ONE-row heal chunk for a ``Shape(entries, "shared", False)`` straggler, measured
+    at ``compose`` at :data:`_WEIGHT_PROBE_ENTRIES` and extrapolated (linearity checked) — what that row
+    alone costs to heal, i.e. ``fragment_rows`` of its own fragments (am-16 §2.1), derived from the
+    composed transaction, never from the builder's code."""
+    measured: list[int] = []
+    for probe in _WEIGHT_PROBE_ENTRIES:
+        await seed_population(ledger, Shape(probe, "shared", False), 1, f"{tag}w{probe}")
+        chunks = _heal_chunks(await _boot_spied(env, caplog))
+        assert len(chunks) == 1, f"measuring a one-row chunk at {probe} entries: {len(chunks)} chunks"
+        measured.append(chunks[0])
+    first, second, third = measured
+    slope = second - first
+    assert slope > 0 and third == second + slope, (
+        f"a row's heal weight is not linear in its entries (at {_WEIGHT_PROBE_ENTRIES}: {measured})"
+    )
+    return first + slope * (entries - _WEIGHT_PROBE_ENTRIES[0])
 
 
 async def _assert_converged(
@@ -527,14 +556,21 @@ class TestAnUnresolvableRowIsSkippedWHOLE:
 class TestARowOverTheCapFailsTheBootLOUD:
     @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_a_single_row_over_the_cap_raises_the_typed_packer_error_and_changes_NOTHING(
-        self, ledger58: tuple[TaskLedger, SurrealEnv]
+        self, ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
     ) -> None:
+        """r5.2 (am-16 §2.1 sibling): the packer error carries TYPED ``row_id`` / ``weight`` / ``row_cap``;
+        ``weight`` equals the monster's own heal cost derived off ``compose`` (:func:`one_row_weight`),
+        ``row_cap`` the live cap. Its text is a boot-failure message, not a served render — not pinned."""
         import loremaster.tasks as tasks_module
 
         ledger, env = ledger58
+        derived_weight = await one_row_weight(ledger, env, _MONSTER_ENTRIES, "ocw", caplog)
+        assert derived_weight > _cap(), (
+            f"non-vacuity: the monster ({derived_weight} rows) must exceed the cap"
+        )
         head = await create(ledger, "the head")
         now = datetime.now(UTC)
-        legacy = [_pad(f"ocleg{index:05d}") for index in range(1700)]
+        legacy = [_pad(f"ocleg{index:05d}") for index in range(_MONSTER_ENTRIES)]
         documents = [
             {
                 "id": RecordID(TASK_TABLE, lid),
@@ -562,8 +598,11 @@ class TestARowOverTheCapFailsTheBootLOUD:
                 await boot(env)
             message = str(caught.value)
             assert monster in message, f"boot {boot_number}: the packer error must NAME the row: {message!r}"
-            assert any(int(number) > _cap() for number in re.findall(r"\d+", message)), (
-                f"boot {boot_number}: the packer error must carry the row's WEIGHT (> {_cap()}): {message!r}"
+            facts = {name: getattr(caught.value, name, None) for name in ("row_id", "weight", "row_cap")}
+            derived = {"row_id": monster, "weight": derived_weight, "row_cap": _cap()}
+            assert facts == derived, (
+                f"boot {boot_number}: the packer error's typed facts must EQUAL their derivations "
+                f"(am-16 §2.1): served {facts}, derived {derived}"
             )
             assert await snapshot(ledger) == before, (
                 f"boot {boot_number}: a boot that fails LOUD must change NOTHING — the companion rows "

@@ -81,6 +81,8 @@ SHRUNK_ROW_WARN_THRESHOLD = 800
 #: The production row cap as this module imported it — the real-cap legs (am-15 §1.4 L1–L3, run WITHOUT the
 #: fixture) assert the live value still equals it before they run, so a leg that inherited a shrink reds.
 UNPATCHED_ROW_HARD_CAP: int = _txn_module.TXN_ROW_HARD_CAP
+#: The production WARN threshold as this module imported it (r5.2: a control that lifts the shrink back).
+UNPATCHED_ROW_WARN_THRESHOLD: int = _txn_module.TXN_ROW_WARN_THRESHOLD
 #: SDK3's retired 5 000-statement cap — its ONE named constant (``test_sdk3_row_bound``), re-exported, never
 #: a second literal (am-15 §1.4 L2/L3).
 RETIRED_STATEMENT_CAP: int = _RETIRED_STATEMENT_CAP
@@ -98,6 +100,22 @@ def shrunk_row_caps(monkeypatch: pytest.MonkeyPatch) -> tuple[int, int]:
     monkeypatch.setattr(_txn_module, "TXN_ROW_HARD_CAP", SHRUNK_ROW_HARD_CAP, raising=True)
     monkeypatch.setattr(_txn_module, "TXN_ROW_WARN_THRESHOLD", SHRUNK_ROW_WARN_THRESHOLD, raising=True)
     return SHRUNK_ROW_HARD_CAP, SHRUNK_ROW_WARN_THRESHOLD
+
+
+def hub_refusal_sentence(
+    task_id: str, *, dependents: int, rows: int, row_cap: int, cap_dependents: int
+) -> str:
+    """The hub refusal's text, built from the RULING (packet 58 amendment 16 §2.1, which supersedes kickoff
+    §1's wording), never from the implementation. ``<X>`` is the task id, contained the house way for an id
+    in a teaching error (``render_attributed``, #321)."""
+    from loremaster.render import render_attributed
+
+    return (
+        f"task {render_attributed(task_id)} has {dependents} dependents; re-anchoring them composes {rows} "
+        f"rows, over the {row_cap}-row transaction cap (the build-time bound admits at most {cap_dependents} "
+        f"dependents) — refused, nothing changed. This is a pinned KNOWN BOUND (58 F-1); file it with "
+        f"lore_findings."
+    )
 
 
 def assert_unpatched_row_cap() -> int:
@@ -512,15 +530,25 @@ class ComposeSpy:
         self._real = self._module.compose
         self.calls: list[tuple[list[str], dict[str, Any]]] = []
         self.rows: list[int] = []
+        #: r5.2 (am-16 §2.2 control): each call's fragments as ``compose`` received them, so a test can
+        #: re-compose the ledger's OWN transaction directly.
+        self.fragments: list[tuple[Any, ...]] = []
 
     def __call__(self, *fragments: Any) -> Any:
         statements = [statement for fragment in fragments for statement in fragment.statements]
         params: dict[str, Any] = {}
         for fragment in fragments:
             params.update(fragment.params)
+        # Recorded BEFORE the real compose runs, so a call compose REFUSES is still seen (am-16 §2.2).
         self.calls.append((statements, params))
         self.rows.append(composed_rows(fragments))
+        self.fragments.append(fragments)
         return self._real(*fragments)
+
+    def over_cap(self) -> list[int]:
+        """The ROW count of every recorded call over the LIVE ``_txn.TXN_ROW_HARD_CAP`` (am-16 §2.2: a ledger
+        bound decided before compose never ASKS compose for an over-cap transaction)."""
+        return [rows for rows in self.rows if rows > _txn_module.TXN_ROW_HARD_CAP]
 
     @contextlib.contextmanager
     def installed(self) -> Any:

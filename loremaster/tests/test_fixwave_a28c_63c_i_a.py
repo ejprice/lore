@@ -793,6 +793,18 @@ _HOSTILE_TEXTS = {
     "recursion": "Parse error: Exceeded expression recursion depth limit",
     "governed": "An error occurred: governed_conflict:t:1",
 }
+# ⚠ DUAL (packet 58 contract r5.2 — amendment 16 §2.3 / §4, MP-3; member · am-15 §4.1/§9.1 · this test):
+# 58's four guarded-shell THROW markers are the same KIND as the governed prefix (our-authored, anchored at
+# the THROW prefix), so each gets one hostile text — the marker DERIVED from ``_txn`` (empty pre-58), led by
+# the engine's THROW text as served (the ``governed`` entry's prefix; ``_txn`` matches it lower-cased).
+_SERVED_THROW_PREFIX = "An error occurred: "
+assert _SERVED_THROW_PREFIX.lower() == _txn._ENGINE_THROW_PREFIX  # noqa: S101, SLF001 - one engine fact
+_HOSTILE_TEXTS.update(
+    {
+        f"fifty-eight-{name}": f"{_SERVED_THROW_PREFIX}{marker}t:1"
+        for name, marker in fifty_eight_thrown_markers().items()
+    }
+)
 
 
 def _sdk_kinds() -> list[str]:
@@ -863,6 +875,9 @@ class TestTheEngineTextReadersAreExactlyTheClassifier63cIAa28c:
                 "_ERROR_CLASS_FIELD_COERCION",
                 "_ERROR_CLASS_QUERY_TOO_COMPLEX",
                 "_ERROR_CLASS_GOVERNED_CONFLICT",
+                # ⚠ DUAL (packet 58 r5.2 — am-16 §2.3 / §4; member · am-15 §4.1/§9.1 · this test): 58's four
+                # THROW labels, DERIVED (``fifty_eight_label_names``; empty pre-58).
+                *sorted(fifty_eight_label_names()),
             )
         } - {None}
         assert label not in text_labels, (

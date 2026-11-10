@@ -37,6 +37,7 @@ DIFFERENT identity from every row's creator; hub sizes come from the DERIVED acc
 
 from __future__ import annotations
 
+import importlib
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -51,7 +52,10 @@ from _reanchor_58_support import (
     PHANTOM_ID,
     RETIRED_STATEMENT_CAP,
     SUPERSEDER,
+    UNPATCHED_ROW_HARD_CAP,
+    UNPATCHED_ROW_WARN_THRESHOLD,
     ApplyHook,
+    ComposeSpy,
     all_columns,
     assert_edge_mirrors_column_for_every_row,
     assert_unpatched_row_cap,
@@ -62,6 +66,7 @@ from _reanchor_58_support import (
     drive_to,
     edge_pairs,
     events_of,
+    hub_refusal_sentence,
     ledger58,
     new_ledger,
     raw,
@@ -95,6 +100,8 @@ __all__ = ["ledger58", "shrunk_row_caps"]  # imported fixtures USED by name — 
 
 # The module whose ``compose`` / ``_apply`` the supersede routes through (the statement-count spy's seam).
 TASKS_MODULE = "loremaster.tasks"
+#: am-16 §2.1: the hub refusal's four typed facts (the ruling's names).
+_HUB_REFUSAL_FACTS = ("dependents", "rows", "row_cap", "cap_dependents")
 
 
 # =========================================================================== #
@@ -632,7 +639,14 @@ class TestTheHubBoundIsDERIVED:
         assert fixed + per * dependents > RETIRED_STATEMENT_CAP, "the leg must cross the retired bound"
         old = await create(ledger, "a hub past the retired statement cap")
         hub = await bulk_seed_dependents(ledger, old, dependents, tag="realcapx")
-        result = await supersede(ledger, old)
+        spy = ComposeSpy()
+        with spy.installed():
+            result = await supersede(ledger, old)
+        # r5.2 (am-16 §2.4, MP-4): the un-annotated rider at L2's real size, not only at 3 dependents.
+        assert spy.annotated_calls() == [], (
+            f"(rows, statements) of transactions whose fragment_rows ≠ statement count at {dependents} "
+            f"dependents: {spy.annotated_calls()} — a `rows=` annotation on 58's fragments (am-15 §2)"
+        )
         assert sorted(result.reanchored) == sorted(hub), (
             f"{dependents} dependents ({fixed + per * dependents} rows > the retired "
             f"{RETIRED_STATEMENT_CAP}) "
@@ -688,39 +702,80 @@ class TestTheHubBoundIsDERIVED:
     @pytest.mark.usefixtures("shrunk_row_caps")
     @pytest.mark.parametrize("successor_deps", [0, 2])
     async def test_one_past_the_cap_is_REFUSED_byte_inert_and_TEACHES(
-        self, ledger58: tuple[TaskLedger, SurrealEnv], successor_deps: int
+        self,
+        ledger58: tuple[TaskLedger, SurrealEnv],
+        monkeypatch: pytest.MonkeyPatch,
+        successor_deps: int,
     ) -> None:
+        """F-1 at cap+1, r5.2 (packet 58 amendment 16 §2.1 + §2.2).
+
+        * §2.1 — the refusal is ``HubSupersedeRefusedError`` carrying four TYPED facts, each equal to a value
+          derived here independently of the build: ``dependents`` (cap+1), ``rows`` (``fixed + per·(cap+1)``,
+          ``fixed``/``per`` measured off the compose spy at N = 1, 2, 3), ``row_cap`` (the live
+          ``TXN_ROW_HARD_CAP``) and ``cap_dependents`` (the accessor); ``str(error)`` is EXACTLY the ruled
+          sentence rendered from them (an appended promise or a re-spelled number reds; R-7's substring
+          checks retire).
+        * §2.2 — "decided before compose", observed AT compose: no transaction over the cap ever reaches
+          ``compose`` (WD16B — compose refuses, the ledger re-wraps with a plain ``raise`` — reds here). The
+          control, failing for a different reason: the SAME spy records an over-cap call when the test
+          composes the ledger's OWN cap+1 transaction directly (captured by superseding the same hub at
+          the real cap), and compose refuses it."""
         ledger, _env = ledger58
+        fixed, per = await self._derive(ledger, monkeypatch, successor_deps)
         cap = ledger.max_reanchor_dependents(successor_deps)
         old = await create(ledger, "the hub")
         blockers = [await create(ledger, f"successor blocker {i}") for i in range(successor_deps)]
-        await bulk_seed_dependents(ledger, old, cap + 1, tag=f"over{successor_deps}x")
+        hub = await bulk_seed_dependents(ledger, old, cap + 1, tag=f"over{successor_deps}x")
+        expected_rows = fixed + per * (cap + 1)
+        assert expected_rows > _txn.TXN_ROW_HARD_CAP, "non-vacuity: cap+1 must price OVER the row cap"
         before = await snapshot(ledger)
-        with pytest.raises(TaskLedgerError) as caught:
+        spy = ComposeSpy()
+        with spy.installed(), pytest.raises(TaskLedgerError) as caught:
             await supersede(ledger, old, blocked_by=blockers)
-        message = str(caught.value)
-        assert old in message and str(cap + 1) in message and str(cap) in message, (
-            f"the refusal must name the task, its {cap + 1} dependents and the derived cap {cap}: "
-            f"{message!r}"
+        refusal_class = getattr(importlib.import_module(TASKS_MODULE), "HubSupersedeRefusedError", None)
+        assert isinstance(refusal_class, type) and isinstance(caught.value, refusal_class), (
+            f"F-1 rules the teaching refusal HubSupersedeRefusedError; got {type(caught.value).__name__}: "
+            f"{caught.value}"
         )
-        assert "nothing changed" in message.lower(), (
-            f"the refusal must SAY nothing changed (kickoff F-1 sentence): {message!r}"
+        served = caught.value
+        facts = {name: getattr(served, name, None) for name in _HUB_REFUSAL_FACTS}
+        derived = {
+            "dependents": cap + 1,
+            "rows": expected_rows,
+            "row_cap": _txn.TXN_ROW_HARD_CAP,
+            "cap_dependents": cap,  # the accessor's own value, read above
+        }
+        assert facts == derived, (
+            f"the refusal's typed facts must EQUAL their derivations (am-16 §2.1; fixed={fixed}, per={per}): "
+            f"served {facts}, derived {derived}"
         )
-        # r5 (am-15 §8.2, A-9): r1's text check keyed on the RETIRED statement-cap wording and could no
-        # longer fail. By TYPE now: neither the error nor its __cause__ is compose's own row-cap refusal …
-        assert not isinstance(caught.value, _txn.TxnRowCapExceededError), (
-            "the bare compose() row-cap refusal was served — F-1 rules a TEACHING refusal before any write"
+        assert str(served) == hub_refusal_sentence(old, **derived), (
+            f"the refusal must serve EXACTLY the ruled sentence rendered from its facts (am-16 §2.1):\n"
+            f"  served: {str(served)!r}\n  ruled:  {hub_refusal_sentence(old, **derived)!r}"
         )
-        assert not isinstance(caught.value.__cause__, _txn.TxnRowCapExceededError), (
-            "the ledger re-wrapped compose()'s row-cap refusal — F-1 decides at the DERIVED cap, "
-            "before compose"
+        assert spy.over_cap() == [], (
+            f"a transaction over the {_txn.TXN_ROW_HARD_CAP}-row cap reached compose "
+            f"({spy.over_cap()} rows): "
+            f"F-1 decides at the DERIVED cap BEFORE compose (am-16 §2.2) — the refusal was compose's"
         )
-        # … and the positive control, same leg: composing cap+1 rows DOES raise it, so the
-        # negative half above is shown able to fire (no message text is asserted).
-        rows_needed = _txn.TXN_ROW_HARD_CAP + 1
-        with pytest.raises(_txn.TxnRowCapExceededError):
-            _txn.compose(_txn.TxnFragment(statements=["RETURN NONE"] * rows_needed, params={}))
         assert await snapshot(ledger) == before, "a refused hub supersede must write NOTHING"
+        # The control (§2.2): capture the ledger's OWN cap+1 transaction at the real cap, then compose it
+        # directly at the shrunk cap — the same spy must record it as over-cap, and compose must refuse it.
+        capture = ComposeSpy()
+        with monkeypatch.context() as lifted:
+            lifted.setattr(_txn, "TXN_ROW_HARD_CAP", UNPATCHED_ROW_HARD_CAP, raising=True)
+            lifted.setattr(_txn, "TXN_ROW_WARN_THRESHOLD", UNPATCHED_ROW_WARN_THRESHOLD, raising=True)
+            with capture.installed():
+                result = await supersede(ledger, old, blocked_by=blockers)
+        assert sorted(result.reanchored) == sorted(hub), "control: at the real cap the same hub re-anchors"
+        own = capture.fragments[capture.rows.index(max(capture.rows))]
+        control = ComposeSpy()
+        with control.installed(), pytest.raises(_txn.TxnRowCapExceededError):
+            importlib.import_module(TASKS_MODULE).compose(*own)
+        assert control.over_cap() == [expected_rows], (
+            f"control: the spy must SEE the ledger's own {expected_rows}-row cap+1 transaction as over-cap — "
+            f"saw {control.over_cap()}; else the no-over-cap assertion above is blind"
+        )
 
     @pytest.mark.usefixtures("shrunk_row_caps")
     async def test_crossing_the_WARN_threshold_logs_ONE_warning_and_SUCCEEDS(

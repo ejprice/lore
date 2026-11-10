@@ -99,3 +99,9 @@ async def test_L3_REAL_CAP_a_heal_past_the_RETIRED_statement_cap_is_ONE_transact
         f"{RETIRED_STATEMENT_CAP}) under the real row cap: ONE chunk expected, got {chunks}"
     )
     assert await column(ledger, stragglers[0]) == [head] and await column(ledger, stragglers[-1]) == [head]
+    # r5.2 (am-16 §2.4, MP-4): the un-annotated rider at the size the contract builds, not only at 3 — a
+    # `rows=` under-declaration switched on above some size slips the row bound and delays the WARN.
+    assert spy.annotated_calls() == [], (
+        f"(rows, statements) of transactions whose fragment_rows ≠ statement count at {count} stragglers: "
+        f"{spy.annotated_calls()} — a `rows=` annotation on 58's fragments (am-15 §2)"
+    )
