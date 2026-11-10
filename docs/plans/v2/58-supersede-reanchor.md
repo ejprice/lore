@@ -34,6 +34,11 @@ the original blocker — all in ONE transaction, so a dependent is never strande
   (`lore_verify` → not_found) and hand-rolls the guarded append in `_transition_fragment`,
   `_supersede_fragment`, `_claim_fragment` (3×). Compose cap: `TXN_STATEMENT_HARD_CAP = 5000`,
   `TXN_STATEMENT_WARN_THRESHOLD = 800` (`store/_txn.py`).
+  ⚠ **ERRATUM (2026-11-10, packet close-out):** both statement-cap constants were DELETED by the build
+  (amendment 15 §3 re-keyed every statement-count fact to rows, counted by `_txn.fragment_rows`). The live caps are
+  `TXN_ROW_HARD_CAP = 50_000` and `TXN_ROW_WARN_THRESHOLD = 10_000` (`store/_txn.py`, read 2026-11-10). The
+  heal chunk bound is `min(TXN_ROW_WARN_THRESHOLD, TXN_ROW_HARD_CAP)` (amendment 17 §2, §11). The supersede
+  hub cap is `TaskLedger.max_reanchor_dependents` (amendment 15 §1; known timeout bound: amendment 17 §4).
 
 ## Scope IN
 1. **Re-anchor inside the supersede transaction**: for each Y in `direct_dependents(X)` — rewrite
