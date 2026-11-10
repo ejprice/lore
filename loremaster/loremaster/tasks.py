@@ -2292,7 +2292,7 @@ class TaskLedger:
             TxnFragment(
                 # ``blocks`` has no index — a table-anchored DELETE iterates the whole table; am-17 §9.
                 # Graph-anchored at the old task: cost = its own dependent count (probe_heal_curve_58.py).
-                statements=["DELETE $ssx_old_rec->" + BLOCKS_RELATION],
+                statements=[f"DELETE $ssx_old_rec->{BLOCKS_RELATION}"],
                 params={"ssx_old_rec": RecordID(TASK_TABLE, old_id), "ssx_old": old_id},
             )
         )
@@ -2492,8 +2492,10 @@ class TaskLedger:
 
         The chunk bound is ``min(TXN_ROW_WARN_THRESHOLD, TXN_ROW_HARD_CAP)``, both read live when the heal
         runs (amendment 17 §2): the WARN threshold by ruling — a heal never composes a transaction the house
-        itself would warn about — measured at 7.25 s per full chunk on the real schema (a 50 000-row chunk
-        timed out at 300 s: cost grows with the square of the size). ``min`` because a chunk must never
+        itself would warn about. Measured on the real schema (TEST store, engine 3.3.5), 2026-11-09:
+        7.25 s per full 10 000-row chunk (amendment 17's curve, quiet host); 12.2 s for one chunk of 2 500
+        stragglers (builder's part E, other runs sharing the host). A 50 000-row chunk timed out at 300 s:
+        cost grows with the square of the size. ``min`` because a chunk must never
         exceed what ``compose`` accepts. One row heavier than the bound makes ``constrained_batches`` raise
         and the boot fails loud with :class:`StragglerHealPackerError` carrying the bound as ``row_cap``.
         Re-open trigger (am-17 §5): a ``task.backfill.stragglers_reanchored`` record with ``chunks >= 2`` on
