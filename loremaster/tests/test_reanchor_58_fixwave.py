@@ -2,25 +2,19 @@
 #130(a).
 
 *Every claim in this file is scoped to the tree at ``380414c`` (branch ``feat/surreal-unification``,
-production
-identical to the graded build ``aa4ea04``), 2026-11-10, authored by ``contract-58-r53``. "RED at HEAD"
-means RED on
-that tree.*
+production identical to the graded build ``aa4ea04``), 2026-11-10, authored by ``contract-58-r53``. "RED at
+HEAD" means RED on that tree.*
 
-* **Property P (§12.2).** After a boot heal, no row the heal wrote lies on a ``blocked_by`` cycle. A
-  straggler whose
-  re-anchor would close one (alone, jointly with another straggler, or by joining a legacy loop) is SKIPPED
-  WHOLE —
-  column, edges and ``updated_at`` byte-identical, not counted — and recorded EVERY boot as the WARNING
-  ``task.backfill.straggler_would_close_cycle`` (``database``, ``task_id``, ``blocker_ids``, ``cycle``,
-  ``members``). Legs A, B and C of §12.4; leg B uses a two-supersession chain (X1 → X1′ → H1), so the cycle
-  closes
-  at the chain HEAD.
+* **Property P (§12.2).** After a boot heal, no row the heal wrote lies on a ``blocked_by`` cycle. A straggler
+  whose re-anchor would close one (alone, jointly with another straggler, or by joining a legacy loop) is
+  SKIPPED WHOLE — column, edges and ``updated_at`` byte-identical, not counted — and recorded EVERY boot as
+  the WARNING ``task.backfill.straggler_would_close_cycle`` (``database``, ``task_id``, ``blocker_ids``,
+  ``cycle``, ``members``). Legs A, B and C of §12.4; leg B uses a two-supersession chain (X1 → X1′ → H1), so
+  the cycle closes at the chain HEAD.
 * **Leg D (§12.8 item 1).** A legacy ``blocked_by`` loop with no missing edge is recorded on EVERY boot
   (``task.backfill.legacy_cycle_minted``), not only on a boot that has edges to mint.
-* **OB3 (#626).** A supersede removes EVERY ``blocks`` edge out of the superseded task, including a drift
-  edge to a
-  row whose column does not name it (am-17 §9.2's removed-behaviour inventory, first row).
+* **OB3 (#626).** A supersede removes EVERY ``blocks`` edge out of the superseded task, including a drift edge
+  to a row whose column does not name it (am-17 §9.2's removed-behaviour inventory, first row).
 * **Served text.** F5 (§12.7): the claim loss on a superseded blocker serves "can never resolve: block on the
   successor instead" and no longer "can never win". #130(a): the served ``lore_tasks`` schema's ``status``
   description names the superseded-row exclusion. (#625 a/b ride the legs that already raise those errors:
@@ -134,8 +128,8 @@ def _assert_one_skip_record(
     )
 
 
-# =========================================================================== #
-# §12.4 legs A–C — property P: the heal never writes a row onto a blocked_by cycle
+# =========================================================================== # §12.4 legs A–C — property P:
+# the heal never writes a row onto a blocked_by cycle
 # =========================================================================== #
 
 
@@ -146,12 +140,11 @@ class TestTheHealNeverWritesARowOntoACycle:
         self, ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
     ) -> None:
         """Leg A, the audit's world plus two riders: X superseded by H with no re-anchor; H ``blocked_by
-        [D]``;
-        D ``blocked_by [X, X2]`` with X2 superseded by a healthy H2; one unrelated healthy straggler S.
+        [D]``; D ``blocked_by [X, X2]`` with X2 superseded by a healthy H2; one unrelated healthy straggler S.
 
         Kills: no check (D healed to [H, H2], a cycle written); check-then-write-anyway; a raise (boot
-        denial);
-        a silent skip (no WARNING); a partial re-anchor (X2 moved to H2); a record only on the first boot."""
+        denial); a silent skip (no WARNING); a partial re-anchor (X2 moved to H2); a record only on the first
+        boot."""
         ledger, env = ledger58
         head = await create(ledger, "fw-A head H")
         head2 = await create(ledger, "fw-A healthy head H2")
@@ -222,8 +215,7 @@ class TestTheHealNeverWritesARowOntoACycle:
     ) -> None:
         """Leg B, joint, through a two-supersession chain: D1 ``[X1]`` with X1 → X1′ → H1; D2 ``[X2]`` with
         X2 → H2; H1 ``blocked_by [D2]``; H2 ``blocked_by [D1]``. Neither row closes a cycle alone; together
-        they
-        write D1 → H1 → D2 → H2 → D1, closing at the chain HEAD H1 (not at X1′).
+        they write D1 → H1 → D2 → H2 → D1, closing at the chain HEAD H1 (not at X1′).
 
         Kills a row-by-row check (heals both: the cycle is written) and a check that stops at the first
         successor (X1′ waits on nothing)."""
@@ -263,9 +255,8 @@ class TestTheHealNeverWritesARowOntoACycle:
         self, ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
     ) -> None:
         """Leg C: D ``blocked_by [X, Z]``, Z ``blocked_by [D]`` (a legacy loop), X superseded by a healthy
-        H. The
-        heal skips D and records it, although am-3 §4 lets a LIVE supersede re-anchor such a row (§12.2: the
-        heal's refusal is per row, so am-3 §4's reason does not apply).
+        H. The heal skips D and records it, although am-3 §4 lets a LIVE supersede re-anchor such a row
+        (§12.2: the heal's refusal is per row, so am-3 §4's reason does not apply).
 
         Kills a build that copies am-3 §4's ``minted`` choice (only the successor counts as minted, so the
         legacy loop is stepped over and D is healed to [H, Z])."""
@@ -289,22 +280,19 @@ class TestTheHealNeverWritesARowOntoACycle:
         assert sum(healed) == 0, f"D was counted as healed: {healed}"
 
 
-# =========================================================================== #
-# §12.8 item 1, leg D — a legacy loop is recorded on EVERY boot
-# =========================================================================== #
+# =========================================================================== # §12.8 item 1, leg D — a legacy
+# loop is recorded on EVERY boot =========================================================================== #
 
 
 class TestALegacyLoopIsRecordedEveryBoot:
     """am-17 §12.8 item 1. RED at HEAD: ``_backfill_blocks_edges`` returns before ``_record_legacy_cycles``
-    when no
-    edge is missing, so a mirror-consistent legacy loop is never recorded."""
+    when no edge is missing, so a mirror-consistent legacy loop is never recorded."""
 
     async def test_D_a_legacy_loop_with_NO_missing_edge_is_recorded_on_every_boot_and_nothing_changes(
         self, ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
     ) -> None:
         """A ``blocked_by [B]``, B ``blocked_by [A]``, both edges present. Two boots: each records the loop
-        once,
-        naming both members; the store is unchanged.
+        once, naming both members; the store is unchanged.
 
         Kills the early-return build (HEAD) and a record-once build (a 'have I recorded' flag)."""
         ledger, env = ledger58
@@ -329,29 +317,25 @@ class TestALegacyLoopIsRecordedEveryBoot:
             assert await snapshot(ledger) == before, f"boot {boot_number} changed the store"
 
 
-# =========================================================================== #
-# #626 (cold audit probes F1, OB3) — every edge OUT of the superseded task goes, drift edges included
+# =========================================================================== # #626 (cold audit probes F1,
+# OB3) — every edge OUT of the superseded task goes, drift edges included
 # =========================================================================== #
 
 
 class TestTheSupersedeRemovesEveryOutEdgeOfTheOldTask:
     """am-17 §9.2's removed-behaviour inventory, row 1 ("deletes every edge whose ``in`` is the old task"),
-    pinned in
-    a world that is NOT mirror-consistent. GREEN at HEAD (the built DELETE is ``$old->blocks``); it is the
-    missing
-    pin #626 names, so it carries no RED."""
+    pinned in a world that is NOT mirror-consistent. GREEN at HEAD (the built DELETE is ``$old->blocks``); it
+    is the missing pin #626 names, so it carries no RED."""
 
     async def test_a_DRIFT_edge_out_of_the_hub_is_deleted_with_the_dependents_edges(
         self, ledger58: tuple[TaskLedger, SurrealEnv]
     ) -> None:
         """A hub with 3 dependents, one blocker of its own, and a drift edge hub → E where E's column does not
-        name the hub. After the supersede: no edge leaves the hub; the edge INTO the hub survives; E's
-        column is
-        untouched and E is not reported as re-anchored.
+        name the hub. After the supersede: no edge leaves the hub; the edge INTO the hub survives; E's column
+        is untouched and E is not reported as re-anchored.
 
         Kills OB3 (``DELETE … WHERE out INSIDE $dependents_read`` leaves the drift edge) and a DELETE over
-        both
-        directions (the blocker's edge into the hub goes too)."""
+        both directions (the blocker's edge into the hub goes too)."""
         ledger, _env = ledger58
         blocker = await create(ledger, "fw-OB3 the hub's own blocker")
         hub = await create(ledger, "fw-OB3 hub", blocked_by=[blocker])
@@ -373,15 +357,13 @@ class TestTheSupersedeRemovesEveryOutEdgeOfTheOldTask:
         assert sorted(getattr(result, "reanchored", [])) == sorted(dependents)
 
 
-# =========================================================================== #
-# Served text — F5 (§12.7) and #130(a)
-# =========================================================================== #
+# =========================================================================== # Served text — F5 (§12.7) and
+# #130(a) =========================================================================== #
 
 
 class TestTheServedTextSaysWhatIsTrue:
     """am-17 §12.7. RED at HEAD: the claim render says "can never win"; the ``status`` description does not
-    name
-    the superseded-row exclusion."""
+    name the superseded-row exclusion."""
 
     async def test_F5_a_claim_lost_to_a_superseded_blocker_says_can_never_resolve_not_can_never_win(
         self, ledger58: tuple[TaskLedger, SurrealEnv]
@@ -417,3 +399,171 @@ class TestTheServedTextSaysWhatIsTrue:
             f"the served lore_tasks `status` description does not say superseded rows are excluded from the "
             f"filter: {description!r}"
         )
+
+
+# =========================================================================== # am-17 §13 (#631) — the cycle
+# predicate is EXACT (MP-1) and the heal's fate is ONE pass over stored ∪ proposed (D2)
+# =========================================================================== #
+
+
+def _reaches(columns: dict[str, list[str]], start: str, target: str) -> bool:
+    """Ground-truth reachability over the ``blocked_by`` columns (``node -> its blockers``): can ``start``'s
+    blockers lead back to ``target``? Deliberately NOT ``find_blocked_by_cycle``, whose first answer in these
+    worlds is the legacy loop, not the cycle through the row (am-17 §13.5 item 1)."""
+    seen: set[str] = set()
+    stack = list(columns.get(start, ()))
+    while stack:
+        node = stack.pop()
+        if node == target:
+            return True
+        if node in seen:
+            continue
+        seen.add(node)
+        stack.extend(columns.get(node, ()))
+    return False
+
+
+async def _seed_world(ledger: TaskLedger, rows: dict[str, list[str]], superseded: dict[str, str]) -> None:
+    """Raw rows first, then every edge their columns imply (``blocks`` is ENFORCED: an edge to a row that
+    does not exist yet is refused). ``superseded`` maps an id to its ``superseded_by``."""
+    for task_id, blocked_by in rows.items():
+        await raw_seed_row(ledger, task_id, blocked_by=blocked_by, superseded_by=superseded.get(task_id))
+    for task_id, blocked_by in rows.items():
+        for blocker in blocked_by:
+            await raw_relate(ledger, blocker, task_id)
+
+
+class TestTheCyclePredicateIsExact:
+    """am-17 §13.5 item 1, MP-1 as adversary-58-fw1 wrote it: a cycle through the asked row that SHARES an
+    edge with a legacy loop whose ids sort first. RED at HEAD: the heal checks nothing, and the live
+    supersede's step-over drops the shared edge and misses the cycle (#631)."""
+
+    @pytest.mark.parametrize("order", ["legacy_ids_sort_first", "control_dependent_sorts_first"])
+    async def test_E1_the_heal_never_writes_a_cycle_that_shares_an_edge_with_a_legacy_loop(
+        self, ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture, order: str
+    ) -> None:
+        """E1: X superseded by H; H ``[L1]``; L1 ``[L2]``; L2 ``[L1, D]``; D ``[X]``. Re-anchoring D writes
+        D -> H -> L1 -> L2 -> D, which shares L1 -> L2 with the legacy loop L1 <-> L2. After the boot D is
+        unchanged and recorded, and D is on no cycle (reachability). The control orders the ids so the
+        dependent sorts first (the shape an edge-dropping predicate happens to get right).
+
+        Kills: no check (HEAD); the step-over predicate (#631: it drops L1 -> L2 and misses the cycle when the
+        legacy ids sort first); a check against the stored graph only (no cycle there)."""
+        ledger, env = ledger58
+        if order == "legacy_ids_sort_first":
+            l1, l2, h, x, d = _tid("e1a1"), _tid("e1b2"), _tid("e1h"), _tid("e1x"), _tid("e1d")
+        else:
+            l1, l2, h, x, d = _tid("e1l1"), _tid("e1l2"), _tid("e1h"), _tid("e1x"), _tid("e1d")
+        await _seed_world(ledger, {h: [l1], x: [], l1: [l2], l2: [l1, d], d: [x]}, {x: h})
+        before = await _row_state(ledger, d)
+        records = await _boot_logged(env, caplog)
+        columns = await all_columns(ledger)
+        assert not _reaches(columns, d, d), (
+            f"the heal wrote D onto a cycle: D={columns.get(d)}, columns={columns}"
+        )
+        assert await _row_state(ledger, d) == before, f"D must be unchanged: {await _row_state(ledger, d)}"
+        _assert_one_skip_record(
+            records, task_id=d, blocker_ids={x}, must_include={d, h}, where=f"E1[{order}]"
+        )
+
+    @pytest.mark.parametrize("legacy_loop", [True, False], ids=["with_legacy_loop", "control_no_legacy_loop"])
+    async def test_E3_the_live_supersede_refuses_a_cycle_that_shares_an_edge_with_a_legacy_loop(
+        self, ledger58: tuple[TaskLedger, SurrealEnv], legacy_loop: bool
+    ) -> None:
+        """E3 (the SECURITY DOOR: a caller reaches it through ``lore_tasks supersede``): R ``[X]``; L1
+        ``[L2]``; L2 ``[L1, R]`` (legacy loop L1 <-> L2, ids sorting first). ``supersede(X, blocked_by=[L1])``
+        re-anchors R to the successor S and closes S -> L1 -> L2 -> R -> S, sharing L1 -> L2 with the loop →
+        ``TaskCycleError``, nothing written. The control drops the back edge L2 -> L1 (no legacy loop):
+        refused at HEAD too.
+
+        Kills the step-over predicate (#631, reproduced on 25cfd16: the supersede SUCCEEDS and writes the
+        cycle)."""
+        ledger, env = ledger58
+        x = await create(ledger, "fw-E3 live X")
+        l1, l2, r = "00e3l1".ljust(32, "0"), "00e3l2".ljust(32, "0"), "00e3r".ljust(32, "0")
+        await _seed_world(ledger, {r: [x], l1: [l2], l2: [l1, r] if legacy_loop else [r]}, {})
+        await boot(env)  # the backfill and heal settle first (nothing to heal: X is live)
+        before = await snapshot(ledger)
+        with pytest.raises(TaskCycleError):
+            await supersede(ledger, x, blocked_by=[l1])
+        assert await snapshot(ledger) == before, "a refused supersede wrote something"
+
+
+class TestTheHealsFateIsOnePassOverStoredPlusProposed:
+    """am-17 §13.4 / §13.5 item 2, D2: a pending row is skipped iff one of its post-rewrite blockers can
+    reach it through the stored columns PLUS every pending row's post-rewrite column. One pass, so no id order
+    matters, and a row may wait one boot for another to be healed. RED at HEAD: the heal checks nothing."""
+
+    # One id assignment from each fate class the WITHDRAWN §12.2 loop splits this world into (adversary-58-fw1
+    # restore_probe, re-run on HEAD's detector + step-over by `d2_fate_classes.py`, REPORT-contract-58-r53.md
+    # §FIXWAVE-13): letters sort a < b < c < d, and both X ids sort after them.
+    FATE_CLASS_ID_ORDERS = {
+        "old_loop_skips_D1_only": {"d1": "a", "h1": "b", "d2": "c", "h2": "d"},
+        "old_loop_skips_both": {"d1": "a", "h2": "b", "h1": "c", "d2": "d"},
+    }
+
+    @pytest.mark.parametrize("assignment", sorted(FATE_CLASS_ID_ORDERS))
+    async def test_D2_i_both_rows_are_skipped_whatever_the_id_order(
+        self, ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture, assignment: str
+    ) -> None:
+        """D1 ``[X1→H1]``, H1 ``[D1, D2]``; D2 ``[X2→H2]``, H2 ``[D1]``. D1 alone closes D1 -> H1 -> D1; D2
+        closes D2 -> H2 -> D1 -> H1 -> D2 only through D1's STORED-plus-proposed edges. Both rows are skipped
+        and recorded, under both id assignments.
+
+        Kills the minimal fate (heal D2 once D1 is skipped) and any order-dependent build (the withdrawn loop
+        skips D1 only under one of these assignments)."""
+        ledger, env = ledger58
+        letters = self.FATE_CLASS_ID_ORDERS[assignment]
+        d1, h1, d2, h2 = (_tid(f"q{letters[name]}") for name in ("d1", "h1", "d2", "h2"))
+        x1, x2 = _tid("qx1"), _tid("qx2")
+        await _seed_world(
+            ledger, {h1: [d1, d2], h2: [d1], x1: [], x2: [], d1: [x1], d2: [x2]}, {x1: h1, x2: h2}
+        )
+        before = {row: await _row_state(ledger, row) for row in (d1, d2)}
+        records = await _boot_logged(env, caplog)
+        for row in (d1, d2):
+            assert await _row_state(ledger, row) == before[row], f"{assignment}: {row} changed"
+        columns = await all_columns(ledger)
+        assert not _reaches(columns, d1, d1) and not _reaches(columns, d2, d2), (
+            f"{assignment}: a cycle: {columns}"
+        )
+        _assert_one_skip_record(
+            records, task_id=d1, blocker_ids={x1}, must_include={d1, h1}, where=f"{assignment} D1"
+        )
+        _assert_one_skip_record(
+            records, task_id=d2, blocker_ids={x2}, must_include={d2, h2}, where=f"{assignment} D2"
+        )
+
+    async def test_D2_ii_a_row_whose_cycle_runs_through_another_stragglers_STORED_edge_waits_one_boot(
+        self, ledger58: tuple[TaskLedger, SurrealEnv], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """P ``[Xp→Hp]``, Hp ``[D]``; D ``[X→H]`` with X ``blocked_by [P]``; H clean. Boot 1: P's new
+        blocker Hp reaches P through D's STORED edge D -> X -> P (D may not be written: its chunk can fail
+        alone), so P is skipped and recorded; D is healed to ``[H]``. Boot 2: D's stored edge is now D -> H,
+        nothing reaches P, so P is healed to ``[Hp]`` with no WARNING.
+
+        Kills the overlay rules (with every pending row applied there is no cycle, so both heal on boot 1),
+        and is the pin that stops someone "fixing" the one-boot wait (am-17 §13.4)."""
+        ledger, env = ledger58
+        p, xp, hp = _tid("pP"), _tid("pXp"), _tid("pHp")
+        d, x, h = _tid("pD"), _tid("pX"), _tid("pH")
+        await _seed_world(ledger, {hp: [], h: [], xp: [], x: [], p: [xp], d: [x]}, {xp: hp, x: h})
+        await raw_force(ledger, hp, blocked_by=[d])
+        await raw_relate(ledger, d, hp)
+        await raw_force(ledger, x, blocked_by=[p])
+        await raw_relate(ledger, p, x)
+        p_before = await _row_state(ledger, p)
+
+        records = await _boot_logged(env, caplog)
+        assert await column(ledger, d) == [h], f"boot 1: D must heal to [H], got {await column(ledger, d)}"
+        assert await _row_state(ledger, p) == p_before, (
+            f"boot 1: P must be unchanged, got {await column(ledger, p)}"
+        )
+        _assert_one_skip_record(records, task_id=p, blocker_ids={xp}, must_include={p, hp}, where="boot 1")
+
+        await _boot_logged(env, caplog)
+        assert await column(ledger, p) == [hp], f"boot 2: P must heal to [Hp], got {await column(ledger, p)}"
+        assert not _records(caplog, WOULD_CLOSE_CYCLE_EVENT), (
+            "boot 2: a WARNING fired with nothing left to close"
+        )
+        assert not _reaches(await all_columns(ledger), p, p), "boot 2 wrote P onto a cycle"

@@ -91,6 +91,12 @@ bounds:
     - "loremaster/tests/test_reanchor_58_fixwave.py::TestALegacyLoopIsRecordedEveryBoot::test_D_a_legacy_loop_with_NO_missing_edge_is_recorded_on_every_boot_and_nothing_changes"
     - "loremaster/tests/test_reanchor_58_fixwave.py::TestTheServedTextSaysWhatIsTrue::test_F5_a_claim_lost_to_a_superseded_blocker_says_can_never_resolve_not_can_never_win"
     - "loremaster/tests/test_reanchor_58_fixwave.py::TestTheServedTextSaysWhatIsTrue::test_130a_the_served_status_field_names_the_superseded_row_exclusion"
+    - "loremaster/tests/test_reanchor_58_fixwave.py::TestTheCyclePredicateIsExact::test_E1_the_heal_never_writes_a_cycle_that_shares_an_edge_with_a_legacy_loop[legacy_ids_sort_first]"
+    - "loremaster/tests/test_reanchor_58_fixwave.py::TestTheCyclePredicateIsExact::test_E1_the_heal_never_writes_a_cycle_that_shares_an_edge_with_a_legacy_loop[control_dependent_sorts_first]"
+    - "loremaster/tests/test_reanchor_58_fixwave.py::TestTheCyclePredicateIsExact::test_E3_the_live_supersede_refuses_a_cycle_that_shares_an_edge_with_a_legacy_loop[with_legacy_loop]"
+    - "loremaster/tests/test_reanchor_58_fixwave.py::TestTheHealsFateIsOnePassOverStoredPlusProposed::test_D2_i_both_rows_are_skipped_whatever_the_id_order[old_loop_skips_D1_only]"
+    - "loremaster/tests/test_reanchor_58_fixwave.py::TestTheHealsFateIsOnePassOverStoredPlusProposed::test_D2_i_both_rows_are_skipped_whatever_the_id_order[old_loop_skips_both]"
+    - "loremaster/tests/test_reanchor_58_fixwave.py::TestTheHealsFateIsOnePassOverStoredPlusProposed::test_D2_ii_a_row_whose_cycle_runs_through_another_stragglers_STORED_edge_waits_one_boot"
   - path: loremaster/tests/test_supersede_reanchor_58.py
     red_nodeids:
     - "loremaster/tests/test_supersede_reanchor_58.py::TestTheHubBoundIsDERIVED::test_one_past_the_cap_is_REFUSED_byte_inert_and_TEACHES[0]"
@@ -98,6 +104,10 @@ bounds:
   - path: loremaster/tests/test_reanchor_58_r3_convergence.py
     red_nodeids:
     - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestARowOverTheCapFailsTheBootLOUD::test_a_single_row_over_the_cap_raises_the_typed_packer_error_and_changes_NOTHING"
+  - path: loremaster/tests/test_blocks_edge.py
+    red_nodeids:
+    - "loremaster/tests/test_blocks_edge.py::TestTheCyclePolicyHasONEImplementation::test_MUTATION_the_persisted_row_predicate_answers_for_ALL_FOUR_writers"
+    - "loremaster/tests/test_blocks_edge.py::TestTheCyclePolicyHasONEImplementation::test_MUTATION_the_batch_key_detector_answers_ONLY_the_batch_key_question"
 # Packet 64b-i contract r2 (contract-64b-r2, 2026-09-27 — the adversary-64b survivors + packet-64 amendments 7-10 +
 # 63c amendment 35 §6, the #461 shape, lead #17055). Every file listed below: the 64b-i contract files declare 64b-i's
 # RULED, not-yet-built symbols as TYPED CALLS in a runtime-inert `if TYPE_CHECKING:` block, and the two CONVERTED

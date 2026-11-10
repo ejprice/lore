@@ -406,6 +406,14 @@ ENGINE_RECURSION_CEILING = 256
 SHARED_CYCLE_DETECTOR_MODULE = "loremaster.tasks"
 SHARED_CYCLE_DETECTOR_ATTR = "find_blocked_by_cycle"
 
+#: am-17 §13.2 / §13.3 (packet 58 fix wave, #631): "does this row's write close a cycle through PERSISTED
+#: rows" is ONE pure function over (stored, proposed, asked, all_or_nothing) -> {row: cycle}, used by create,
+#: create_many, supersede and the boot heal; ``find_blocked_by_cycle`` stays the detector for the batch-KEY
+#: question only. The ruling leaves the name to the builder; this contract fixes it as
+#: ``find_row_blocked_by_cycles`` (the build's own choice, REPORT-contract-58-r53.md §FIXWAVE-13). Pinned only
+#: by MUTATION (replaced by a stub returning ``{}``).
+PERSISTED_ROW_CYCLE_PREDICATE_ATTR = "find_row_blocked_by_cycles"
+
 #: The shared cycle-refusal FORMATTER — R6's *"one refusal sentence shape"*, with the noun
 #: supplied by the caller so a batch KEY cycle and a PERSISTED-ID cycle read as what they
 #: are.  Mutating it must change BOTH served sentences (the L3 instrument, applied to the
@@ -2554,25 +2562,109 @@ class TestTheCyclePolicyHasONEImplementation:
             f"refusal now needs a tool-seam pin of its own. See the re-open trigger above"
         )
 
-    async def test_MUTATION_neutralising_the_SHARED_detector_lets_BOTH_shapes_through(
+    # ⚠ DUAL (packet 58 fix wave, am-17 §13.3 — R6 amended): this USED to be ONE mutation,
+    # `test_MUTATION_neutralising_the_SHARED_detector_lets_BOTH_shapes_through` (`find_blocked_by_cycle` →
+    # in both modules ⇒ the batch-key AND the persisted-id refusals both stop). §13 splits the detector by
+    # QUESTION, so it becomes the two mutations below; the sentence and the class stay shared (the FORMATTER
+    # pin is unchanged).
+
+    @staticmethod
+    async def _persisted_writers_refuse(ledger: TaskLedger, env: SurrealEnv) -> dict[str, bool]:
+        """Each persisted-row writer offered a cycle; ``True`` = it refused (or the heal skipped the row).
+
+        * ``create_many``: a self-blocking task under a caller-supplied id;
+        * ``create_many_through_a_persisted_row``: a new id ``N`` blocked by a persisted Y that already names
+          ``N``;
+        * ``supersede``: R ``[X]``, L1 ``[L2]``, L2 ``[R]``; ``supersede(X, blocked_by=[L1])`` closes S -> L1
+          -> L2 -> R -> S;
+        * ``heal``: D ``[X'→H']``, H' ``[D]``; the boot heal would write D -> H' -> D.
+
+        ``create_task`` is not offered: its id is minted inside the verb, so no persisted row can name it (the
+        adversary's SIBLINGS NOT TRIED, by argument)."""
+        from _reanchor_58_support import boot, column, raw_force, raw_relate, raw_seed_row, supersede
+        from loremaster.tasks import TaskCycleError, TaskSpec
+
+        tag = uuid.uuid4().hex[:12]
+        outcome: dict[str, bool] = {}
+        self_id = f"selfloop{tag}"
+        try:
+            await ledger.create_many(
+                [TaskSpec(subject="a self loop", description=DESCRIPTION, blocked_by=[self_id])],
+                created_by=CREATOR,
+                ids=[self_id],
+            )
+            outcome["create_many"] = False
+        except TaskCycleError:
+            outcome["create_many"] = True
+        closer, waiter = f"closer{tag}", f"waiter{tag}"
+        await raw_seed_row(ledger, waiter, blocked_by=[closer])
+        try:
+            await ledger.create_many(
+                [TaskSpec(subject="closes the loop", description=DESCRIPTION, blocked_by=[waiter])],
+                created_by=CREATOR,
+                ids=[closer],
+            )
+            outcome["create_many_through_a_persisted_row"] = False
+        except TaskCycleError:
+            outcome["create_many_through_a_persisted_row"] = True
+        live_x = await ledger.create_task("supersede X", DESCRIPTION, created_by=CREATOR)
+        r, l1, l2 = f"rr{tag}", f"l1{tag}", f"l2{tag}"
+        await raw_seed_row(ledger, r, blocked_by=[live_x])
+        await raw_seed_row(ledger, l1, blocked_by=[l2])
+        await raw_seed_row(ledger, l2, blocked_by=[r])
+        for blocker, blocked in ((live_x, r), (l2, l1), (r, l2)):
+            await raw_relate(ledger, blocker, blocked)
+        try:
+            await supersede(ledger, live_x, blocked_by=[l1])
+            outcome["supersede"] = False
+        except TaskCycleError:
+            outcome["supersede"] = True
+        head, old, dependent = f"hh{tag}", f"xx{tag}", f"dd{tag}"
+        await raw_seed_row(ledger, head, blocked_by=[])
+        await raw_seed_row(ledger, old, blocked_by=[], superseded_by=head)
+        await raw_seed_row(ledger, dependent, blocked_by=[old])
+        await raw_force(ledger, head, blocked_by=[dependent])
+        for blocker, blocked in ((old, dependent), (dependent, head)):
+            await raw_relate(ledger, blocker, blocked)
+        await boot(env)
+        outcome["heal"] = await column(ledger, dependent) == [old]
+        return outcome
+
+    async def test_MUTATION_the_persisted_row_predicate_answers_for_ALL_FOUR_writers(
         self, monkeypatch: pytest.MonkeyPatch, task_ledger: tuple[TaskLedger, SurrealEnv, str]
     ) -> None:
-        """⛔ **PROVE SHARING BY MUTATION — the only test that tells DRY from looks-DRY.**
-
-        The stub is an ACCEPT-EVERYTHING (*"no cycle here"*), never a raising sentinel: 04a
-        MEASURED that a sentinel proves only that a function is CALLED, never that it
-        DECIDES, and a build where both modules call a shared function and then re-decide
-        underneath it — ROUTING, not SHARING — passed 04a's whole contract.
-
-        Substituted in BOTH consuming namespaces at once, then BOTH cycle shapes must be
-        ACCEPTED.  A module keeping a private copy keeps refusing, and reddens here.
-
-        ⚠ ``raising=True``: a module that does not hold the detector under
-        :data:`SHARED_CYCLE_DETECTOR_ATTR` reddens rather than silently skipping.
-        """
-        ledger, _env, _blocker = task_ledger
+        """⛔ am-17 §13.3, mutation 1: the persisted-row predicate replaced by an ACCEPT-EVERYTHING stub
+        (``{}``: no row is hit) → create_many, the create through a persisted row, supersede and the heal ALL
+        let their cycle through. A writer with a private check keeps refusing and reddens here (routing is not
+        sharing, #102). ``raising=True``: a build without the predicate under
+        :data:`PERSISTED_ROW_CYCLE_PREDICATE_ATTR` reddens."""
         import importlib
 
+        ledger, env, _blocker = task_ledger
+        monkeypatch.setattr(
+            importlib.import_module(SHARED_CYCLE_DETECTOR_MODULE),
+            PERSISTED_ROW_CYCLE_PREDICATE_ATTR,
+            lambda *_args, **_kwargs: {},
+            raising=True,
+        )
+        refused = await self._persisted_writers_refuse(ledger, env)
+        assert not any(refused.values()), (
+            f"with the ONE persisted-row predicate neutralised, these writers still refused a cycle: "
+            f"{sorted(w for w, r in refused.items() if r)} — each decides cyclicity underneath the shared "
+            f"call"
+        )
+
+    async def test_MUTATION_the_batch_key_detector_answers_ONLY_the_batch_key_question(
+        self, monkeypatch: pytest.MonkeyPatch, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """⛔ am-17 §13.3, mutation 2: ``find_blocked_by_cycle`` → ``None`` in both modules → the cyclic BATCH
+        is no longer refused AS A BATCH-KEY CYCLE (its one consumer is the batch-key check; the ledger's
+        persisted-row predicate may still refuse the minted ids), and the four persisted-row writers STILL
+        refuse (they do not ask it). Kills a build that answers the persisted question with the batch-key
+        detector (HEAD's shape) and a batch-key check that decides underneath the shared call."""
+        import importlib
+
+        ledger, env, _blocker = task_ledger
         for module_name in (SHARED_CYCLE_DETECTOR_MODULE, TOOL_SEAM_MODULE):
             monkeypatch.setattr(
                 importlib.import_module(module_name),
@@ -2580,30 +2672,30 @@ class TestTheCyclePolicyHasONEImplementation:
                 lambda *_args, **_kwargs: None,
                 raising=True,
             )
+        from loremaster.tasks import CYCLE_NOUN_BATCH_KEYS, TaskCycleError
 
-        before = await _task_row_count(ledger)
-        await _tool_seam(ledger).tasks(
-            action="create_many",
-            created_by=CREATOR,
-            items=self._cycle_specs("wave-8-charter", "wave-8-rollout"),
+        # With the batch-key detector off, the cyclic batch passes the batch-key check and reaches the ledger,
+        # whose ONE persisted-row predicate may still refuse the minted ids (§13's design, measured on the
+        # reference). What must disappear is the BATCH-KEY refusal: its noun is no longer served.
+        try:
+            await _tool_seam(ledger).tasks(
+                action="create_many",
+                created_by=CREATOR,
+                items=self._cycle_specs("wave-8-charter", "wave-8-rollout"),
+            )
+            served = ""
+        except TaskCycleError as error:
+            served = str(error)
+        assert CYCLE_NOUN_BATCH_KEYS not in served, (
+            f"with the batch-key detector neutralised, the cyclic BATCH was still refused as a batch-key "
+            f"cycle: {served!r} — the batch-key check decides underneath the shared call"
         )
-        assert await _task_row_count(ledger) == before + 2, (
-            "with the SHARED cycle detector neutralised in both modules, a cyclic batch was "
-            "still refused — so at least one of them is deciding acyclicity underneath the "
-            "shared call. Routing is not sharing (#102)"
-        )
-
-        from loremaster.tasks import TaskSpec
-
-        self_id = f"self_{uuid.uuid4().hex}"
-        await ledger.create_many(
-            [TaskSpec(subject="a self loop", description=DESCRIPTION, blocked_by=[self_id])],
-            created_by=CREATOR,
-            ids=[self_id],
-        )
-        assert await _task_row_count(ledger) == before + 3, (
-            "with the shared detector neutralised, the LEDGER still refused a self-blocking "
-            "task — its write-time guard keeps a private detector"
+        refused = await self._persisted_writers_refuse(ledger, env)
+        assert all(refused.values()), (
+            f"with only the BATCH-KEY detector neutralised, these persisted-row writers let a cycle through: "
+            f"{sorted(w for w, r in refused.items() if not r)} — they ask the batch-key detector, not the "
+            f"ONE "
+            f"persisted-row predicate (am-17 §13.3)"
         )
 
     async def test_MUTATION_replacing_the_shared_FORMATTER_changes_BOTH_refusals(

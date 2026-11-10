@@ -1609,8 +1609,9 @@ class TestTheCLAIMRenderNamesTheSUPERSEDEDBlockerCase:
         assert blocker in rendered and successor in rendered, (
             f"a claim that failed because its blocker {blocker!r} was SUPERSEDED by "
             f"{successor!r} renders {rendered!r}. Supersession is not terminal, so the CAS "
-            f"counts that blocker forever and this claim can NEVER win — 'blocked_by [...] "
-            f"unresolved' tells the agent to keep polling a door that is nailed shut. R10 "
+            f"counts that blocker forever: it can never resolve, and the move is to block on the "
+            f"successor (until the next boot heal re-anchors the row — packet 58 am-17 §12.7) — "
+            f"'blocked_by [...] unresolved' tells the agent to keep polling a door that is nailed shut. R10 "
             f"closed the at-CREATE door in 04b-1; this is the moment-of-causation door, "
             f"which is the only one reachable when the supersede happens AFTER the "
             f"dependent exists"
