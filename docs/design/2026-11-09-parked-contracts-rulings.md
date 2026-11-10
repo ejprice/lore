@@ -35,7 +35,8 @@
 ## Reported by the author, not part of this packet
 - `pending_contract_gate.py --currency --legs typecheck,ruff` exits 1 ("CURRENCY: FAIL") because the
   pytest leg is NOT_RUN under `--legs`, so its exit code cannot serve as the per-round signal lore
-  `CLAUDE.md` § Quality gates describes. Unverified by the lead; to be checked and ledgered separately.
+  `CLAUDE.md` § Quality gates describes. Verified by the lead at 54c7595 (EXIT=1, "CURRENCY : FAIL —
+  claimed but never run: pytest"); ledgered as finding #621 for an operator/design call.
 
 ## Adversary round 1 (adversary-parked-1, graded 54c7595): INSUFFICIENT — lead rulings for the ONE fix round
 The operator's lean pipeline allows one adversary round, so this fix round is not re-graded; the cold
