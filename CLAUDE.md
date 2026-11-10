@@ -73,6 +73,11 @@ strong — collapsing them loses whichever case the survivor cannot see.**
   each state and byte-diff the served response against the healthy one. **Identical bytes =
   a false clear = STOP.** **Ask: *"what broken state of this tool would serve exactly these
   bytes?"*** Build-time, per tool — never per-call (injected states cannot re-run live).
+  **The full matrix stays, on served surfaces only (operator, 2026-11-09: the global
+  "size to the risk" rule does not thin it).** Each cell must be a state that can actually
+  occur. A cell is dropped only when CONSTRUCTING it fails — the attempt is the proof, per
+  the next bullet, never an argument that it cannot happen — and the dropped cell
+  (dependency, verb, why construction failed) is listed in the tool's docstring, not tested.
 - **CONSTRUCTION, NEVER REASONING, and this is the load-bearing sentence:** a missed
   world-state is *discoverable* — routine coverage finds it by accident, without anyone
   knowing the bug — but **a false belief about your own semantics is SELF-SEALING, and the
