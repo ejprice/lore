@@ -1070,3 +1070,351 @@ MEDIUM on the pending-set detail in 12.2 (reasoned from the code, not executed).
 3. **aa4ea04 has not been deployed anywhere long-lived.** The production container `lore-lore` was created
    2026-10-31 21:01 -0400, before packet 58's first build commit (`fa073bc`, 2026-11-09 22:54 -0500), and packet 58
    is commit-only (its DEPLOY rides packet 65). So no store holds a heal-written cycle. HIGH.
+
+## 13. Follow-up (lead-58, lore_comms #20086): #631 — the cycle predicate itself is unsound; §12.2's loop and §12.3 are withdrawn
+
+**Erratum first.** §12.3 told the builder to keep the step-over and called `find_blocked_by_cycle` /
+`_drop_one_cycle_edge` "the only detector and the only step-over". That was reasoned from the code and
+never executed (§12 said so), and it is wrong: dropping one edge of a legacy loop hides a cycle through
+the asked row when the two share that edge (#631, the adversary's store repro on a LIVE supersede).
+§12.2's "ask again" loop and §12.3 are replaced by this section. §12.2's fate (skip the whole row,
+byte-identical, WARNING every boot), §12.4 legs A–C, §12.5, §12.6 and §12.7 stand.
+
+Sources: `REPORT-adversary-58-fw1.md` (MISSING PINS, DECISIONS NEEDED, Surfaced, `restore_probe.py`),
+finding #631, `tasks.py` (`find_blocked_by_cycle`, `_drop_one_cycle_edge`, `_refuse_a_cycle`),
+`server.py`'s batch-key call. **Measured by me this time:** §13.1, in memory, instrument pasted in
+§INSTRUMENT-3. Not run by me: anything against a store (the adversary's E1–E4 are the store receipts).
+
+### 13.0 In one screen
+
+| # | question | ruling |
+|---|---|---|
+| D1 | the predicate | A row is refused iff **one of its proposed blockers is in the row's own strongly connected component** of the graph. `networkx.strongly_connected_components`, one pass. No edge dropping. One function, used by create, create_many, supersede and the heal. |
+| D1 | R6 | Amended: `find_blocked_by_cycle` stays the detector for the batch-KEY check only. The sentence and the error class stay shared. `_drop_one_cycle_edge` is deleted. |
+| D2 | the heal's fate | Neither option offered. **One pass over stored columns PLUS every pending row's proposed column.** Deterministic, no loop, and the only rule measured safe when a chunk fails on its own. "Every pending row in a non-trivial SCC of the overlay", asked once, is unsound (13.1). |
+| D3 | routing | Confirmed, with one change: MP-2's "loop until None" requirement disappears, because there is no loop. |
+| — | wait for the operator? | No. Proceed. Two things go in the morning report (13.7). |
+
+### 13.1 Measurement (2026-11-10, `probe_cycle_predicate_58.py 4000 58`, in memory, networkx)
+
+Random graphs of 4–7 tasks with a random `superseded_by` map; 2,911 worlds held stragglers. Property G:
+for EVERY subset of the kept rows applied (the rest left as stored), no applied row lies on a cycle.
+
+| rule | worlds violating G, all kept rows applied | worlds violating G, some subset applied |
+|---|---|---|
+| NONE (skip nothing; the control) | 2,271 | 1,858 |
+| OV1: non-trivial SCC of the overlay, one pass (the lead's "canonical over-skip") | **891** | 689 |
+| OVF: OV1 repeated to a fixpoint | 0 | **122** |
+| **U: proposed blocker shares the row's SCC in stored ∪ proposed, one pass** | **0** | **0** |
+
+- OV1 fails because un-skipping a row restores its stored edge, and that edge can close a cycle through
+  a row that was kept.
+- OVF is sound only if every kept row is written. A heal chunk can be rejected alone (am-3 §2), which
+  is the "some subset applied" column.
+- U's cost: in 128 worlds it skips a row OVF would heal. Re-running the boot heals all but 6 of those
+  worlds; in those, every such row (7 of 7) has a proposed blocker that reaches a permanently skipped
+  row, so it is unclaimable either way.
+- Live supersede, 4,000 worlds, 2,108 refusals: asking U of the successor alone gives the same answer
+  as "the successor lies on a cycle of the overlay" in every world (0 differences).
+- Bounds: small graphs, in memory, my own implementation of the rules, not the built code. 13.5 item 4
+  runs the same instrument against the built predicate.
+
+### 13.2 D1 — the predicate, exactly (builder rider; the name is the builder's)
+
+One pure function over `(stored, proposed, asked, all_or_nothing)` returning `{row: cycle}`:
+1. **Graph.** `all_or_nothing=True`: `stored` with each proposed row's column REPLACING its stored one
+   (the write is one transaction). `False`: `stored` PLUS each proposed row's column (a pending row
+   keeps its stored edges as well, because it may not be written).
+2. **One** `networkx.strongly_connected_components` pass.
+3. A row in `asked` is hit iff some blocker `b` in its proposed column is the row itself or is in the
+   row's component.
+4. Its cycle is the row followed by `networkx.shortest_path(graph, b, row)`, for the first such `b` in
+   sorted order; nodes and edges are added sorted so the answer is the same every run. Same list shape
+   as today (`[row, …, row]`), so `format_cycle_refusal` is untouched.
+
+| caller | proposed | asked | all_or_nothing | on a hit |
+|---|---|---|---|---|
+| create | `{id: deps}` | all | True | `raise_cycle_refusal` |
+| create_many (persisted ids) | every minted row | all | True | `raise_cycle_refusal` |
+| supersede | `{new_id: deps, **rewired}` | `{new_id}` (am-3 §4 stands) | True | `raise_cycle_refusal` |
+| heal | every straggler's post-rewrite column | all | False | skip + record each hit row |
+
+- `_refuse_a_cycle` keeps its job (empty-pending short-circuit, the one bounded-closure read, the
+  raise) and calls the function. The heal reads the same closure once and calls it once, BEFORE
+  `_pack_heal_chunks`. No loop anywhere.
+- The closure read is unchanged: seeds are every proposed blocker. A path in the graph leaves a seed
+  along stored edges (in the closure) or along a pending row's proposed edge (to another seed).
+  Reasoned, MEDIUM; the adversary's E1–E4 on the built tree are its store check.
+- `_drop_one_cycle_edge` is deleted.
+- **Removed-behaviour inventory** (the adversary's P6b list of six): 1–5 preserved unchanged. 6 splits:
+  "a loop touching no asked row never refuses" is PRESERVED by construction and pinned by am-3 §4's
+  leg; "accept when no edge can be dropped" is DROPPED (unreachable without the drop loop); the
+  step-over's miss on a shared edge is the OLD BUG (#631), not re-pinned.
+- The heal's WARNING keeps §12.2's fields. Its `cycle` is a path in stored ∪ proposed, so it can pass
+  through another pending row's stored edge: it names the loop the write could close, which is what
+  "would close" says.
+
+### 13.3 R6, amended (operator ruling; flagged in 13.7)
+
+- R6's purpose was that one cyclic input is never refused by two detectors with two sentences and two
+  error classes. The sentence (`format_cycle_refusal`) and the class (`raise_cycle_refusal`) stay
+  single.
+- The detector splits by QUESTION: "is there any cycle among these batch keys" stays
+  `find_blocked_by_cycle` (`server.py`, unchanged, so no served batch-key string moves); "does this
+  row's write close a cycle through persisted rows" is 13.2's function, and nothing else answers it.
+- **Sharing proven by mutation, two runs:** 13.2's function returning `{}` → the create, create_many,
+  supersede and heal cycle pins all redden; `find_blocked_by_cycle` returning `None` → the batch-key
+  pin reddens and the four persisted pins do not.
+- Surfaced, not ruled: 13.2's function also answers the batch-key question (all rows asked, nothing
+  stored), which would delete `find_blocked_by_cycle` and restore one detector. It can change which
+  cycle a multi-cycle batch names, so it touches served strings. Do you want that as a follow-up?
+
+### 13.4 D2 — the heal's fate
+
+**A pending row is skipped iff one of its post-rewrite blockers can reach it through the stored columns
+plus every pending row's post-rewrite column.** One pass, so no order exists to depend on (W21's 12/24
+split goes away), and MP-2's and MP-3's classes close at the predicate instead of at a loop.
+
+- Why not minimal: it needs the fixpoint, and the fixpoint is unsafe when a chunk is rejected (13.1).
+- What it costs, stated: a row can wait one boot for another row to be healed first, and a row whose
+  new blocker leads to a permanently skipped row is never healed (it could not be claimed anyway).
+  am-16's "one boot heals the whole population" holds for worlds with no such shape, which is every
+  world its legs seed.
+
+### 13.5 Pins (contract author: ONE targeted set, no re-grade)
+
+1. **MP-1, as the adversary wrote it:** E1 (heal: X→H, H `[L1]`, L1 `[L2]`, L2 `[L1, D]`, D `[X]` → D
+   unchanged and recorded, D on no cycle) and E3 (supersede: R `[X]`, L1 `[L2]`, L2 `[L1, R]`,
+   `supersede(X, blocked_by=[L1])` → `TaskCycleError`, nothing written), each with its control, the
+   legacy ids sorting first. "On no cycle" is checked by reachability, not by `find_blocked_by_cycle`.
+2. **D2, two worlds.** (i) D1 `[X1→H1]`, H1 `[D1, D2]`, D2 `[X2→H2]`, H2 `[D1]`, run under two id
+   assignments, one from each of the adversary's two fate classes → both rows skipped and recorded in
+   both. Kills minimal and any order-dependent build. (ii) P `[Xp→Hp]`, Hp `[D]`, D `[X→H]`, X
+   `blocked_by [P]`, H clean → boot 1: D healed, P unchanged and recorded; boot 2: P healed, no
+   WARNING. Kills the overlay rules, and is the pin that stops someone "fixing" the one-boot wait.
+3. **R6 re-key:** `test_MUTATION_neutralising_the_SHARED_detector_lets_BOTH_shapes_through` becomes
+   13.3's two mutations.
+4. **The instrument against the built code (cold audit, a run):** §INSTRUMENT-3 with `rule_u` replaced
+   by a call to the built function (`all_or_nothing=False`, all rows asked) → `U` reads 0 / 0 and
+   `NONE` reads non-zero. Commit the probe under `scripts/` with the others.
+5. §12.4 legs A–C keep their expectations (checked against rule U by hand: A skips D, B skips both,
+   C skips D).
+
+### 13.6 D3 — routing, and cost
+
+- **Confirmed:** MP-2 (E4) and MP-3 (E2) are cold-audit probes on the built tree. MP-2's builder
+  requirement ("loop until None") is void. MP-3's is "the predicate runs once, before packing".
+- **Confirmed:** MP-1 + the D2 pin + the R6 re-key go to the contract author as one targeted set, no
+  adversary re-grade (round cap: a security door gets one targeted pin). The cold audit runs E1–E4 and
+  13.5 item 4.
+- **Scope:** this widens §12.6's "exhaustive" list by the live supersede guard. It is the same
+  function, and leaving a caller-reachable cycle write in a build about to be audited is not an option
+  I would rule.
+- **Cost:** one author run, one builder pass (one function, four call sites, one deletion), no
+  adversary run, and the delta audit already planned gains five probes. This is the third pass on the
+  cycle class; 13.1 is why I expect it to be the last: the rule was executed against every partial
+  outcome before being ruled, which §12.3 was not.
+
+### 13.7 Proceed, and what the operator should see in the morning
+
+Proceed without waiting: the packet is undeployed, every step is a commit that can be reverted, and
+the grant covers design forks. Two items the operator may overturn:
+1. **R6, an operator ruling, is amended** (13.3): one detector per question instead of one detector.
+2. **The heal can take two boots** for a row whose blocker chain passes through another straggler
+   (13.4), a deliberate trade for safety under a rejected chunk.
+Standing, unchanged: no deploy of this build before the cold audit's GO.
+
+## §INSTRUMENT-3 — `probe_cycle_predicate_58.py`, pasted verbatim (run 2026-11-10 from the repo root: `uv run python <file> 4000 58`)
+
+```python
+"""am-17 §13: candidate skip rules for the boot heal, brute-forced in memory (no store).
+
+World: random small `blocked_by` graphs with a random acyclic `superseded_by` map. A straggler is a
+row naming a superseded id; its proposed column replaces each superseded id by its chain head.
+
+Rules (which pending rows are SKIPPED):
+  U    one pass: skip row r iff some proposed blocker b of r shares r's strongly connected component
+       in (stored columns UNION every pending row's proposed column).
+  OV1  one pass: skip r iff r is in a non-trivial SCC of the overlay (every pending row applied).
+  OVF  OV1 repeated to a fixpoint (skipped rows return to their stored column).
+
+Property G (what "the heal never puts a row it wrote on a cycle" needs once chunks can fail alone):
+for EVERY subset A of the kept rows applied (the rest left as stored), no row in A lies on a cycle.
+`full` counts violations with A = all kept rows; `partial` with any proper subset.
+
+Control: rule NONE (skip nothing) must show violations, or the checker sees nothing.
+
+Part S: live supersede. exact = "the successor lies on a cycle of the overlay"; union = rule U asked
+of the successor only. Counts worlds where they differ.
+
+Run: uv run python <this file> [worlds] [seed]
+"""
+import itertools
+import random
+import sys
+
+import networkx
+
+
+def digraph(columns):
+    g = networkx.DiGraph()
+    for node, blockers in columns.items():
+        g.add_node(node)
+        for b in blockers:
+            g.add_edge(node, b)
+    return g
+
+
+def on_cycle(g, node):
+    if g.has_edge(node, node):
+        return True
+    return any(node in comp and len(comp) > 1 for comp in networkx.strongly_connected_components(g))
+
+
+def component_of(g):
+    out = {}
+    for index, comp in enumerate(networkx.strongly_connected_components(g)):
+        for node in comp:
+            out[node] = index
+    return out
+
+
+def world(rng, n):
+    ids = [f"t{i}" for i in range(n)]
+    order = ids[:]
+    rng.shuffle(order)
+    successor = {}
+    for i, old in enumerate(order[:-1]):          # successor always later in `order` => acyclic chains
+        if rng.random() < 0.35:
+            successor[old] = rng.choice(order[i + 1:])
+    stored = {t: [b for b in ids if b != t and rng.random() < 0.28] for t in ids}
+
+    def head(t):
+        while t in successor:
+            t = successor[t]
+        return t
+
+    proposed = {}
+    for t, col in stored.items():
+        if any(b in successor for b in col):
+            proposed[t] = list(dict.fromkeys(head(b) if b in successor else b for b in col))
+    return stored, proposed
+
+
+def rule_none(stored, proposed):
+    return set()
+
+
+def rule_u(stored, proposed):
+    union = digraph(stored)
+    for r, col in proposed.items():
+        for b in col:
+            union.add_edge(r, b)
+    comp = component_of(union)
+    return {r for r, col in proposed.items() if any(b == r or comp[b] == comp[r] for b in col)}
+
+
+def rule_ov1(stored, proposed):
+    g = digraph({**stored, **proposed})
+    return {r for r in proposed if on_cycle(g, r)}
+
+
+def rule_ovf(stored, proposed):
+    pending, skipped = dict(proposed), set()
+    while True:
+        g = digraph({**stored, **pending})
+        hit = {r for r in pending if on_cycle(g, r)}
+        if not hit:
+            return skipped
+        skipped |= hit
+        for r in hit:
+            del pending[r]
+
+
+def violations(stored, proposed, skipped):
+    kept = [r for r in proposed if r not in skipped]
+    full = partial = 0
+    for size in range(1, len(kept) + 1):
+        for applied in itertools.combinations(kept, size):
+            g = digraph({**stored, **{r: proposed[r] for r in applied}})
+            if any(on_cycle(g, r) for r in applied):
+                if size == len(kept):
+                    full += 1
+                else:
+                    partial += 1
+    return full, partial
+
+
+def boots_until_stable(stored, proposed, rule):
+    """Re-run the heal (rule + apply all kept) until nothing changes; return rows still skipped."""
+    stored, proposed = dict(stored), dict(proposed)
+    while True:
+        skipped = rule(stored, proposed)
+        kept = [r for r in proposed if r not in skipped]
+        if not kept:
+            return stored, skipped
+        for r in kept:
+            stored[r] = proposed.pop(r)
+
+
+def part_heal(rng, worlds):
+    rules = {"NONE": rule_none, "U": rule_u, "OV1": rule_ov1, "OVF": rule_ovf}
+    bad = {name: [0, 0] for name in rules}
+    with_pending = extra_u = extra_u_after_boots = stuck_checked = stuck_ok = 0
+    for _ in range(worlds):
+        stored, proposed = world(rng, rng.randint(4, 7))
+        if not proposed:
+            continue
+        with_pending += 1
+        for name, rule in rules.items():
+            full, partial = violations(stored, proposed, rule(stored, proposed))
+            bad[name][0] += bool(full)
+            bad[name][1] += bool(partial)
+        over = rule_u(stored, proposed) - rule_ovf(stored, proposed)
+        extra_u += bool(over)
+        final, still = boots_until_stable(stored, proposed, rule_u)
+        left = over & still
+        extra_u_after_boots += bool(left)
+        g = digraph(final)
+        for r in left:      # claim: a row U never heals is unclaimable anyway under its proposed column
+            stuck_checked += 1
+            reach = set().union(*(networkx.descendants(g, b) | {b} for b in proposed[r]))
+            stuck_ok += bool(reach & still)
+    print(f"heal worlds with stragglers: {with_pending}")
+    for name, (full, partial) in bad.items():
+        print(f"  rule {name:4s} worlds violating G: all-applied={full} partial={partial}")
+    print(f"  worlds where U skips a row OVF heals: {extra_u}; still so after repeated boots: {extra_u_after_boots}")
+    print(f"  of those rows, proposed blockers reach a permanently skipped row: {stuck_ok}/{stuck_checked}")
+
+
+def part_supersede(rng, worlds):
+    differ = refused = tried = 0
+    for _ in range(worlds):
+        n = rng.randint(4, 7)
+        ids = [f"t{i}" for i in range(n)]
+        stored = {t: [b for b in ids if b != t and rng.random() < 0.3] for t in ids}
+        old = rng.choice(ids)
+        deps = [b for b in ids if b != old and rng.random() < 0.3]
+        rewired = {t: ["new" if b == old else b for b in col] for t, col in stored.items() if old in col}
+        tried += 1
+        exact = on_cycle(digraph({**stored, **rewired, "new": deps}), "new")
+        asked_u = "new" in rule_u(stored, {**rewired, "new": deps}) if deps else False
+        # rule U asked of the successor only: recompute directly
+        union = digraph(stored)
+        for r, col in {**rewired, "new": deps}.items():
+            for b in col:
+                union.add_edge(r, b)
+        comp = component_of(union)
+        union_says = any(comp[b] == comp["new"] for b in deps)
+        assert union_says == asked_u
+        refused += exact
+        differ += exact != union_says
+    print(f"supersede worlds: {tried}; exact refuses {refused}; union differs from exact in {differ}")
+
+
+if __name__ == "__main__":
+    count = int(sys.argv[1]) if len(sys.argv) > 1 else 4000
+    seed = int(sys.argv[2]) if len(sys.argv) > 2 else 58
+    part_heal(random.Random(seed), count)
+    part_supersede(random.Random(seed + 1), count)
+```
