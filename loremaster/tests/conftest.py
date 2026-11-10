@@ -22,6 +22,7 @@ import anyio
 import pytest
 from hypothesis.configuration import set_hypothesis_home_dir
 from loremaster.logging_setup import LORE_NAMESPACES
+from lorerunes.worker_output import received_from_worker, ship_to_controller
 from pydantic import TypeAdapter, ValidationError
 
 # Make sibling test helper modules (e.g. ``_extension_helpers``) importable as
@@ -513,10 +514,13 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
             if database in registry and not registry[database][1]
         )
         unreaped.append((_reap_failure_outcome(failure), f"{type(failure).__name__}: {failure}", unverified))
-    workeroutput = getattr(session.config, "workeroutput", None)
-    if workeroutput is not None:
-        workeroutput[_LEAK_REPORT_WORKEROUTPUT_KEY] = json.dumps(report)
-        workeroutput[_UNREAPED_REPORT_WORKEROUTPUT_KEY] = json.dumps(unreaped)
+    if ship_to_controller(
+        session.config,
+        {
+            _LEAK_REPORT_WORKEROUTPUT_KEY: json.dumps(report),
+            _UNREAPED_REPORT_WORKEROUTPUT_KEY: json.dumps(unreaped),
+        },
+    ):
         return
     _REAPED_LEAKS.extend(report)
     _UNREAPED_AT_SESSION_END.extend(unreaped)
@@ -557,7 +561,7 @@ def pytest_testnodedown(node: Any, error: Any) -> None:
     error but had shipped a readable report is accounted for, and one that went down cleanly
     without it is not.
     """
-    workeroutput = getattr(node, "workeroutput", None) or {}
+    workeroutput = received_from_worker(node)
     try:
         leaks = _LEAK_REPORT_SHAPE.validate_json(workeroutput[_LEAK_REPORT_WORKEROUTPUT_KEY])
         unreaped = _UNREAPED_REPORT_SHAPE.validate_json(workeroutput[_UNREAPED_REPORT_WORKEROUTPUT_KEY])

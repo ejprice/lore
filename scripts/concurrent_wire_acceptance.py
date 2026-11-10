@@ -42,6 +42,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pending_contract_gate  # noqa: E402  (scripts/ is not a package — the shared junit reader)
+from _parked_contracts import PARKED_CONTRACTS_PLUGIN_NAME  # noqa: E402
 
 # The ONE fleet detector (lore #503): re-exported, never copied — `other_pytest_sessions` here IS
 # `_pytest_sessions.other_pytest_sessions`, shared with the currency gate's worker policy. The
@@ -255,7 +256,20 @@ class ConcurrentPairDriver:
 
     def collect_argv(self) -> list[str]:
         """The command that lists the target's node ids without running them (``--collect-only``)."""
-        return [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--collect-only", self.target]
+        # ``-p no:<parked plugin>``: the expected pass count must include every collected node, parked ones
+        # too (parked-contracts ruling A7).
+        return [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "-p",
+            f"no:{PARKED_CONTRACTS_PLUGIN_NAME}",
+            "--collect-only",
+            self.target,
+        ]
 
     def expected_passed(self) -> int:
         """How many tests the target collects — derived, never assumed. Fails loud on zero.

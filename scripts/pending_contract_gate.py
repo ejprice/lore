@@ -151,7 +151,7 @@ from xml.etree import ElementTree
 # every importer (the test files, ``wave_gate``, ``concurrent_wire_acceptance``) puts it there.
 import _pytest_sessions
 import yaml
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, StrictBool, ValidationError, field_validator
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_REGISTRY_PATH = REPO_ROOT / "scripts" / "pending_contracts.yaml"
@@ -743,6 +743,10 @@ class PendingBound(BaseModel):
     ruling: str
     rationale: str
     files: tuple[PendingFile, ...]
+    #: Parked-contracts spec S7: ``True`` runs this bound's listed red nodes in a default pytest run; the
+    #: default (``False``) PARKS them, so the repo-root conftest deselects them. STRICT, so ``"true"``, ``1``
+    #: and ``null`` are registry errors rather than silently coerced.
+    active: StrictBool = False
 
     @field_validator("files")
     @classmethod
@@ -809,6 +813,33 @@ class PendingContractRegistry(BaseModel):
         return sum(
             len(entry.missing_symbols) for bound in self.bounds for entry in bound.files
         )
+
+    def parked_node_owners(self) -> dict[str, tuple[str, ...]]:
+        """The ONE parked-set computation (parked-contracts spec S1, ruling D5/A1): every node id a default
+        pytest run must deselect, with the ids of the non-active bounds that list it.
+
+        A node listed under ANY ``active`` bound is never parked, even when a non-active bound lists it too
+        (active wins), so the exclusion lives here with the model and no consumer re-derives it.
+
+        Returns:
+            Node id to the bound ids that park it, in registry order.
+        """
+        active_node_ids = {
+            node_id
+            for bound in self.bounds
+            if bound.active
+            for entry in bound.files
+            for node_id in entry.red_nodeids
+        }
+        owners: dict[str, list[str]] = {}
+        for bound in self.bounds:
+            if bound.active:
+                continue
+            for entry in bound.files:
+                for node_id in entry.red_nodeids:
+                    if node_id not in active_node_ids and bound.id not in owners.setdefault(node_id, []):
+                        owners[node_id].append(bound.id)
+        return {node_id: tuple(bound_ids) for node_id, bound_ids in owners.items()}
 
     def entries_for(self, path: str) -> list[tuple[PendingBound, PendingFile]]:
         """EVERY (bound, entry) registered for ``path`` — the ONE per-path lookup.
@@ -1300,7 +1331,8 @@ class PendingContractGate:
           owned (the partition) — a collected id is ALWAYS judged, whatever the selection's spelling (R39 D3);
         * NOT collected, its file collected → STALE (renamed or deleted) — but under a scoped run only when a
           selector COVERED the id (R37); an uncovered uncollected id gets no verdict. A covered one's line
-          names the selector and says to confirm with ``--collect-only`` before deleting the entry.
+          names the selector and says to confirm with ``--collect-only --run-parked`` (a plain
+          ``--collect-only`` hides a parked id) before deleting the entry.
         """
         failing = {outcome.node_id for outcome in run.outcomes}
         skipped = {node_id for node_id, _kind in run.skipped}
@@ -1332,7 +1364,7 @@ class PendingContractGate:
                         findings.append(
                             f"SELF-DESTRUCT: adjudicated red {node_id} (bound {bound.id!r}) selected by "
                             f"'{selector}' and not collected — renamed or deleted; confirm with "
-                            "--collect-only before deleting the entry."
+                            "--collect-only --run-parked before deleting the entry."
                         )
         return findings
 

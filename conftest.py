@@ -60,10 +60,13 @@ KNOWN BOUNDS (each with its re-open trigger)
 from __future__ import annotations
 
 import errno
+import importlib.util
 import ipaddress
 import socket
+import sys
 import threading
 from collections.abc import Generator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -300,3 +303,33 @@ def pytest_runtest_makereport(
     report = yield
     PRODUCTION_STORE_GUARD.charge(report)
     return report
+
+
+# --- parked contract reds (lead task 7f68cbcf; docs/design/2026-11-09-parked-contracts-rulings.md) ---
+# The hook lives in ``scripts/_parked_contracts.py`` (it reads the gate's registry model). ``scripts/`` is not
+# a package and the sandbox tests import this file by path, so the module is loaded by path too.
+_PARKED_CONTRACTS_MODULE_NAME = "_parked_contracts"
+_PARKED_CONTRACTS_PATH = Path(__file__).resolve().parent / "scripts" / "_parked_contracts.py"
+
+
+def _load_parked_contracts() -> Any:
+    """Load (once) the parked-contracts module from this repo's ``scripts/``."""
+    module = sys.modules.get(_PARKED_CONTRACTS_MODULE_NAME)
+    if module is not None:
+        return module
+    spec = importlib.util.spec_from_file_location(_PARKED_CONTRACTS_MODULE_NAME, _PARKED_CONTRACTS_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[_PARKED_CONTRACTS_MODULE_NAME] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Register ``--run-parked``: run the contract reds parked in ``scripts/pending_contracts.yaml``."""
+    _load_parked_contracts().add_run_parked_option(parser)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Register the parked-deselection plugin (``-p no:lore-parked-contracts`` disables it)."""
+    _load_parked_contracts().register_plugin(config)

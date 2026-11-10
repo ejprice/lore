@@ -131,6 +131,11 @@ from types import MappingProxyType
 #: from it is checked by nothing, whatever any document says about it.
 RUNNER_RELATIVE_PATH = "scripts/typecheck.sh"
 
+#: The name the parked-deselection pytest plugin registers under; ``-p no:<name>`` turns it off. This module
+#: imports nothing outside the standard library (pinned), so the name is mirrored from
+#: ``_parked_contracts.PARKED_CONTRACTS_PLUGIN_NAME`` (the source of truth), not imported.
+PARKED_CONTRACTS_PLUGIN_NAME = "lore-parked-contracts"
+
 #: The workspace manifest. pytest, ruff, mypy and uv all read their scope from it.
 MANIFEST_RELATIVE_PATH = "pyproject.toml"
 
@@ -1041,6 +1046,10 @@ def collected_test_files(repo_root: Path) -> frozenset[str]:
         "no:cacheprovider",
         "-p",
         "no:randomly",
+        # A parked contract is still a file pytest collects: this MEASURES the tree, so it must not see
+        # the parked-deselection hook's view of it (parked-contracts ruling A7).
+        "-p",
+        f"no:{PARKED_CONTRACTS_PLUGIN_NAME}",
     ]
     try:
         completed = subprocess.run(

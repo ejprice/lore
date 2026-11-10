@@ -100,7 +100,7 @@ gates:
       file — measured on a real 8779-test run, where 444 correctly-registered pins
       rendered as UNREGISTERED with nothing about the run looking wrong.
     command:
-      ["uv", "run", "pytest", "-q", "-n", "{workers}",
+      ["uv", "run", "pytest", "-q", "-n", "{workers}", "--run-parked",
        "-o", "junit_family=xunit1", "--junit-xml={junit_xml}"]
     reader: pytest_junit
     adjudicated_by: pending-contracts
