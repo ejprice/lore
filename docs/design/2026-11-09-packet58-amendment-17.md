@@ -814,3 +814,77 @@ asyncio.run(main())
 ```
 
 No production code, test, registry or store touched by this amendment. No attribution trailer on the commit.
+
+## 10. Follow-up (lead-58, lore_comms #20058): the build ran ahead of the r5.3 grade — keep or revert
+
+**Ruling: A (keep the build), with the six riders in §10.3. B is refused.** Confidence HIGH on the
+choice, MEDIUM on rider 3's exact expected-RED membership (the r5.3 author derives it; I have not read the
+r5.3 file).
+
+### 10.1 Facts checked (2026-11-09, this tree, `git status` / `git diff --stat` / one text search)
+
+- `loremaster/loremaster/tasks.py` carries the am-17 packer bound
+  (`min(_txn_module.TXN_ROW_WARN_THRESHOLD, _txn_module.TXN_ROW_HARD_CAP)` in the heal packer).
+- The same file's uncommitted diff is **547 insertions / 68 deletions**: the WHOLE packet-58 build is
+  uncommitted, not just the am-17 hunks. The working tree is the only copy of it.
+- Not checked by me: the builder's 98/98 claim, and that FREEZE #20052 is unacked (lead's statements).
+- The text search was a grep for statement text in one file (a non-symbol textual seam).
+
+### 10.2 Why A
+
+1. **B does not restore what the ordering law protects.** The law's purpose is that the builder never
+   builds to an ungraded contract. The builder's context already holds the ungraded legs and its own code;
+   reverting the tree and letting the same builder re-apply buys the right ORDER OF TREE STATES and nothing
+   else. Only a fresh builder would restore independence, and that is a rebuild of a fully specified
+   three-statement change.
+2. **B's revert is a hand edit on the only copy of the build** (10.1). A wrong revert damages 547 lines of
+   finished, uncommitted work. A needs the same hand reconstruction (isolating the am-17 hunks), but
+   performs it as a patch file applied in reverse in a scratch copy, where a wrong patch is detectable
+   (rider 3) and harms nothing.
+3. **The grade is independent of the build by construction.** §6.3/§9.5's seven wrong builds and the
+   reference are the adversary's own, made from the ruling's text. Nothing in the grade reads builder code.
+4. **am-17 is a spec to implement** (exact statement forms, exact bound formula), so the routing rule is
+   not offended: no property was invented by the builder.
+
+What A leaves unrepaired, stated plainly: the builder saw ungraded legs, so its code may fit their letter.
+The instrument for that is the cold audit's contract-blind read of the patch (rider 5), not the grade.
+
+### 10.3 Riders (each is part of the ruling)
+
+1. **Checkpoint first.** Before any agent touches the tree again, the lead commits the current tree as a
+   checkpoint (or, if it will not commit ungraded work, takes a `cp -a` content backup and says where).
+   Pin: the commit SHA or backup path is in the lead's wave report before rider 2 starts.
+2. **The patch is production-only and small.** The builder emits `am17-build.patch` touching
+   `loremaster/loremaster/tasks.py` ONLY, containing exactly §7 edits 1, 2, 3 and §9.6 edit 6 (packer bound +
+   docstring, heal DELETE + comment, `max_reanchor_dependents` docstring, supersede DELETE + comment).
+   Pin: the lead reads the whole patch and its path list; any test, support or schema path in it is a STOP.
+3. **Prove the patch is the am-17 delta, both directions, expectations declared first.** In a
+   `scripts/scratch_copy.sh` copy (provenance asserted, `loremaster.__file__` printed) with the patch
+   reverse-applied: (a) the r5.3 author declares the expected-RED node ids from `--collect-only` BEFORE the
+   run (the new r5.3 legs plus the re-keyed legs of §6.1), then runs the am-17 targeted set and diffs both
+   ways via `scripts/mutation_proof.py`: an unexpected red, or a declared red that stays green, is a STOP;
+   (b) every other test in that set is green, matching the builder's own last pre-am-17 count for the same
+   files. Then, patch applied: the whole set green. A leg that is green WITHOUT the patch was never seen
+   red and is not a pin; it goes back to the author before the grade.
+4. **The adversary's reference is its own.** It implements edits 1/2/6 from this document on the
+   minus-patch scratch tree and never reads `am17-build.patch` or the real `tasks.py` hunks. Its SAT
+   receipt is against that reference. The grade stays ONE run, seven wrong builds (§9.5); this fork adds
+   no property and does not reopen the loop cap.
+5. **The cold audit gets the patch as a contract-blind diff target** (withheld: r5.3, the adversary
+   report, test runs). Its questions: does each hunk match the ruled form character-for-character in the
+   statement, does anything in the patch exist only to satisfy a test's shape (a statement finder, a
+   parameter name), and what did the replaced lines do that the new ones do not (the §9.2 inventory is the
+   comparator, read AFTER its own enumeration).
+6. **Builder re-greens only.** If the grade adds pins, the builder turns them green with production
+   edits; it edits no test. Edits 4 (close-out receipt part E at 2,500 and 12,500) and 5 are still owed
+   and are unaffected.
+
+### 10.4 Surfaced, not ruled
+
+- **The class behind the fork:** a FREEZE travelled as a directive to a builder that was mid-build and
+  did not drain. That is the standing "never steer a busy builder by inbox" hazard, not a builder fault
+  peculiar to this wave. The closing rule is at spawn time: a build brief for an amendment names the
+  graded contract commit it may start from, so "no graded SHA" means "do not start". Whether to add that
+  to lead-base is the operator's call. Do you want a finding filed for it?
+- The ordering law was broken once and A does not pretend otherwise; the wave report should say so in
+  its deviations.
