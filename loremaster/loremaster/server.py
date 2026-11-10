@@ -4570,13 +4570,14 @@ class AppContext:
             rendered, writes = AppContext._render_task_transition(task, actor), 1
         elif action == _TASK_ACTION_SUPERSEDE:
             predecessor = _require_arg(task_id, "task_id")
-            successor_id = await self.task_ledger.supersede_task(
+            superseded = await self.task_ledger.supersede_task(
                 predecessor,
                 subject=_require_arg(subject, "subject"),
                 description=_require_arg(description, "description"),
                 created_by=_require_arg(created_by, "created_by"),
                 blocked_by=blocked_by,
             )
+            successor_id = superseded.successor_id
             # #174: SURFACE the successor's resolved blocked_by so a rewire that forgot
             # its override (or inherited stale deps) is seen at once — the harm #174 fixes
             # is VISIBILITY. Read it back from the ledger (the authoritative resolution),
@@ -4586,7 +4587,8 @@ class AppContext:
                 AppContext._render_supersede_result(
                     predecessor,
                     successor_id,
-                    await self.task_ledger.direct_dependents(predecessor),
+                    superseded.reanchored,
+                    superseded.reblocked,
                     successor.blocked_by,
                 ),
                 1,
@@ -4846,51 +4848,43 @@ class AppContext:
     def _render_supersede_result(
         task_id: str,
         successor_id: str,
-        dependents: list[str],
+        reanchored: list[str],
+        reblocked: list[str],
         successor_blocked_by: list[str],
     ) -> str:
-        """Render a supersession, WARNING about the dependents it just stranded (R10(iii)).
+        """Render a supersession and the dependents it RE-ANCHORED (packet 58, #356).
 
-        Supersession is NOT terminal (ruling R10 refused to make it so — the work MOVED,
-        it did not finish), so the claim CAS keeps counting the predecessor as unresolved
-        and every task blocked on it becomes unclaimable **forever**, silently: nobody in
-        the fleet ever learns it, and those tasks' owners simply find work that never
-        becomes claimable. R10(ii) closed the at-CREATE door; this is the door reachable
-        only when the supersede happens AFTER the dependents already exist.
-
-        ⚠ It **NAMES** them rather than counting them: the caller's next move is to
-        re-point those rows at the successor, and it cannot do that from a number. And it
-        **WARNS, never rewrites** — dependency transfer is R10(iv) and is DEFERRED,
-        because it would break the post-creation immutability of ``blocked_by`` that the
-        claim path rides.
-
-        ⚠ The warning fires only when something was actually stranded. A sentence appended
-        to every supersede is an imperative riding a verdict that is not true — the shape
-        ruling R8 split apart — and a warning that always fires is a warning nobody reads.
+        The ledger rewires every dependent of the predecessor to the successor in the SAME
+        transaction, so nothing is stranded; this render is the RECEIPT — it names the
+        re-anchored rows (from ``SupersedeResult.reanchored``, the PRE-write list; a post-write
+        ``direct_dependents`` read is ``[]`` by construction) and, per amendment 1 (FORK-A),
+        the subset that was CLAIMABLE before and now waits on the open successor
+        (``reblocked``) — a consequence served, never silent. Both lines are absent when
+        their list is empty, so a no-dependent reframe renders byte-unchanged.
         """
-        # #174: NAME the successor's resolved blocked_by (each id contained via
-        # render_attributed — its elements are unconstrained caller ids) so a rewire that
-        # forgot its override, or inherited a stale dependency, is visible at once. Empty
-        # (the common no-dependency reframe) appends nothing — the render is byte-unchanged.
         blocked_clause = ""
         if successor_blocked_by:
             named = ", ".join(
                 render_attributed(blocker) for blocker in successor_blocked_by
             )
             blocked_clause = f", blocked_by [{named}]"
-        superseded = (
+        lines = [
             f"superseded task {render_attributed(task_id)}; "
             f"successor {render_attributed(successor_id)} (status open{blocked_clause})"
-        )
-        if not dependents:
-            return superseded
-        return (
-            f"{superseded}\n"
-            f"⚠ {len(dependents)} task(s) blocked on {render_attributed(task_id)} are now "
-            f"STRANDED — it can never resolve, so they can never become claimable: re-point "
-            f"them at {render_attributed(successor_id)}: "
-            f"{[render_attributed(dependent) for dependent in dependents]}"
-        )
+        ]
+        if reanchored:
+            lines.append(
+                f"re-anchored {len(reanchored)} dependent(s) from {render_attributed(task_id)} "
+                f"to {render_attributed(successor_id)}: "
+                f"{[render_attributed(dependent) for dependent in reanchored]}"
+            )
+        if reblocked:
+            lines.append(
+                f"⚠ {len(reblocked)} of them were claimable and are now blocked on "
+                f"{render_attributed(successor_id)} (it is open): "
+                f"{[render_attributed(dependent) for dependent in reblocked]}"
+            )
+        return "\n".join(lines)
 
     @staticmethod
     def _render_task_transition(task: Task, actor: str | None) -> str:

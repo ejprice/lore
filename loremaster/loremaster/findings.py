@@ -228,7 +228,7 @@ _TRANSITION_EXPECTED_FROM_PARAM = "tr_expected_from"
 # no interpolated data; it surfaces only server-side, mapped to
 # :class:`IllegalTransitionError`). Mirrors the task ledger's transition CAS.
 _TRANSITION_UPDATED_VAR = "tr_updated"
-_TRANSITION_ALREADY_MESSAGE = "finding transition lost a concurrent compare-and-set"
+_TRANSITION_ALREADY_MESSAGE = "cas_lost: finding transition lost a concurrent compare-and-set"
 
 # The query filter / limit bound-parameter names (the ``qry_`` prefix).
 _QUERY_STATUS_PARAM = "qry_status"

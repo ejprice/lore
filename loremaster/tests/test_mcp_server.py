@@ -7327,9 +7327,11 @@ class TestRollupDispatch:
         self, rollup_ctx: AppContext
     ) -> None:
         old_id = await rollup_ctx.task_ledger.create_task("s", "d", created_by="me")
-        new_id = await rollup_ctx.task_ledger.supersede_task(
+        # ⚠ DUAL (packet 58, held patch): the fake's ``supersede_task`` returns ``SupersedeResult``
+        # in lockstep with the ledger (kickoff §7.7) — read its successor id. REPORT-contract-58.md §DUAL D7.
+        new_id = (await rollup_ctx.task_ledger.supersede_task(
             old_id, subject="s2", description="d2", created_by="me"
-        )
+        )).successor_id
         rendered = _render_text(await getattr(rollup_ctx, "tasks")(action="rollup"))
         assert (
             f"- [superseded → {new_id}] {render_attributed('s')} "

@@ -640,7 +640,11 @@ class SurrealLeaderLock:
         except _LOCK_CALL_ERRORS as error:
             logger.warning(
                 "lease.lock.read_failed",
-                extra={"lock_identity": self.identity, "error": str(error)},
+                extra={
+                    "lock_identity": self.identity,
+                    "error": str(error),
+                    "error_class": type(error).__name__,
+                },
             )
             return False, _lock_unavailable(f"the lease row could not be read: {error}")
         if observation is None:
@@ -670,7 +674,11 @@ class SurrealLeaderLock:
         except _LOCK_CALL_ERRORS as error:
             logger.warning(
                 "lease.lock.create_failed",
-                extra={"lock_identity": self.identity, "error": str(error)},
+                extra={
+                    "lock_identity": self.identity,
+                    "error": str(error),
+                    "error_class": type(error).__name__,
+                },
             )
             return False
         return self._record_write(observation)
@@ -705,7 +713,11 @@ class SurrealLeaderLock:
         except _LOCK_CALL_ERRORS as error:
             logger.warning(
                 "lease.lock.update_failed",
-                extra={"lock_identity": self.identity, "error": str(error)},
+                extra={
+                    "lock_identity": self.identity,
+                    "error": str(error),
+                    "error_class": type(error).__name__,
+                },
             )
             return False
         return self._record_write(observation)
@@ -760,7 +772,11 @@ class SurrealLeaderLock:
         except _LOCK_CALL_ERRORS as error:
             logger.warning(
                 "lease.lock.release_failed",
-                extra={"lock_identity": self.identity, "error": str(error)},
+                extra={
+                    "lock_identity": self.identity,
+                    "error": str(error),
+                    "error_class": type(error).__name__,
+                },
             )
             return False
         return bool(released)

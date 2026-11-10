@@ -8145,17 +8145,10 @@ _Exemption = tuple[str, int]
 # This is the edit `TestTheDriversProseAboutItsCallersIsDerivedFromItsCallers::
 # test_the_reach_the_liar_check_depends_on_is_ALL_LIVE` prescribes in its own failure
 # message — *"if a caller was renamed, rename it here"*.
-_ATTRIBUTED_BY_ANOTHER_MECHANISM: dict[tuple[str, str], _Exemption] = {
-    ("store/_txn.py", "_run_verified_transaction"): (
-        (
-            "calls `_log_rollback` on the way out (_txn.py:789-801), which logs the failing "
-            "statement's INDEX, the full engine result and every failed statement — strictly "
-            "more detail than a label. This is the asymmetry #151 measured: the transactional "
-            "caller kept its receipt, the bootstrap had none."
-        ),
-        1,
-    ),
-}
+# The ONE former entry, ("store/_txn.py", "_run_verified_transaction"), was DELETED with packet 58's
+# build (amendment 13 §1 F-8): the transactional driver call now passes `label=` / `url=` like every
+# other caller, so allowlist-the-safe ends EMPTY. Do not re-add it; a new exemption needs a ruling.
+_ATTRIBUTED_BY_ANOTHER_MECHANISM: dict[tuple[str, str], _Exemption] = {}
 # ⚠ TWO SCOUT ENTRIES USED TO LIVE HERE AND WERE DELETED DELIBERATELY (§10f, the cold
 # audit's NO-GO — REPORT-audit-151-cold.md §FINDING). `_consume_live`'s evidence claimed
 # the swallowed exception carried "the engine's text ... on the traceback"; that clause was

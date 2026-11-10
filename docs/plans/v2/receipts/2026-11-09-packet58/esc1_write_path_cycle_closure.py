@@ -1,4 +1,16 @@
 #!/usr/bin/env python3
+# ⚠ ARCHIVED (packet 58 builder, am-8 §5 disposition, 2026-11-09) — DUAL HEADER. NOT RUNNABLE ON SDK 3.0.
+# This script PREDATES SDK 3.0 / packet 66: its 8 ``query()`` reads assume 2.0's "bare first result" shape and
+# would return a false clear on surrealdb 3.0.0 (the SDK-3 BOUND block below lists the differences). It was
+# archived, not re-keyed, because its question is DISCHARGED: ESC-1 was MEASURED YES on 2026-08-01
+# (``docs/plans/v2/04-comms-blocks-footer.md`` ESC-1 row: 58 PASS / 0 FAIL, three green runs, negative control).
+# WHAT REPLACED IT: packet 04b-3 BUILT the mechanism the measurement licensed (the bounded-closure cycle read,
+# ``find_blocked_by_cycle`` / ``_drop_one_cycle_edge``), pinned by ``loremaster/tests/test_blocks_edge.py``;
+# packet 58 rewired the re-anchor paths this script exercised and pins them in the ``test_reanchor_58_*`` files.
+# REMOVED BEHAVIOUR (not re-pinned anywhere): the live DB1 legacy-continuum world (diamond chain / 3-cycle /
+# phantom blocker) and its edge≡column diff at every commit boundary; the DB2 deleted-edge negative control.
+# Re-open trigger: a new claim that persisted ``blocks`` edges diverge from the ``blocked_by`` column on a
+# long-lived store — port this script (SDK-3 BOUND below) before re-running it.
 # ⚠ SDK-3 BOUND (packet 66, operator ruling R19 Q5) — NOT PORTED, NOT RE-RUN on surrealdb 3.0.0.
 # Written and last run against surrealdb 2.0.0. No cron or timer runs it (the R19 Q5 finding), so it was
 # left unported; its results describe the SDK and engine it ran on. SDK 3.0.0 differences a re-run meets:

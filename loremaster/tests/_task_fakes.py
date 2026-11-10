@@ -655,7 +655,7 @@ class FakeTaskLedger:
         description: str,
         created_by: str,
         blocked_by: list[str] | None = None,
-    ) -> str:
+    ) -> Any:
         await asyncio.sleep(0)
         old_task = self._require(task_id)
         # A superseded task is terminal-like: it can never be superseded again,
@@ -692,6 +692,34 @@ class FakeTaskLedger:
             created_at=now,
         )
         self.db.tasks[new_id] = successor
+        # Packet 58 lockstep: every dependent follows the work to the successor (re-anchor).
+        reanchored: list[str] = []
+        reblocked: list[str] = []
+        predecessor_terminal = old_task.status in ("done", "wontfix")
+        for dependent in list(self.db.tasks.values()):
+            if dependent.id == new_id or task_id not in dependent.blocked_by:
+                continue
+            others = [b for b in dependent.blocked_by if b != task_id]
+            was_claimable = (
+                predecessor_terminal
+                and dependent.status == STATUS_OPEN
+                and dependent.owner is None
+                and dependent.superseded_by is None
+                and all(
+                    b in self.db.tasks and self.db.tasks[b].status in ("done", "wontfix")
+                    for b in others
+                )
+            )
+            rewired = list(dict.fromkeys(new_id if b == task_id else b for b in dependent.blocked_by))
+            object.__setattr__(dependent, "blocked_by", rewired)
+            object.__setattr__(dependent, "updated_at", now)
+            dependent.provenance.setdefault("events", []).append(
+                {"actor": created_by, "action": "dependency_reanchored", "from": task_id,
+                 "to": new_id, "at": now.isoformat()}
+            )
+            reanchored.append(dependent.id)
+            if was_claimable:
+                reblocked.append(dependent.id)
         old_task.superseded_by = new_id
         # PKT-06 §1: a supersession is fleet-visible activity too — stamp the
         # OLD row's updated_at (the successor is a fresh create, deliberately
@@ -700,7 +728,11 @@ class FakeTaskLedger:
         old_task.provenance.setdefault("events", []).append(
             {"actor": created_by, "action": "supersede", "successor": new_id, "at": now.isoformat()}
         )
-        return new_id
+        from loremaster.tasks import SupersedeResult  # call-time: absent before packet 58's build
+
+        return SupersedeResult(
+            successor_id=new_id, reanchored=sorted(reanchored), reblocked=sorted(reblocked)
+        )
 
 
 # --------------------------------------------------------------------------- #

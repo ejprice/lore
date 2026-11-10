@@ -318,6 +318,58 @@ class TxnUniqueViolationError(TxnDomainRejectionError):
         return _ERROR_CLASS_UNIQUE_VIOLATION
 
 
+class TxnClaimLostError(TxnDomainRejectionError):
+    """A task claim's guarded CAS matched zero rows and THREW the claim-lost marker (packet 58 am-3 §3).
+
+    A routine outcome (the fleet's commonest contention result), served by the ledger as a
+    ``ClaimResult``; logged at DEBUG by :func:`_log_rollback`.  A DOMAIN rejection — it can never hold
+    exhausted contention (a sibling subtree of :class:`TxnContentionExhaustedError`).
+    """
+
+    @classmethod
+    def _constructed_error_class(cls) -> str:
+        """Classified by construction (am-37 §15.2): its own class IS the recognition."""
+        return _ERROR_CLASS_CLAIM_LOST
+
+
+class TxnCasLostError(TxnDomainRejectionError):
+    """A ledger's guarded CAS lost a race and THREW the ``cas_lost:`` marker (packet 58 am-6/am-7)."""
+
+    @classmethod
+    def _constructed_error_class(cls) -> str:
+        """Classified by construction (am-37 §15.2): its own class IS the recognition."""
+        return _ERROR_CLASS_CAS_LOST
+
+
+class TxnReanchorStragglerError(TxnDomainRejectionError):
+    """A supersede's re-anchor met a dependent that appeared after its read (R1; ``reanchor_straggler:``)."""
+
+    @classmethod
+    def _constructed_error_class(cls) -> str:
+        """Classified by construction (am-37 §15.2): its own class IS the recognition."""
+        return _ERROR_CLASS_REANCHOR_STRAGGLER
+
+
+class TxnHealChunkError(TxnDomainRejectionError):
+    """A boot-heal chunk's row guard THREW ``heal_chunk:`` (the row moved under the heal)."""
+
+    @classmethod
+    def _constructed_error_class(cls) -> str:
+        """Classified by construction (am-37 §15.2): its own class IS the recognition."""
+        return _ERROR_CLASS_HEAL_CHUNK
+
+
+class _TransactionConflictCause(Exception):
+    """The engine text of a rolled-back transaction's conflicted root statement (amendment 13 §1 F-8).
+
+    The transactional path detects a per-statement conflict by INSPECTING a returned response, so no
+    exception is in scope to chain. This carrier IS the cause: ``str`` is the engine text, so
+    :func:`retry_on_conflict`'s exhaustion record quotes the same ``engine_error`` the rollback log does.
+    Deliberately NOT a :class:`SurrealStoreError` subclass (a broad ``except SurrealStoreError`` must never
+    see it, and the fate classifier's domain gains no phantom catch).
+    """
+
+
 class RetryableConflictSignal(Exception):
     """An attempt callable's way of telling :func:`retry_on_conflict` "the engine
     reported a RETRYABLE write-write conflict; try again".
@@ -1081,6 +1133,10 @@ _ERROR_CLASS_GOVERNED_CONFLICT = (
 _ERROR_CLASS_UNIQUE_VIOLATION = (
     "unique violation — the record id or a unique index value is already taken; re-read the row"
 )
+_ERROR_CLASS_CLAIM_LOST = "claim lost — another claimant won the compare-and-set"
+_ERROR_CLASS_CAS_LOST = "cas lost — a concurrent writer won the compare-and-set"
+_ERROR_CLASS_REANCHOR_STRAGGLER = "re-anchor straggler — a dependent appeared after the read"
+_ERROR_CLASS_HEAL_CHUNK = "heal chunk — a straggler row moved under the boot heal"
 _ERROR_CLASS_UNSPECIFIED = "unspecified rejection"
 
 # The substrings (verified live — see the module docstring's ``ASSERT``/coercion
@@ -1107,6 +1163,13 @@ _QUERY_RECURSION_DEPTH_MARKER = "recursion depth"
 # ("governed_conflict:<t>:<id>") — the classification key. The `<t>:<id>` suffix is free-form
 # forensics that rides only the server-side rollback log, never the raised message (rider ii).
 _GOVERNED_CONFLICT_MARKER = "governed_conflict:"
+# packet 58 am-3 §3: the claim shell's THROW prefix — the ONE copy of the marker in this module.
+CLAIM_LOST_MARKER = "claim_lost:"
+# packet 58 am-6 FORK-3: the ONE app-THROW tier table — keyed on WHO decided the rollback; anything
+# unrecognised is ERROR (deny-by-default).
+_CAS_LOST_MARKER = "cas_lost:"
+_REANCHOR_STRAGGLER_MARKER = "reanchor_straggler:"
+_HEAL_CHUNK_MARKER = "heal_chunk:"
 # amendment 32 §1 (+ FK-a28b-1): the two live-verified identity-taken texts (3.2.4, probe_exists_texts.py):
 # a record-id collision "Database record `t:x` already exists" and a UNIQUE-index collision "Database index
 # `k` already contains 'v', with record `k:1`". A table-level "The table 't' already exists" matches neither.
@@ -1116,6 +1179,14 @@ _UNIQUE_INDEX_MARKER = "database index `"
 # amendment 35 §2 item 3: the governed marker, anchored at the engine-authored START of the THROW text
 # (measured 3.2.4: the engine wraps a THROW as "An error occurred: <thrown>").
 _ENGINE_THROW_PREFIX = "an error occurred: "
+#: packet 58: each guarded shell's THROW marker → its classifier label, matched ONLY as the THROW's prefix
+#: (63c-i-a's typed decision — never a substring of echoed text).
+_THROWN_DOMAIN_MARKERS: tuple[tuple[str, str], ...] = (
+    (CLAIM_LOST_MARKER, _ERROR_CLASS_CLAIM_LOST),
+    (_CAS_LOST_MARKER, _ERROR_CLASS_CAS_LOST),
+    (_REANCHOR_STRAGGLER_MARKER, _ERROR_CLASS_REANCHOR_STRAGGLER),
+    (_HEAL_CHUNK_MARKER, _ERROR_CLASS_HEAL_CHUNK),
+)
 
 # The correlation hint appended to every classified rollback message, so an
 # operator holding only the (deliberately generic) exception text can still
@@ -1169,6 +1240,10 @@ def _classify_engine_error(raw_result: object) -> str:  # noqa: PLR0911 - one la
         _ENGINE_THROW_PREFIX + _GOVERNED_CONFLICT_MARKER
     ):
         return _ERROR_CLASS_GOVERNED_CONFLICT
+    if untyped or kind == ErrorKind.THROWN:
+        for marker, label in _THROWN_DOMAIN_MARKERS:
+            if lowered.startswith(_ENGINE_THROW_PREFIX + marker):
+                return label
     if untyped or kind == ErrorKind.INTERNAL:
         if lowered.startswith(_UNIQUE_INDEX_MARKER):
             return _ERROR_CLASS_UNIQUE_VIOLATION
@@ -1198,11 +1273,28 @@ def _domain_rejection_error(error_class: str, message: str, *, kind: str | None 
     (the safe side), so a raise site that dropped it would err toward the conditional note, never
     toward a false "no key"; each raise site's kind is pinned separately. Nothing is parsed from text.
     """
-    if error_class == _ERROR_CLASS_GOVERNED_CONFLICT:
-        return TxnGovernedConflictError(message, error_class=error_class, kind=kind)
-    if error_class == _ERROR_CLASS_UNIQUE_VIOLATION:
-        return TxnUniqueViolationError(message, error_class=error_class, kind=kind)
-    return TxnDomainRejectionError(message, error_class=error_class, kind=kind)
+    typed = _TYPED_DOMAIN_REJECTIONS.get(error_class, TxnDomainRejectionError)
+    return typed(message, error_class=error_class, kind=kind)
+
+
+#: am-7 §4: the classifier's label → the typed class it raises (ONE mapping; HEAD's two + packet 58's four).
+_TYPED_DOMAIN_REJECTIONS: dict[str, type[TxnDomainRejectionError]] = {
+    _ERROR_CLASS_GOVERNED_CONFLICT: TxnGovernedConflictError,
+    _ERROR_CLASS_UNIQUE_VIOLATION: TxnUniqueViolationError,
+    _ERROR_CLASS_CLAIM_LOST: TxnClaimLostError,
+    _ERROR_CLASS_CAS_LOST: TxnCasLostError,
+    _ERROR_CLASS_REANCHOR_STRAGGLER: TxnReanchorStragglerError,
+    _ERROR_CLASS_HEAL_CHUNK: TxnHealChunkError,
+}
+#: am-7 §4: the rollback log tier, keyed by the CLASSIFIED CLASS; anything else ERROR (deny-by-default).
+_ROLLBACK_LOG_TIERS: dict[type[BaseException], int] = {
+    TxnClaimLostError: logging.DEBUG,
+    TxnGovernedConflictError: logging.WARNING,
+    TxnUniqueViolationError: logging.WARNING,
+    TxnCasLostError: logging.WARNING,
+    TxnReanchorStragglerError: logging.WARNING,
+    TxnHealChunkError: logging.WARNING,
+}
 
 
 def _typed_kind(error: object) -> str | None:
@@ -1463,14 +1555,20 @@ def _log_rollback(
     root_cause: _FailedStatement,
     statement_count: int,
     failed_statements: list[_FailedStatement],
+    error_type: type[BaseException],
 ) -> None:
     """Log the FULL engine detail server-side (ledger #31: the raised exception
     never carries it) for a rolled-back transaction — shared by
     :func:`execute_transaction`'s domain-rejection raise and its
     contention-exhausted raise, so both carry the identical receipt shape.
+
+    Level (packet 58 am-3 §3): a claim-lost rollback DEBUG; any other APPLICATION-THROW-rooted rollback
+    WARNING; everything else (engine refusals, exhausted contention) ERROR.
     """
-    logger.error(
-        "store.transaction.rolled_back",
+    level = _ROLLBACK_LOG_TIERS.get(error_type, logging.ERROR)
+    logger.log(
+        level,
+        _TXN_ROLLBACK_LABEL,
         extra={
             "statement_index": root_cause.index,
             "statement_count": statement_count,
@@ -1550,12 +1648,10 @@ async def retry_on_conflict[T](
             ``"brief.query.rejected"``), carried into the exhaustion record so
             it is attributable (blindreader-dry-2 F1 / audit-fix-1 B3).
             ``None`` (the default) omits the seam-identity extras entirely rather
-            than logging a hole. EVERY caller passes its own ``label`` except one:
-            :func:`_run_verified_transaction` — the ONE ``BEGIN … COMMIT`` attempt
-            body behind :func:`execute_transaction` and
-            :func:`execute_read_transaction` — which keeps its own attribution via
-            ``_log_rollback``. The EXEMPT caller is what is named — enumerating the
-            attributed ones instead goes stale at the next caller (finding #151).
+            than logging a hole. EVERY caller passes its own ``label`` — including
+            the ONE ``BEGIN … COMMIT`` attempt body behind :func:`execute_transaction`
+            and :func:`execute_read_transaction` (packet 58, amendment 13 §1 F-8), so
+            the exhaustion record carries the same three facts on every path.
         url: The caller's RPC URL, logged alongside ``label`` — ``None`` unless
             ``label`` is also given.
 
@@ -1574,7 +1670,7 @@ async def retry_on_conflict[T](
     # blindreader-dry-2 F1 / audit-fix-1 B3: the LATEST classified conflict's own cause, so the
     # exhaustion record can quote the SAME engine text the seam's own non-exhausted rejections
     # already log, instead of leaving the operator with only an attempt count and a hint
-    # pointing at a server log that holds nothing. Every raise of the signal but ONE chains
+    # pointing at a server log that holds nothing. Every raise of the signal chains
     # ``from error`` (the caught engine exception) — derived 2026-09-29 by reading every
     # ``RetryableConflictSignal()`` raise site in the workspace:
     #   * ``_raise_attempt_failure``, THE one failure ladder (amendment 37 §3), serving BOTH
@@ -1583,13 +1679,11 @@ async def retry_on_conflict[T](
     #     from one, with the caught exception as its ``error`` argument, and it chains itself;
     #   * the three session-bootstrap closures in ``bootstrap_session``;
     #   * the handlers in ``scout.py`` and ``inbox_awaiter.py``, lexically inside ``except``.
-    # The ONE unchained raise is ``_run_verified_transaction``'s nested ``_attempt`` (LEAD
-    # RULING 2026-07-20): it detects a PER-STATEMENT conflict by INSPECTING a returned response,
-    # not by catching a raise, so it raises the signal BARE — no exception is in scope to chain.
-    # That driver call also passes no ``label=`` (§10's allowlist exempts the body), so its
-    # exhaustion record carries NO ``label`` / ``url`` / ``engine_error`` keys at all, whatever
-    # ``last_conflict_cause`` holds; ``_run_verified_transaction`` logs the last attempt's
-    # failing statements via ``_log_rollback`` instead.
+    # ``_run_verified_transaction``'s nested ``_attempt`` detects a PER-STATEMENT conflict by
+    # INSPECTING a returned response, not by catching a raise, so no exception is in scope; it chains
+    # the signal from a :class:`_TransactionConflictCause` carrying the engine text (packet 58
+    # amendment 13 §1 F-8), and its driver call passes ``label=`` / ``url=`` like every other caller —
+    # so the exhaustion record carries the same three facts on EVERY path.
     last_conflict_cause: BaseException | None = None
 
     def _exhausted(retry_state: RetryCallState) -> NoReturn:
@@ -1818,6 +1912,10 @@ async def bootstrap_session(
 # ``_txn``'s OWN logger. It is distinct from ``store.transaction.rolled_back``, which records a
 # PER-STATEMENT rollback the engine executed; this one records a request the engine refused as a whole.
 _TXN_REJECTION_LABEL = "store.transaction.rejected"
+# The per-statement rollback event's name (:func:`_log_rollback`) — ALSO the ``label`` the transactional path
+# passes to :func:`retry_on_conflict` (amendment 13 §1 F-8), so the ``store.retry.exhausted`` record and the
+# rollback record an operator already correlates share ONE seam name.
+_TXN_ROLLBACK_LABEL = "store.transaction.rolled_back"
 
 
 async def _raise_attempt_failure(
@@ -2191,22 +2289,25 @@ async def _run_verified_transaction(
         if not is_conflict:
             typed_root = _typed_root_cause(root_cause)
             error_class = _classify_engine_error(typed_root)
-            _log_rollback(root_cause, statement_count, failed_statements)
-            raise _domain_rejection_error(
+            rejection = _domain_rejection_error(
                 error_class,
                 f"SurrealDB transaction failed and was rolled back: statement "
                 f"{root_cause.index + 1} of {statement_count} was rejected "
                 f"({error_class}); {_SERVER_LOG_HINT}",
                 kind=_typed_kind(typed_root),
             )
+            _log_rollback(root_cause, statement_count, failed_statements, type(rejection))
+            raise rejection
         last_conflict = (root_cause, statement_count, failed_statements)
-        raise RetryableConflictSignal()
+        raise RetryableConflictSignal() from _TransactionConflictCause(str(root_cause.raw_result))
 
     try:
-        await retry_on_conflict(_attempt, deadline_seconds=deadline_seconds)
+        await retry_on_conflict(
+            _attempt, deadline_seconds=deadline_seconds, label=_TXN_ROLLBACK_LABEL, url=url
+        )
     except TxnContentionExhaustedError:
         if last_conflict is not None:
-            _log_rollback(*last_conflict)
+            _log_rollback(*last_conflict, TxnContentionExhaustedError)
         raise
     return verified
 

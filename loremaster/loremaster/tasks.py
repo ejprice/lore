@@ -88,6 +88,7 @@ from typing import Any, Literal, NoReturn, Protocol, cast
 from uuid import uuid4
 
 import networkx
+from more_itertools import constrained_batches
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from surrealdb import RecordID
 
@@ -97,11 +98,14 @@ from loremaster.agent_existence import (
     resolve_existing_rows,
 )
 from loremaster.render import render_attributed
+from loremaster.store import _txn as _txn_module
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
     SurrealConnectionError,
     SurrealStoreError,
+    TxnClaimLostError,
     TxnContentionExhaustedError,
+    TxnDomainRejectionError,
     TxnFragment,
     _SurrealConnection,
     bootstrap_session,
@@ -117,6 +121,7 @@ from loremaster.store._txn import (
     stored_datetime,
 )
 from loremaster.store.stamp_paging import HeldStampGroup, read_stamp_page
+from loremaster.store.surreal import SurrealStore
 from loremaster.store.surreal_schema import BLOCKS_RELATION, TASK_TABLE, generate_task_ddl
 
 logger = logging.getLogger(__name__)
@@ -204,6 +209,22 @@ _PROV_TO = "to"
 _PROV_SUCCESSOR = "successor"
 _ACTION_TRANSITION = "transition"
 _ACTION_SUPERSEDE = "supersede"
+_ACTION_REANCHORED = "dependency_reanchored"
+_ACTION_CLAIM = "claim"
+_PROV_FROM = "from"
+_PROV_REASON = "reason"
+_HEAL_ACTOR = "boot-heal"
+_HEAL_REASON = "straggler"
+_HEAL_EVENT = "task.backfill.stragglers_reanchored"
+_HEAL_PHANTOM_EVENT = "task.backfill.straggler_phantom_head"
+_HEAL_CYCLE_EVENT = "task.backfill.straggler_chain_cycle"
+_HEAL_CHUNK_REJECTED_EVENT = "task.backfill.straggler_chunk_rejected"
+_REANCHOR_LOST_MESSAGE = "cas_lost: a dependent no longer names the superseded task"
+_HEAL_CHUNK_MESSAGE = "heal_chunk: a straggler no longer names its superseded blocker"
+_STRAGGLER_MESSAGE = (
+    "reanchor_straggler: a dependent of the superseded task appeared after the dependents read"
+)
+_CLAIM_LOST_PREFIX = "claim_lost:"
 
 # (The signin credential keys moved to the ONE shared ``store._txn.signin_credentials`` seam — #211/#102;
 # a record id's bare key is ``store._txn.record_key`` — R8 F16.)
@@ -238,7 +259,7 @@ _SUPERSEDE_EVENT_PARAM = "sup_event"
 # bound value), so the rolled-back rejection carries no interpolated data
 # (ledger #31); it surfaces only server-side, mapped to IllegalTransitionError.
 _SUPERSEDE_STAMPED_VAR = "sup_stamped"
-_SUPERSEDE_ALREADY_MESSAGE = "task is already superseded"
+_SUPERSEDE_ALREADY_MESSAGE = "cas_lost: task is already superseded"
 
 # The transition UPDATE's bound-parameter names (the ``tr_`` prefix).
 _TRANSITION_ID_PARAM = "tr_id"
@@ -263,7 +284,7 @@ _TRANSITION_EXPECTED_FROM_PARAM = "tr_expected_from"
 # caller could mistake for success (a same-target race a bare post-CAS
 # ``status`` re-read cannot distinguish from a genuine win).
 _TRANSITION_UPDATED_VAR = "tr_updated"
-_TRANSITION_ALREADY_MESSAGE = "task transition lost a concurrent compare-and-set"
+_TRANSITION_ALREADY_MESSAGE = "cas_lost: task transition lost a concurrent compare-and-set"
 
 # The single-record read's param name. (The create path's own params moved to the
 # shared ``cm<i>_`` namespacing when packet 04b-1 made ``create_task`` transactional,
@@ -544,6 +565,55 @@ class TaskCycleError(TaskLedgerError):
     ``lore_tasks`` caller can write one ``except`` for *"this batch has a loop"* whether
     the loop is among batch KEYS or among PERSISTED ids.
     """
+
+
+class SupersedeResult(BaseModel):
+    """What :meth:`TaskLedger.supersede_task` returns (packet 58)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    successor_id: str
+    reanchored: list[str] = Field(default_factory=list)
+    reblocked: list[str] = Field(default_factory=list)
+
+
+class SupersedeStragglerError(TaskLedgerError):
+    """A dependent of the superseded task appeared after the dependents read (R1)."""
+
+
+class StragglerHealPackerError(TaskLedgerError):
+    """A single straggler row composes more ROWS than one transaction may carry (am-3 §1; am-16 §2.1 sibling).
+
+    Typed facts: ``row_id`` (the straggler), ``weight`` (its ``fragment_rows``), ``row_cap`` (the live
+    cap)."""
+
+    def __init__(self, *, row_id: str, weight: int, row_cap: int) -> None:
+        self.row_id, self.weight, self.row_cap = row_id, weight, row_cap
+        super().__init__(
+            f"straggler {render_attributed(row_id)} alone composes {weight} rows, over the {row_cap}-row "
+            f"transaction cap — the heal cannot pack it"
+        )
+
+
+class HubSupersedeRefusedError(TaskLedgerError):
+    """A supersede whose re-anchor would exceed the derived transaction bound (F-1; am-16 §2.1).
+
+    Typed facts, each derived by the ledger's own pricing: ``dependents`` (N), ``rows`` (``fragment_rows``
+    of the supersede it would compose), ``row_cap`` (the live ``TXN_ROW_HARD_CAP``), ``cap_dependents``
+    (the accessor).
+    The message is rendered FROM them, as the ruled sentence."""
+
+    def __init__(
+        self, *, task_id: str, dependents: int, rows: int, row_cap: int, cap_dependents: int
+    ) -> None:
+        self.task_id, self.dependents, self.rows = task_id, dependents, rows
+        self.row_cap, self.cap_dependents = row_cap, cap_dependents
+        super().__init__(
+            f"task {render_attributed(task_id)} has {dependents} dependents; re-anchoring them "
+            f"composes {rows} rows, over the {row_cap}-row transaction cap (the build-time bound admits "
+            f"at most {cap_dependents} dependents) — refused, nothing changed. This is a pinned KNOWN "
+            f"BOUND (58 F-1); file it with lore_findings."
+        )
 
 
 class TransitiveBlockers(BaseModel):
@@ -908,6 +978,7 @@ class TaskLedger:
         )
         logger.debug("task.schema.ready", extra={"database": self._database})
         await self._backfill_blocks_edges()
+        await self._reanchor_stragglers()
 
     async def _backfill_blocks_edges(self) -> None:
         """Mint the ``blocks`` edges the EXISTING ``blocked_by`` columns already imply.
@@ -1126,6 +1197,11 @@ class TaskLedger:
         both land or neither does, and two racers can never both win.
         """
         statement_text, merged_params = compose(*fragments)
+        SurrealStore._log_transaction_size(
+            sum(len(fragment.statements) for fragment in fragments),
+            len(merged_params),
+            _txn_module.fragment_rows(fragments),
+        )
         await execute_transaction(
             statement_text,
             merged_params,
@@ -1291,7 +1367,8 @@ class TaskLedger:
         """
         cap = self._validated_limit(limit)
         statement, params = self._candidate_statement(
-            status=status, owner=owner, limit=None if blocked is not None else cap
+            status=status, owner=owner, limit=None if blocked is not None else cap,
+            exclude_superseded=blocked is not None,
         )
         fragments = [
             f"LET ${_QUERY_ROWS_VAR} = ({statement})",
@@ -1350,7 +1427,8 @@ class TaskLedger:
 
     @staticmethod
     def _candidate_statement(
-        *, status: str | None, owner: str | None, limit: int | None
+        *, status: str | None, owner: str | None, limit: int | None,
+        exclude_superseded: bool = False,
     ) -> tuple[str, dict[str, Any]]:
         """The candidate ``SELECT``: the caller's equality filters, pushed into the store.
 
@@ -1373,6 +1451,8 @@ class TaskLedger:
         if owner is not None:
             clauses.append(f"{_COL_OWNER} = ${_QUERY_OWNER_PARAM}")
             params[_QUERY_OWNER_PARAM] = owner
+        if exclude_superseded or status is not None:
+            clauses.append(f"{_COL_SUPERSEDED_BY} IS NONE")
         statement = f"SELECT * FROM {TASK_TABLE}"
         if clauses:
             statement = f"{statement} WHERE {' AND '.join(clauses)}"
@@ -1493,7 +1573,15 @@ class TaskLedger:
             raise TaskNotFoundError(f"no task with id {render_attributed(task_id)}")
         blocked_by = [str(blocker) for blocker in (row.get(_COL_BLOCKED_BY) or ())]
 
-        await self._apply([self._claim_fragment(task_id, owner, blocked_by)])
+        event = {
+            _PROV_ACTOR: owner,
+            _PROV_ACTION: _ACTION_CLAIM,
+            _PROV_AT: datetime.now(UTC).isoformat(),
+        }
+        try:
+            await self._apply([self._claim_fragment(task_id, owner, blocked_by, event)])
+        except TxnClaimLostError:
+            pass  # a routine loss (am-3 §3) — the owner read below decides the verdict
 
         # The winner is decided by OWNER IDENTITY ALONE on the post-CAS read:
         # ``owner`` is written solely by the guarded claim CAS (from ``NONE``,
@@ -1517,8 +1605,32 @@ class TaskLedger:
             claimed=won, task=updated, superseded_blockers=superseded_blockers
         )
 
+    async def _still_claimable(self, row: Mapping[str, Any], pre_read: list[str]) -> bool:
+        """Whether ``row`` would STILL pass the claim CAS — a rollback on such a row is inexplicable."""
+        if str(row.get(_COL_STATUS)) != STATUS_OPEN or row.get(_COL_OWNER) is not None:
+            return False
+        if row.get(_COL_SUPERSEDED_BY) is not None:
+            return False
+        current = [str(b) for b in (row.get(_COL_BLOCKED_BY) or ())]
+        if current != pre_read:
+            return False
+        distinct = list(dict.fromkeys(current))
+        if not distinct:
+            return True
+        rows = self._as_rows(
+            await self._query(
+                f"SELECT record::id({_ID_KEY}) AS {_ID_KEY}, {_COL_STATUS} FROM {TASK_TABLE} "
+                f"WHERE record::id({_ID_KEY}) IN $sc_ids",
+                {"sc_ids": distinct},
+            )
+        )
+        resolved = {str(r.get(_ID_KEY)) for r in rows if str(r.get(_COL_STATUS)) in TERMINAL_STATUSES}
+        return resolved == set(distinct)
+
     @staticmethod
-    def _claim_fragment(task_id: str, owner: str, blocked_by: list[str]) -> TxnFragment:
+    def _claim_fragment(
+        task_id: str, owner: str, blocked_by: list[str], event: dict[str, Any] | None = None
+    ) -> TxnFragment:
         """The atomic-claim fragment: LET-resolve blockers, then the guarded CAS.
 
         ``$clm_resolved`` binds the blocker record-ids that have reached a
@@ -1549,22 +1661,25 @@ class TaskLedger:
             f"WHERE record::id({_ID_KEY}) IN ${_CLAIM_BLOCKED_BY_PARAM} "
             f"AND {_COL_STATUS} IN ${_CLAIM_TERMINAL_PARAM})"
         )
-        guarded_claim = (
-            f"UPDATE type::record('{TASK_TABLE}', ${_CLAIM_ID_PARAM}) SET "
-            f"{_COL_OWNER} = ${_CLAIM_OWNER_PARAM}, "
-            f"{_COL_STATUS} = ${_CLAIM_CLAIMED_PARAM}, "
-            f"{_COL_CLAIMED_AT} = time::now(), "
-            f"{_COL_UPDATED_AT} = time::now() "
-            f"WHERE {_COL_STATUS} = ${_CLAIM_OPEN_PARAM} "
-            f"AND {_COL_OWNER} IS NONE "
-            f"AND {_COL_SUPERSEDED_BY} IS NONE "
-            f"AND array::len(array::distinct({_COL_BLOCKED_BY})) = "
-            f"array::len(${_CLAIM_RESOLVED_VAR})"
-        )
-        return TxnFragment(
-            statements=[resolve_blockers, guarded_claim],
+        return TaskLedger._guarded_append_fragment(
+            task_id,
+            event=event,
+            preamble=[resolve_blockers],
+            set_parts=[
+                f"{_COL_OWNER} = ${_CLAIM_OWNER_PARAM}",
+                f"{_COL_STATUS} = ${_CLAIM_CLAIMED_PARAM}",
+                f"{_COL_CLAIMED_AT} = time::now()",
+            ],
+            where_conjuncts=[
+                f"{_COL_STATUS} = ${_CLAIM_OPEN_PARAM}",
+                f"{_COL_OWNER} IS NONE",
+                f"{_COL_SUPERSEDED_BY} IS NONE",
+                f"{_COL_BLOCKED_BY} = ${_CLAIM_BLOCKED_BY_PARAM}",
+                f"array::len(array::distinct({_COL_BLOCKED_BY})) = array::len(${_CLAIM_RESOLVED_VAR})",
+            ],
+            throw_message=f"{_CLAIM_LOST_PREFIX}{task_id}",
+            namespace="clmg",
             params={
-                _CLAIM_ID_PARAM: task_id,
                 _CLAIM_OWNER_PARAM: owner,
                 _CLAIM_BLOCKED_BY_PARAM: blocked_by,
                 # Sorted so the bound list is deterministic; membership is
@@ -1744,15 +1859,9 @@ class TaskLedger:
         ``summary``/``report_path`` (PKT-06 §4(d) — atomic with the status
         flip, already validated by :meth:`_validate_done_summary`).
         """
-        set_parts = [
-            f"{_COL_STATUS} = ${_TRANSITION_STATUS_PARAM}",
-            f"{_COL_UPDATED_AT} = time::now()",
-            f"{_COL_PROVENANCE}.{_PROV_EVENTS} += [${_TRANSITION_EVENT_PARAM}]",
-        ]
+        set_parts = [f"{_COL_STATUS} = ${_TRANSITION_STATUS_PARAM}"]
         params: dict[str, Any] = {
-            _TRANSITION_ID_PARAM: task_id,
             _TRANSITION_STATUS_PARAM: target,
-            _TRANSITION_EVENT_PARAM: event,
             _TRANSITION_EXPECTED_FROM_PARAM: expected_from,
         }
         if release:
@@ -1766,18 +1875,18 @@ class TaskLedger:
             set_parts.append(f"{_COL_REPORT_PATH} = ${_TRANSITION_REPORT_PATH_PARAM}")
             params[_TRANSITION_SUMMARY_PARAM] = summary
             params[_TRANSITION_REPORT_PATH_PARAM] = report_path
-        guarded_transition = (
-            f"LET ${_TRANSITION_UPDATED_VAR} = (UPDATE "
-            f"type::record('{TASK_TABLE}', ${_TRANSITION_ID_PARAM}) SET "
-            f"{', '.join(set_parts)} "
-            f"WHERE {_COL_STATUS} = ${_TRANSITION_EXPECTED_FROM_PARAM} "
-            f"AND {_COL_SUPERSEDED_BY} IS NONE)"
+        return TaskLedger._guarded_append_fragment(
+            task_id,
+            event=event,
+            set_parts=set_parts,
+            params=params,
+            where_conjuncts=[
+                f"{_COL_STATUS} = ${_TRANSITION_EXPECTED_FROM_PARAM}",
+                f"{_COL_SUPERSEDED_BY} IS NONE",
+            ],
+            throw_message=_TRANSITION_ALREADY_MESSAGE,
+            namespace="trg",
         )
-        guard_updated = (
-            f"IF array::len(${_TRANSITION_UPDATED_VAR}) == 0 "
-            f"{{ THROW '{_TRANSITION_ALREADY_MESSAGE}' }}"
-        )
-        return TxnFragment(statements=[guarded_transition, guard_updated], params=params)
 
     @staticmethod
     def _validate_done_summary(
@@ -1885,7 +1994,7 @@ class TaskLedger:
         description: str,
         created_by: str,
         blocked_by: list[str] | None = None,
-    ) -> str:
+    ) -> SupersedeResult:
         """Reframe a task: create a fresh open successor, stamp the old row.
 
         The successor CREATE and the old-row stamp ride ONE ``BEGIN … COMMIT``
@@ -1974,7 +2083,25 @@ class TaskLedger:
         # ONE implementation): a phantom/superseded blocker or a column cycle is refused
         # atomically before any write. Both short-circuit on empty deps (no wire cost).
         await self._reject_unusable_blockers([(entry, entry) for entry in dependencies])
-        await self._refuse_a_cycle({new_id: dependencies})
+        dependent_rows = await self._dependent_rows(task_id)
+        dependent_ids = sorted(dependent_rows)
+        cap = self.max_reanchor_dependents(len(dependencies))
+        if len(dependent_ids) > cap:
+            raise HubSupersedeRefusedError(
+                task_id=task_id,
+                dependents=len(dependent_ids),
+                rows=self._supersede_rows(len(dependencies), len(dependent_ids)),
+                row_cap=_txn_module.TXN_ROW_HARD_CAP,
+                cap_dependents=cap,
+            )
+        rewired = {
+            dependent: list(
+                dict.fromkeys(new_id if entry == task_id else entry for entry in columns)
+            )
+            for dependent, (columns, _row) in dependent_rows.items()
+        }
+        await self._refuse_a_cycle({new_id: dependencies, **rewired}, minted={new_id})
+        reblocked = await self._reblocked(row, dependent_rows, task_id)
 
         now = datetime.now(UTC)
         content = self._new_task_content(subject, description, dependencies, created_by, now)
@@ -1990,12 +2117,10 @@ class TaskLedger:
             # endpoint (the fresh successor) exists, and the loser of a raced supersede
             # rolls back the WHOLE txn (stamp + CREATE + RELATEs) — ZERO orphan edges.
             await self._apply(
-                [
-                    self._supersede_fragment(task_id, new_id, content, event),
-                    self._relate_fragment(
-                        [(blocker, new_id) for blocker in dependencies]
-                    ),
-                ]
+                self._supersede_transaction(
+                    task_id, new_id, content, event, dependencies, dependent_ids,
+                    actor=created_by, at=now.isoformat(),
+                )
             )
         except SurrealConnectionError:
             # A genuine transport fault — never a lost race; propagate untouched
@@ -2020,8 +2145,369 @@ class TaskLedger:
                     f"task {render_attributed(task_id)} is already superseded by "
                     f"{settled.get(_COL_SUPERSEDED_BY)!r} and cannot be superseded again"
                 ) from error
+            if sorted(await self.direct_dependents(task_id)) != dependent_ids:
+                raise SupersedeStragglerError(
+                    f"a task blocked on {render_attributed(task_id)} was created while this "
+                    f"supersede was being prepared — nothing changed; retry the supersede"
+                ) from error
             raise
-        return new_id
+        return SupersedeResult(
+            successor_id=new_id, reanchored=dependent_ids, reblocked=sorted(reblocked)
+        )
+
+    async def _dependent_rows(
+        self, task_id: str
+    ) -> dict[str, tuple[list[str], dict[str, Any]]]:
+        """Every row whose ``blocked_by`` names ``task_id``: id -> (column, row)."""
+        rows = self._as_rows(
+            await self._query(
+                f"SELECT record::id({_ID_KEY}) AS {_ID_KEY}, {_COL_BLOCKED_BY}, {_COL_STATUS}, "
+                f"{_COL_OWNER}, {_COL_SUPERSEDED_BY} FROM {TASK_TABLE} "
+                f"WHERE {_COL_BLOCKED_BY} CONTAINS $dr_id",
+                {"dr_id": task_id},
+            )
+        )
+        return {
+            str(r.get(_ID_KEY)): ([str(b) for b in (r.get(_COL_BLOCKED_BY) or ())], r)
+            for r in rows
+        }
+
+    async def _reblocked(
+        self,
+        predecessor: Mapping[str, Any],
+        dependent_rows: Mapping[str, tuple[list[str], dict[str, Any]]],
+        task_id: str,
+    ) -> list[str]:
+        """The dependents that were CLAIMABLE before (amendment 1 FORK-A rider), pre-write."""
+        if str(predecessor.get(_COL_STATUS)) not in TERMINAL_STATUSES:
+            return []
+        others = sorted(
+            {b for columns, _row in dependent_rows.values() for b in columns if b != task_id}
+        )
+        status_by_id: dict[str, str] = {}
+        if others:
+            rows = self._as_rows(
+                await self._query(
+                    f"SELECT record::id({_ID_KEY}) AS {_ID_KEY}, {_COL_STATUS} FROM {TASK_TABLE} "
+                    f"WHERE record::id({_ID_KEY}) IN $rb_ids",
+                    {"rb_ids": others},
+                )
+            )
+            status_by_id = {str(r.get(_ID_KEY)): str(r.get(_COL_STATUS)) for r in rows}
+        out = []
+        for dependent, (columns, row) in dependent_rows.items():
+            if str(row.get(_COL_STATUS)) != STATUS_OPEN or row.get(_COL_OWNER) is not None:
+                continue
+            if row.get(_COL_SUPERSEDED_BY) is not None:
+                continue
+            if all(
+                status_by_id.get(b) in TERMINAL_STATUSES for b in columns if b != task_id
+            ):
+                out.append(dependent)
+        return out
+
+    def max_reanchor_dependents(self, successor_blocked_by_count: int) -> int:
+        """The most dependents ONE supersede can re-anchor — DERIVED from the builder's counts.
+
+        The largest N for which ``_txn.fragment_rows`` of the fragments this supersede builds stays within the
+        live ``_txn.TXN_ROW_HARD_CAP`` (a build-time bound, never a promise that a smaller supersede
+        succeeds).
+
+        ⚠ KNOWN BOUND (packet 58 amendment 17 §4, correcting amendment 15 §1.3): near the cap a supersede
+        times out BEFORE it is refused. Measured 2026-11-09 on the real schema (TEST store, engine 3.3.5,
+        SDK 3.0.0): 3 332 dependents commit in 10.2 s, 6 000 time out at 30 s (the 30 s line is interpolated
+        near 5 700 dependents, not measured there). Between about 5 700 and the cap of 16 665 dependents a
+        supersede is not refused with the teaching error: it times out loud and commits nothing. Trigger: a
+        ``store.apply.large_transaction`` record from the task ledger. Probe: ``scripts/probe_hub_txn_58.py``.
+        """
+        fixed = self._supersede_rows(successor_blocked_by_count, 0)
+        per = self._supersede_rows(successor_blocked_by_count, 1) - fixed
+        return (_txn_module.TXN_ROW_HARD_CAP - fixed) // per
+
+    def _supersede_rows(self, successor_blocked_by_count: int, dependents: int) -> int:
+        """``fragment_rows`` of the supersede transaction for this shape — the ONE pricing the accessor and
+        the refusal share (placeholder ids: the row count depends on the shape only)."""
+        deps = [f"k{index}" for index in range(successor_blocked_by_count)]
+        fragments = self._supersede_transaction(
+            "x", "y", {}, {}, deps, [f"d{index}" for index in range(dependents)], actor="a",
+            at=datetime.now(UTC).isoformat(),
+        )
+        return _txn_module.fragment_rows(fragments)
+
+    @staticmethod
+    def _reanchor_fragments(
+        pairs: Sequence[tuple[str, str, str]],
+        *,
+        actor: str,
+        at: str,
+        reason: str | None = None,
+        prefix: str = "ra",
+        throw_message: str = _REANCHOR_LOST_MESSAGE,
+    ) -> list[TxnFragment]:
+        """Rewrite each ``(dependent, old, new)`` through the ONE shell, with its note."""
+        fragments = []
+        for index, (dependent, old, new) in enumerate(pairs):
+            old_param = f"{prefix}{index}_old"
+            new_param = f"{prefix}{index}_new"
+            note: dict[str, Any] = {
+                _PROV_ACTOR: actor,
+                _PROV_ACTION: _ACTION_REANCHORED,
+                _PROV_FROM: old,
+                _PROV_TO: new,
+                _PROV_AT: at,
+            }
+            if reason is not None:
+                note[_PROV_REASON] = reason
+            fragments.append(
+                TaskLedger._guarded_append_fragment(
+                    dependent,
+                    event=note,
+                    set_parts=[
+                        f"{_COL_BLOCKED_BY} = array::distinct(array::map({_COL_BLOCKED_BY}, "
+                        f"|$b| IF $b = ${old_param} THEN ${new_param} ELSE $b END))"
+                    ],
+                    params={old_param: old, new_param: new},
+                    where_conjuncts=[f"{_COL_BLOCKED_BY} CONTAINS ${old_param}"],
+                    throw_message=throw_message,
+                    namespace=f"{prefix}{index}g",
+                )
+            )
+        return fragments
+
+    @staticmethod
+    def _supersede_transaction(
+        old_id: str,
+        new_id: str,
+        content: dict[str, Any],
+        event: dict[str, Any],
+        dependencies: Sequence[str],
+        dependents: Sequence[str],
+        *,
+        actor: str,
+        at: str,
+    ) -> list[TxnFragment]:
+        """The WHOLE supersede: stamp, CREATE, retire X's edges, re-anchor, relate, close."""
+        fragments = [TaskLedger._supersede_fragment(old_id, new_id, content, event)]
+        fragments.append(
+            TxnFragment(
+                # ``blocks`` has no index — a table-anchored DELETE iterates the whole table; am-17 §9.
+                # Graph-anchored at the old task: cost = its own dependent count (probe_heal_curve_58.py).
+                statements=["DELETE $ssx_old_rec->" + BLOCKS_RELATION],
+                params={"ssx_old_rec": RecordID(TASK_TABLE, old_id), "ssx_old": old_id},
+            )
+        )
+        fragments.extend(
+            TaskLedger._reanchor_fragments(
+                [(dependent, old_id, new_id) for dependent in dependents], actor=actor, at=at
+            )
+        )
+        fragments.append(
+            TaskLedger._relate_fragment(
+                [(blocker, new_id) for blocker in dependencies]
+                + [(new_id, dependent) for dependent in dependents]
+            )
+        )
+        fragments.append(
+            TxnFragment(
+                statements=[
+                    f"IF (SELECT count() FROM {TASK_TABLE} WHERE {_COL_BLOCKED_BY} CONTAINS "
+                    f"$ssx_old GROUP ALL)[0].count > 0 {{ THROW '{_STRAGGLER_MESSAGE}' }}"
+                ],
+                params={},
+            )
+        )
+        return fragments
+
+    @staticmethod
+    def _guarded_append_fragment(
+        row_id: str,
+        *,
+        event: Mapping[str, Any] | None,
+        set_parts: Sequence[str] = (),
+        params: Mapping[str, Any],
+        where_conjuncts: Sequence[str] = (),
+        preamble: Sequence[str] = (),
+        throw_message: str,
+        namespace: str | None = None,
+    ) -> TxnFragment:
+        """THE task-side guarded-append shell (packet 58): guarded UPDATE + THROW on zero rows."""
+        space = namespace or f"ga{uuid4().hex[:12]}"
+        id_param = f"{space}_id"
+        event_param = f"{space}_ev"
+        result_var = f"{space}_upd"
+        merged: dict[str, Any] = {**params, id_param: row_id}
+        sets = [*set_parts, f"{_COL_UPDATED_AT} = time::now()"]
+        if event is not None:
+            sets.append(f"{_COL_PROVENANCE}.{_PROV_EVENTS} += [${event_param}]")
+            merged[event_param] = dict(event)
+        update = f"UPDATE type::record('{TASK_TABLE}', ${id_param}) SET {', '.join(sets)}"
+        if where_conjuncts:
+            update = f"{update} WHERE " + " AND ".join(f"({c})" for c in where_conjuncts)
+        return TxnFragment(
+            statements=[
+                *preamble,
+                f"LET ${result_var} = ({update})",
+                f"IF array::len(${result_var}) == 0 {{ THROW '{throw_message}' }}",
+            ],
+            params=merged,
+        )
+
+    async def _reanchor_stragglers(self) -> None:
+        """Boot heal (am-1 R2 / am-3): re-anchor every row still naming a superseded task, in greedy
+        chunks sized by the heal's OWN composed count; a store fault RAISES; a chunk's domain rejection
+        is isolated + WARNING; a phantom or cyclic chain head skips the WHOLE row, recorded every boot."""
+        rows = self._as_rows(
+            await self._query(
+                f"SELECT record::id({_ID_KEY}) AS {_ID_KEY}, {_COL_SUPERSEDED_BY} FROM {TASK_TABLE} "
+                f"WHERE {_COL_SUPERSEDED_BY} IS NOT NONE"
+            )
+        )
+        successor = {str(r.get(_ID_KEY)): str(r.get(_COL_SUPERSEDED_BY)) for r in rows}
+        if not successor:
+            return
+        stragglers = self._as_rows(
+            await self._query(
+                f"SELECT record::id({_ID_KEY}) AS {_ID_KEY}, {_COL_BLOCKED_BY} FROM {TASK_TABLE} "
+                f"WHERE {_COL_BLOCKED_BY} CONTAINSANY $hs_ids",
+                {"hs_ids": sorted(successor)},
+            )
+        )
+        if not stragglers:
+            return
+
+        def _walk(start: str) -> tuple[str | None, bool]:
+            """(chain head, cycled?) — bounded by the chain's own length."""
+            seen = {start}
+            current = successor[start]
+            while current in successor:
+                if current in seen:
+                    return None, True
+                seen.add(current)
+                current = successor[current]
+            return current, False
+
+        heads = {old: _walk(old) for old in successor}
+        existing = set(
+            await resolve_existing_rows(
+                self._query, TASK_TABLE, sorted({h for h, cyc in heads.values() if h is not None})
+            )
+        )
+        at = datetime.now(UTC).isoformat()
+        built = self._plan_heal_rows(stragglers, successor, heads, existing, at)
+        chunks = self._pack_heal_chunks(built)
+        healed = 0
+        for chunk_index, chunk in enumerate(chunks):
+            fragments = [f for entry in chunk for f in entry[1]]
+            fragments.append(self._relate_fragment([pair for entry in chunk for pair in entry[2]]))
+            try:
+                await self._apply([f for f in fragments if f.statements])
+            except TxnDomainRejectionError:
+                logger.warning(
+                    _HEAL_CHUNK_REJECTED_EVENT,
+                    extra={
+                        "database": self._database, "chunk": chunk_index,
+                        "rows": [entry[0] for entry in chunk],
+                    },
+                )
+                continue
+            healed += len(chunk)
+        if healed:
+            logger.info(
+                _HEAL_EVENT, extra={"database": self._database, "count": healed, "chunks": len(chunks)}
+            )
+
+    def _plan_heal_rows(
+        self,
+        stragglers: Sequence[Mapping[str, Any]],
+        successor: Mapping[str, str],
+        heads: Mapping[str, tuple[str | None, bool]],
+        existing: set[str],
+        at: str,
+    ) -> list[tuple[str, list[TxnFragment], list[tuple[str, str]], int]]:
+        """Each healable straggler as ``(dependent, fragments, relates, cost)``; a phantom or cyclic chain
+        head skips the WHOLE row, recorded every boot (am-3). ``cost`` is the ONE house row count."""
+        built: list[tuple[str, list[TxnFragment], list[tuple[str, str]], int]] = []
+        for row_index, straggler in enumerate(stragglers):
+            dependent = str(straggler.get(_ID_KEY))
+            columns = [str(b) for b in (straggler.get(_COL_BLOCKED_BY) or ())]
+            olds = list(dict.fromkeys(b for b in columns if b in successor))
+            skip = False
+            for old in olds:
+                head, cycled = heads[old]
+                if cycled:
+                    logger.warning(
+                        _HEAL_CYCLE_EVENT,
+                        extra={"database": self._database, "task_id": dependent, "blocker_id": old},
+                    )
+                    skip = True
+                    continue
+                if head not in existing:
+                    logger.warning(
+                        _HEAL_PHANTOM_EVENT,
+                        extra={
+                            "database": self._database, "task_id": dependent,
+                            "blocker_id": old, "phantom_head_id": head,
+                        },
+                    )
+                    skip = True
+            if skip:
+                continue
+            final = list(columns)
+            pairs: list[tuple[str, str, str]] = []
+            relates: list[tuple[str, str]] = []
+            for old in olds:
+                head = cast("str", heads[old][0])
+                pairs.append((dependent, old, head))
+                if head not in final and (head, dependent) not in relates:
+                    relates.append((head, dependent))
+                final = list(dict.fromkeys(head if b == old else b for b in final))
+            fragments = [
+                TxnFragment(
+                    # ``blocks`` has no index: a table-anchored DELETE scans it once per straggler — am-17 §3.
+                    # Anchored at the DEPENDENT (cost = its blocker count); see probe_heal_curve_58.py.
+                    statements=[
+                        f"DELETE $hd{row_index}_out<-{BLOCKS_RELATION} "
+                        f"WHERE in = $hd{row_index}_{i}_in"
+                        for i in range(len(olds))
+                    ],
+                    params={
+                        f"hd{row_index}_out": RecordID(TASK_TABLE, dependent),
+                        **{f"hd{row_index}_{i}_in": RecordID(TASK_TABLE, old) for i, old in enumerate(olds)},
+                    },
+                ),
+                *self._reanchor_fragments(
+                    pairs, actor=_HEAL_ACTOR, at=at, reason=_HEAL_REASON, prefix=f"h{row_index}r",
+                    throw_message=_HEAL_CHUNK_MESSAGE,
+                ),
+            ]
+            cost = _txn_module.fragment_rows([*fragments, self._relate_fragment(relates)])
+            built.append((dependent, fragments, relates, cost))
+        return built
+
+    @staticmethod
+    def _pack_heal_chunks(
+        built: Sequence[tuple[str, list[TxnFragment], list[tuple[str, str]], int]],
+    ) -> list[list[tuple[str, list[TxnFragment], list[tuple[str, str]], int]]]:
+        """Greedy chunks sized by each row's OWN composed cost (``_txn.fragment_rows``).
+
+        The chunk bound is ``min(TXN_ROW_WARN_THRESHOLD, TXN_ROW_HARD_CAP)``, both read live when the heal
+        runs (amendment 17 §2): the WARN threshold by ruling — a heal never composes a transaction the house
+        itself would warn about — measured at 7.25 s per full chunk on the real schema (a 50 000-row chunk
+        timed out at 300 s: cost grows with the square of the size). ``min`` because a chunk must never
+        exceed what ``compose`` accepts. One row heavier than the bound makes ``constrained_batches`` raise
+        and the boot fails loud with :class:`StragglerHealPackerError` carrying the bound as ``row_cap``.
+        Re-open trigger (am-17 §5): a ``task.backfill.stragglers_reanchored`` record with ``chunks >= 2`` on
+        production, or a boot raising ``SurrealOutcomeUnknownError`` from the heal.
+        """
+        cap = min(_txn_module.TXN_ROW_WARN_THRESHOLD, _txn_module.TXN_ROW_HARD_CAP)
+        try:
+            return [
+                list(batch)
+                for batch in constrained_batches(built, cap, get_len=lambda entry: entry[3], strict=True)
+            ]
+        except ValueError as error:
+            worst = max(built, key=lambda entry: entry[3])
+            raise StragglerHealPackerError(row_id=worst[0], weight=worst[3], row_cap=cap) from error
 
     @staticmethod
     def _supersede_fragment(
@@ -2048,30 +2534,21 @@ class TaskLedger:
         ``IllegalTransitionError``) + ZERO orphan rows — the CREATE can never
         outlive a stamp that did not land.
         """
-        stamp_old = (
-            f"LET ${_SUPERSEDE_STAMPED_VAR} = (UPDATE "
-            f"type::record('{TASK_TABLE}', ${_SUPERSEDE_OLD_ID_PARAM}) SET "
-            f"{_COL_SUPERSEDED_BY} = ${_SUPERSEDE_NEW_ID_PARAM}, "
-            f"{_COL_UPDATED_AT} = time::now(), "
-            f"{_COL_PROVENANCE}.{_PROV_EVENTS} += [${_SUPERSEDE_EVENT_PARAM}] "
-            f"WHERE {_COL_SUPERSEDED_BY} IS NONE)"
-        )
-        guard_stamped = (
-            f"IF array::len(${_SUPERSEDE_STAMPED_VAR}) == 0 "
-            f"{{ THROW '{_SUPERSEDE_ALREADY_MESSAGE}' }}"
+        stamp = TaskLedger._guarded_append_fragment(
+            old_id,
+            event=event,
+            set_parts=[f"{_COL_SUPERSEDED_BY} = ${_SUPERSEDE_NEW_ID_PARAM}"],
+            params={_SUPERSEDE_NEW_ID_PARAM: new_id, _SUPERSEDE_CONTENT_PARAM: content},
+            where_conjuncts=[f"{_COL_SUPERSEDED_BY} IS NONE"],
+            throw_message=_SUPERSEDE_ALREADY_MESSAGE,
+            namespace="supg",
         )
         create_successor = (
             f"CREATE type::record('{TASK_TABLE}', ${_SUPERSEDE_NEW_ID_PARAM}) "
             f"CONTENT ${_SUPERSEDE_CONTENT_PARAM}"
         )
         return TxnFragment(
-            statements=[stamp_old, guard_stamped, create_successor],
-            params={
-                _SUPERSEDE_NEW_ID_PARAM: new_id,
-                _SUPERSEDE_CONTENT_PARAM: content,
-                _SUPERSEDE_OLD_ID_PARAM: old_id,
-                _SUPERSEDE_EVENT_PARAM: event,
-            },
+            statements=[*stamp.statements, create_successor], params=stamp.params
         )
 
     # -- rollup / batch (PKT-06) --------------------------------------------
@@ -2330,7 +2807,9 @@ class TaskLedger:
                 f"id — the ids may be perfectly good; retry, and escalate if it persists"
             ) from error
 
-    async def _refuse_a_cycle(self, pending: Mapping[str, Sequence[str]]) -> None:
+    async def _refuse_a_cycle(
+        self, pending: Mapping[str, Sequence[str]], *, minted: set[str] | None = None
+    ) -> None:
         """Refuse a write that would put one of ``pending``'s tasks on a ``blocked_by`` cycle.
 
         ⚠⚠ **THE WALK IS OVER THE ``blocked_by`` COLUMN, CLIENT-SIDE, AND IT CANNOT BE THE
@@ -2373,7 +2852,7 @@ class TaskLedger:
         }
         for task_id, blockers in pending.items():
             graph[task_id] = set(blockers)
-        minted = set(pending)
+        minted = set(pending) if minted is None else minted
         while True:
             cycle = find_blocked_by_cycle(graph)
             if cycle is None:

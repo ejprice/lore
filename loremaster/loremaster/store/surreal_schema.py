@@ -378,6 +378,8 @@ _TASK_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
 # The ``task`` column the plain status index is built on (the fleet-visible
 # ``query_tasks(status=...)`` filter).
 _TASK_STATUS_FIELD = "status"
+# Packet 58 index rider: the dependency-list column (its element path is indexed).
+_TASK_BLOCKED_BY_FIELD = "blocked_by"
 
 # --- P8b ``finding`` table (lore's durable, fleet-visible FINDING ledger) ------
 #
@@ -1493,6 +1495,12 @@ def _task_statements() -> list[str]:
     ]
     statements.append(
         _plain_index(TASK_TABLE, f"{TASK_TABLE}_{_TASK_STATUS_FIELD}", (_TASK_STATUS_FIELD,))
+    )
+    # Packet 58 amendment 1 (index rider): the ELEMENT-PATH index (store ref §2) serves
+    # ``blocked_by CONTAINS $x`` — direct_dependents, the supersede's closing guard and the
+    # boot straggler heal — as an IndexScan instead of a TableScan of the task table.
+    statements.append(
+        _plain_index(TASK_TABLE, f"{TASK_TABLE}_{_TASK_BLOCKED_BY_FIELD}", (f"{_TASK_BLOCKED_BY_FIELD}.*",))
     )
     statements.append(
         _define_relation_table(BLOCKS_RELATION, TASK_TABLE, TASK_TABLE, enforced=True)

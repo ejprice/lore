@@ -1047,7 +1047,13 @@ class TestDomainRejectionErrorType:
         statement, params = compose(
             TxnFragment(statements=['THROW "governed_conflict:probe_t:target_row"'], params={})
         )
-        with caplog.at_level(logging.ERROR):
+        # ⚠ DUAL (packet 58 contract r2 — §HELD part 3, contract-58-r2, 2026-09-26): this capture USED to
+        # be `logging.ERROR`. Packet 58 amendment 3 §3 (docs/design/2026-09-26-packet58-amendment-3.md
+        # @ 7266c1b) rules a THROW-rooted rollback logs at WARNING (a claim loss at DEBUG; ERROR stays for
+        # engine faults), so a correct 58 build records this governed-conflict THROW's forensics at WARNING
+        # and an ERROR-level capture no longer sees them. The rider-ii property is "the forensics survive
+        # SERVER-SIDE", never "at ERROR" — capture every level. REPORT-contract-58-r2.md §HELD part 3.
+        with caplog.at_level(logging.DEBUG):
             with pytest.raises(SurrealStoreError) as exc:
                 await seam(statement, params, acquire=_acquire, drop=_drop, url=env.url)
         assert isinstance(exc.value, governed_type), (

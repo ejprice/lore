@@ -2215,19 +2215,25 @@ def _probes() -> list[RenderProbe]:
                     _forge(Task, forge=g, blocked_by=["walked"]),
                     TransitiveBlockers.model_construct(ids=["walked"], truncated=True, max_depth_used=2)),
         ]),
+        # ⚠ DUAL (packet 58 held patch, contract-58): the render's signature gained ``reblocked``
+        # (amendment 1 FORK-A) and ``dependents`` became the PRE-write ``reanchored`` list; each
+        # branch is driven with forgery-carrying tokens — the NEW re-blocked line on its own call.
+        # REPORT-contract-58.md §DUAL D11.
         P("_render_supersede_result", lambda g: [
             _served(
                 "_render_supersede_result", _tok(g, "sup", "task_id"), _tok(g, "sup", "successor_id"),
-                [], [],
+                [], [], [],
             ),
             _served("_render_supersede_result", _tok(g, "sup", "task_id"), _tok(g, "sup", "successor_id"),
-                    [_tok(g, "sup", "dependent")], []),
+                    [_tok(g, "sup", "dependent")], [], []),
+            _served("_render_supersede_result", _tok(g, "sup", "task_id"), _tok(g, "sup", "successor_id"),
+                    [_tok(g, "sup", "dependent")], [_tok(g, "sup", "reblocked")], []),
             # #174: the successor_blocked_by door on its OWN branch (a reframe that kept/
             # replaced a dependency) — dependents empty so the `(status open, blocked_by
             # [...])` clause is the only door, forgery-carrying to discharge the
             # served-free-text hostile-fixture law for the new render branch.
             _served("_render_supersede_result", _tok(g, "sup", "task_id"), _tok(g, "sup", "successor_id"),
-                    [], [_tok(g, "sup", "blocker")]),
+                    [], [], [_tok(g, "sup", "blocker")]),
         ]),
         P("_render_task_transition", lambda g: [
             _served(
