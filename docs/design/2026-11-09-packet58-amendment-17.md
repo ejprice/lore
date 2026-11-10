@@ -231,6 +231,9 @@ greedy packer's" is pinned. Its constant changes. One support helper states the 
 - `StragglerHealPackerError.row_cap`'s pin (am-16 §2.1 sibling) re-keys from `_txn.TXN_ROW_HARD_CAP` to the helper.
 
 ### 6.2 The DELETE — a NEW property
+> **SUPERSEDED IN PART by §9.4 (same day):** the timing leg below is REPLACED by an EXPLAIN leg (deterministic, and it
+> also kills V2, so this section's named bound closes). The property and its NEW-PROPERTY status stand.
+
 *The heal's time does not grow with edges that are not its own.* No contract round has stated it.
 - **Pin it like this (one leg, two worlds, by behaviour):** world A holds n stragglers; world B holds the same n
   stragglers plus E unrelated edges seeded with `bulk_seed_dependents` under another blocker. Boot each once and time
@@ -582,6 +585,232 @@ async def part_f() -> None:
 
 if __name__ == "__main__" and sys.argv[1] == "F":
     asyncio.run(part_f())
+```
+
+## 9. Follow-up (lead-58, lore_comms #20049): the supersede's edge DELETE, and a better pin for both DELETEs
+
+The lead's calls on am-17 (committed `dba16ff`): Decision 2 = the adversary route (§6.3 stands); §8 item 2 = YES, fix
+the sibling in this wave; §8 item 1 = the lead adds the store-reference line; the probe commit goes to the r5.3
+author with the house sign-in seam. This section rules the sibling. Measured 2026-11-09 on the tree at `dba16ff` plus
+builder-58-1's uncommitted edits, TEST store `:18000`, engine 3.3.5, SDK 3.0.0, real schema. Instruments: §INSTRUMENT-2.
+
+### 9.1 Measurements
+| statement | hub edges | unrelated edges | wall-clock | edges left from the hub | edge INTO the hub |
+|---|---|---|---|---|---|
+| T `DELETE blocks WHERE in = $old` (today) | 10 | 0 | 0.005 s | 0 | survived |
+| T | 10 | 100,000 | **0.587 s** | 0 | survived |
+| G `DELETE $old->blocks` | 10 | 0 | 0.006 s | 0 | survived |
+| G | 10 | 100,000 | **0.008 s** | 0 | survived |
+| T | 3,000 | 30,000 | 0.896 s | 0 | survived |
+| G | 3,000 | 30,000 | 0.945 s | 0 | survived |
+
+- Both forms delete the same set in every world (the hub's outgoing edges and nothing else; the unrelated edge count
+  is unchanged). T pays about 5.9 µs per edge in the store; G pays for the hub's own edges only.
+- At 30,000 unrelated edges the difference is inside one run's noise. A timing pin at F19 sizes cannot see it.
+- **A DELETE's plan IS observable on 3.3.5:** `<DELETE …> EXPLAIN` returns the plan and deletes nothing (5 edges
+  before, 5 after). `EXPLAIN DELETE …` (prefix form) is rejected. The plan is a list of `{operation, detail}` nodes —
+  not the `{operator, attributes, children}` tree a SELECT's EXPLAIN returns:
+
+| statement EXPLAINed | plan |
+|---|---|
+| T `DELETE blocks WHERE in = $old` | one `Iterate Table` with `detail.table == "blocks"` |
+| G `DELETE $old->blocks` (hub with 5 edges) | 5 × `Iterate Record` |
+| heal V1 `DELETE blocks WHERE in = $i AND out = $o` | one `Iterate Table`, `blocks` |
+| heal V2 `DELETE $i->blocks WHERE out = $o` (blocker with 50 dependents) | 50 × `Iterate Record` |
+| heal V3 `DELETE $o<-blocks WHERE in = $i` (dependent with 2 blockers) | 2 × `Iterate Record` |
+
+### 9.2 Ruling — the statement form
+In `_supersede_transaction`, `DELETE blocks WHERE in = $ssx_old_rec` becomes **`DELETE $ssx_old_rec->blocks`**. Same
+parameter, still ONE statement in the same fragment at the same position, so `fixed(K)`, `per`, the hub cap, the
+refusal's four facts and every count pin are unchanged. It is bounded by the superseded task's own dependent count,
+which the transaction re-anchors one by one anyway.
+- **Removed-behaviour inventory (the old statement):** deletes every edge whose `in` is the old task — PRESERVED
+  (§9.1, both worlds; pinned today by the supersede legs that assert the edge mirror after a supersede). Deletes no
+  edge whose `out` is the old task — PRESERVED (the "edge INTO the hub" column). Duplicate edges for one pair (the
+  table has no UNIQUE): both forms remove all of them — not separately measured; the mirror legs cover it if any
+  fixture seeds a duplicate, otherwise it is spec-silent and unchanged in kind.
+
+### 9.3 Class statement
+No statement a task verb or the boot heal sends iterates the whole `blocks` table. After §3 and §9.2 the sweep of §8
+item 3 has no table-anchored `blocks` write left; the boot backfill's one `SELECT … FROM blocks` read stays (it is
+the backfill's job to read every edge, once per boot).
+
+### 9.4 The pin — one EXPLAIN leg per DELETE, by what the plan iterates (REPLACES §6.2's timing leg)
+- **Why EXPLAIN and not time:** §9.1 shows time cannot discriminate at fixture sizes for the supersede, and §6.2's
+  timing leg carried a flake margin and a named hole (V2). The plan is deterministic and closes that hole.
+- **Pin it like this (supersede leg):** a hub with N = 5 dependents in a store that also holds E ≥ 20 unrelated
+  edges under another blocker. Spy `compose` during a real `supersede_task`; take from the recorded transaction the
+  statement that deletes the old task's edges, **found by its bound parameter** (the one whose value is the old
+  task's `RecordID`), never by its text — the house precedent is `test_brief_ledger.py`'s captured-Q2 pin. Run
+  `<that statement> EXPLAIN` with the recorded parameters on a world rebuilt to the pre-supersede state (or captured
+  through an `ApplyHook` before the write). Assert:
+  1. the plan does not iterate the `blocks` table (walker below);
+  2. the plan's `Iterate Record` count == N (the hub's own edges; E plays no part);
+  3. the EXPLAIN deleted nothing (edge count unchanged).
+  **C+ control in the same leg:** the table-anchored statement, EXPLAINed over the same world, DOES trip assertion 1.
+- **Pin it like this (heal leg):** one straggler that has TWO blockers (the superseded one and a live one), under a
+  superseded blocker that has ≥ 5 other dependents, plus E ≥ 20 unrelated edges. From the heal chunk's recorded
+  transaction take the edge-DELETE statement (the one binding both the dependent's and the old blocker's `RecordID`),
+  EXPLAIN it over the pre-heal world. Assert: no `blocks` table iteration; `Iterate Record` count == 2 (the
+  dependent's blocker count). The second assertion is what kills V2, which iterates the blocker's ≥ 6 edges. Same C+.
+- **One walker (one implementation):** `_governed_contract.scans_table` recognises only the SELECT tree
+  (`operator == "TableScan"`, `attributes.table`). It is EXTENDED in place to also answer True for a statement-plan
+  node with `operation == "Iterate Table"` and `detail.table == <table>`; a sibling `iterated_records(plan)` counts
+  `Iterate Record` nodes. Its existing callers pass SELECT plans, whose shape the new arm cannot match, so their
+  behaviour does not change. Both arms get the C+ control above. This is a contract-author edit to a landed 63a
+  support file: **the lead grants that one file** (same class as am-15 §9.3 / am-16 §4).
+- **Stated bound:** `Iterate Record` / `Iterate Table` are engine plan vocabulary read on 3.3.5. An engine upgrade
+  that renames them reds the C+ control first (it stops seeing the table scan), which is the right failure.
+- **Fate of §6.2's timing leg:** not written. §6.2's named bound (V2 unpinned) is closed by the heal leg above.
+- Both legs are RED on builder-58-1's present tree (both statements iterate the table) and enter `red_nodeids`.
+
+### 9.5 What §6.3's grade gains
+Still ONE scoped delta grade (the lead's call). Its wrong-build list becomes seven: the five of §6.3 item 2 — with
+"the table-anchored heal DELETE kept" now dying by §9.4's heal leg instead of the timing leg — plus:
+6. the table-anchored SUPERSEDE DELETE kept → dies by §9.4's supersede leg, assertion 1;
+7. the heal DELETE anchored at the blocker (V2) → dies by §9.4's heal leg, the record count.
+Its enumeration scope (§6.3 item 3) gains one family: the supersede's edge DELETE. Is §9.2 a new property? It is the
+§6.2 property ("no time or plan growth with unrelated edges") extended to its sibling statement, inside the grade
+that property already re-opened; it does not re-open anything further.
+
+### 9.6 Riders (amending §7)
+**Builder — edit 6:** `_supersede_transaction`: §9.2's statement. *Rider:* the same one-line constraint comment as
+edit 2 ("`blocks` has no index — a table-anchored DELETE iterates the whole table; am-17 §9"), on this statement.
+Nothing else in the fragment moves. The builder's targeted run includes the supersede edge-mirror legs.
+**Contract author (r5.3):** §9.4's two legs replace §6.2's leg in §7's list (item 3); the walker extension with its
+C+ control; the probe files of §INSTRUMENT and §INSTRUMENT-2 committed under `scripts/` through the house sign-in seam
+(lead's call, #20049).
+**§8 item 2 is hereby ruled, not surfaced. §8 item 1 is the lead's.**
+
+## §INSTRUMENT-2 — the §9 probes, pasted verbatim (run 2026-11-09 from the repo root with `uv run python <file>`)
+
+`probe_supersede_delete_58.py` (run with no arguments for the 3,000 / 30,000 world and the EXPLAIN attempts, and as
+`… 10 100000` for the small-hub world):
+
+```python
+"""am-17 §9: the supersede's edge DELETE — is a DELETE's plan observable (EXPLAIN), and do the two forms
+delete the same set at the same cost? TEST store :18000 only. Run from the repo root: `uv run python <file>`."""
+import asyncio
+import json
+import sys
+import time
+
+sys.path.insert(0, "/home/ejprice/PycharmProjects/lore/loremaster/tests")
+import _reanchor_58_support as s  # noqa: E402
+from _surreal_harness import drop_database, make_env, unique_database  # noqa: E402
+from surrealdb import RecordID  # noqa: E402
+
+FORMS = {
+    "T table-anchored": "DELETE blocks WHERE in = $old",
+    "G graph-anchored": "DELETE $old->blocks",
+}
+HUB, NOISE = (int(sys.argv[1]), int(sys.argv[2])) if len(sys.argv) > 2 else (3000, 30000)
+
+
+async def main() -> None:
+    env = make_env(database=unique_database(), dim=s.PRODUCTION_DIM)
+    assert ":18000" in env.url, "TEST store only"
+    ledger = s.new_ledger(env)
+    await ledger.ensure_ready()
+    try:
+        old = RecordID("task", "hubx")
+        await s.raw_seed_row(ledger, "hubx", blocked_by=[])
+        await s.raw_seed_row(ledger, "noisehub", blocked_by=[])
+        await s.bulk_seed_dependents(ledger, "hubx", 5, "p")
+        # 1. is a DELETE's plan observable?  (each attempt reports what the engine said)
+        for text in (
+            "DELETE blocks WHERE in = $old EXPLAIN",
+            "DELETE $old->blocks EXPLAIN",
+            "EXPLAIN DELETE blocks WHERE in = $old",
+            "SELECT * FROM blocks WHERE in = $old EXPLAIN",
+            "SELECT * FROM $old->blocks EXPLAIN",
+        ):
+            try:
+                plan = await s.raw(ledger, text, {"old": old})
+                print(f"PLAN  {text!r} -> {json.dumps(plan, default=str)[:700]}", flush=True)
+            except Exception as e:  # noqa: BLE001 - a probe reports what it saw
+                print(f"PLAN  {text!r} -> RAISED {type(e).__name__}: {str(e)[:200]}", flush=True)
+        left = await s.raw(ledger, "SELECT count() AS n FROM blocks GROUP ALL")
+        print(f"edges after the EXPLAIN attempts (5 seeded; an EXPLAIN must not delete): {left}", flush=True)
+    finally:
+        await ledger.close()
+        await drop_database(env)
+    # 2. same set, and cost against unrelated edges
+    for name, form in FORMS.items():
+        for noise in (0, NOISE):
+            env = make_env(database=unique_database(), dim=s.PRODUCTION_DIM)
+            ledger = s.new_ledger(env)
+            await ledger.ensure_ready()
+            try:
+                await s.raw_seed_row(ledger, "hubx", blocked_by=[])
+                await s.raw_seed_row(ledger, "noisehub", blocked_by=[])
+                ids = await s.bulk_seed_dependents(ledger, "hubx", HUB, "d")
+                await s.raw_relate(ledger, ids[0], "noisehub")   # an edge INTO another row FROM a dependent: survives
+                await s.raw_relate(ledger, "noisehub", "hubx")   # an edge INTO the hub: must survive (out = hub)
+                for part in range(noise // 5000):
+                    await s.bulk_seed_dependents(ledger, "noisehub", 5000, f"n{part}x")
+                before = await s.raw(ledger, "SELECT count() AS n FROM blocks GROUP ALL")
+                t = time.monotonic()
+                await s.raw(ledger, form, {"old": RecordID("task", "hubx")})
+                wall = time.monotonic() - t
+                after = await s.raw(ledger, "SELECT count() AS n FROM blocks GROUP ALL")
+                from_hub = await s.raw(ledger, "SELECT count() AS n FROM blocks WHERE in = $o GROUP ALL",
+                                       {"o": RecordID("task", "hubx")})
+                into_hub = await s.raw(ledger, "SELECT count() AS n FROM blocks WHERE out = $o GROUP ALL",
+                                       {"o": RecordID("task", "hubx")})
+                print(f"SET   {name} hub={HUB} noise={noise} before={before} after={after} from_hub={from_hub} "
+                      f"into_hub={into_hub} wall={wall:.3f}s", flush=True)
+            finally:
+                await ledger.close()
+                await drop_database(env)
+
+
+asyncio.run(main())
+```
+
+`probe_heal_delete_plan_58.py`:
+
+```python
+"""am-17 §9.4: the EXPLAIN plan of the heal's three DELETE forms. A hub with 50 dependents; dependent d00000 also
+has a second blocker. TEST store :18000 only."""
+import asyncio
+import collections
+import sys
+
+sys.path.insert(0, "/home/ejprice/PycharmProjects/lore/loremaster/tests")
+import _reanchor_58_support as s  # noqa: E402
+from _surreal_harness import drop_database, make_env, unique_database  # noqa: E402
+from surrealdb import RecordID  # noqa: E402
+
+
+async def main() -> None:
+    env = make_env(database=unique_database(), dim=s.PRODUCTION_DIM)
+    assert ":18000" in env.url, "TEST store only"
+    ledger = s.new_ledger(env)
+    await ledger.ensure_ready()
+    try:
+        await s.raw_seed_row(ledger, "hubx", blocked_by=[])
+        await s.raw_seed_row(ledger, "otherhub", blocked_by=[])
+        ids = await s.bulk_seed_dependents(ledger, "hubx", 50, "d")
+        await s.raw_relate(ledger, "otherhub", ids[0])
+        params = {"i": RecordID("task", "hubx"), "o": RecordID("task", ids[0])}
+        for name, text in (
+            ("V1", "DELETE blocks WHERE in = $i AND out = $o EXPLAIN"),
+            ("V2", "DELETE $i->blocks WHERE out = $o EXPLAIN"),
+            ("V3", "DELETE $o<-blocks WHERE in = $i EXPLAIN"),
+        ):
+            plan = await s.raw(ledger, text, params)
+            ops = collections.Counter(
+                (node.get("operation"), (node.get("detail") or {}).get("table")) for node in plan
+            )
+            print(f"{name} {dict(ops)}")
+        print("edges after (51 seeded):", await s.raw(ledger, "SELECT count() AS n FROM blocks GROUP ALL"))
+    finally:
+        await ledger.close()
+        await drop_database(env)
+
+
+asyncio.run(main())
 ```
 
 No production code, test, registry or store touched by this amendment. No attribution trailer on the commit.
