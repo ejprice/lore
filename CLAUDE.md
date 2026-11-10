@@ -159,6 +159,12 @@ than read and the store reference is cited rather than re-transcribed.
     change adds or moves a shell-out** (the one approved source scanner; § Rename/reshape sweeps,
     "Approved checks").
     - The receipt NAMES the derivation (which symbols, which tool) and the passed-COUNT.
+    - **A run that GRADES a parked contract passes `--run-parked`** (operator decision 3,
+      2026-11-09). A default run deselects every red registered under a non-`active` bound in
+      `scripts/pending_contracts.yaml`; under xdist pytest prints no deselected count, so the only
+      sign is the `parked contracts: N test(s) deselected …` line. RED proofs, satisfiability runs,
+      builder GREEN runs, mutation proofs and wrong-build runs over a parked contract are vacuous
+      without the flag. The packet being built sets `active: true` on its own bound instead.
     - A satisfiability receipt is "0 attributable reds over THAT set". A full suite is not a
       satisfiability receipt requirement.
     - Where `lore_impact` cannot see a seam (scripts/ #507, non-symbol textual seams), add
