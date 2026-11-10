@@ -55,3 +55,13 @@ audit inherits every residual below.
 | A10 | W24 survives (model validates, ids/`active` read from raw YAML): no visible effect today | Residual: the cold audit runs mutation M2 (`active` default True) on the real build; every deselection pin must redden. |
 | A11 | Second worker-report copy: `loremaster/tests/conftest.py` already ships #486's leak report through `workeroutput` / `pytest_testnodedown` | The builder extracts ONE helper both use, or escalates with a reason; it does not write a second copy. |
 | A12 | The author's package survey is in no committed artifact | The author adds it to this file in the fix round. |
+
+## Packages considered (contract author, contract-parked-1; ruling A12, added 2026-11-10)
+| Mechanism | Library evaluated | What was read | Verdict |
+|---|---|---|---|
+| Driving real pytest runs against the hook | `pytester` (pytest 9.0.3 core) | `_pytest/pytester.py`: `runpytest_subprocess(*args, timeout=)`, `RunResult.assert_outcomes(deselected=)`, `parseoutcomes()`; a live probe that a module-level `pytest_plugins = ["pytester"]` works under `-n 2` | replace (used as is) |
+| Deselection and its native count | pytest's `config.hook.pytest_deselected` | spec S2; live probe (2026-11-09): at `-n 0` the terminal reports "1 passed, 1 deselected" | replace (the builder uses the hook) |
+| Deselect reporting under xdist | pytest-xdist 3.8.0 | the installed package source has no deselect handling; live probe: at `-n 2` the controller reports "1 passed" and `terminalreporter.stats["deselected"]` is empty | bespoke gap: ruled D2. The S2 line is pinned under xdist (once, from the controller); the native count is pinned only without xdist |
+| Registry reading and validation | the gate's own `PendingContractRegistry.load` (pydantic 2.13.4 model, `extra="forbid"`) | `scripts/pending_contract_gate.py` `PendingFile` / `PendingBound` / `PendingContractRegistry`; S8 | replace (one implementation; no second YAML parse) |
+| Strict boolean `active` | pydantic `StrictBool` | pydantic's lax mode coerces `"true"` and `1` to `True`, so S7's "non-boolean is a RegistryError" needs the strict type; pinned by behaviour (string, integer, null cases) | replace (the builder's choice of spelling) |
+| Reading run outcomes in the tests | the gate's own `JUnitReportReader` (xunit1) | `JUnitReportReader.read` (collected set, failing outcomes, zero-tests refusal) | replace |

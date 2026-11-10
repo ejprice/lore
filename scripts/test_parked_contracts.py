@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,6 +63,8 @@ import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import concurrent_wire_acceptance as cwa  # noqa: E402
+import gated_ground as gg  # noqa: E402
 import pending_contract_gate as pcg  # noqa: E402
 from pending_contract_gate import (  # noqa: E402
     GateManifest,
@@ -88,6 +91,9 @@ REGISTRY_RELATIVE = pcg.DEFAULT_REGISTRY_PATH.relative_to(pcg.REPO_ROOT)
 REGISTRY_FILENAME = REGISTRY_RELATIVE.name
 #: The opt-in flag (S3), and the token the S2 line must carry.
 RUN_PARKED_FLAG = "--run-parked"
+#: The plugin name the hook registers under (ruling A7), and the opt-out every MEASURING tool passes.
+PARKED_PLUGIN_NAME = "lore-parked-contracts"
+OPT_OUT_ARGS = ("-p", f"no:{PARKED_PLUGIN_NAME}")
 #: The manifest gate whose command S6 governs.
 PYTEST_GATE_ID = "pytest"
 #: The xdist worker count the sandbox uses where a case reproduces the repo's ``-n`` runs.
@@ -314,6 +320,13 @@ class ParkedSandbox:
         argv = ["-rA", "-o", "junit_family=xunit1", f"--junit-xml={junit_xml}", *args]
         return self.run_argv(argv, junit_xml)
 
+    def collect_only(self, *args: str) -> tuple[pytest.RunResult, frozenset[str]]:
+        """``--collect-only -q``: the exit result and the node ids listed (no junit, so zero is legal)."""
+        result = self.pytester.runpytest_subprocess(
+            "--collect-only", "-q", *args, timeout=SANDBOX_TIMEOUT_SECONDS
+        )
+        return result, frozenset(line.strip() for line in result.outlines if "::" in line)
+
 
 @pytest.fixture
 def sandbox(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> ParkedSandbox:
@@ -357,6 +370,29 @@ class TestDefaultRunDeselection:
         assert run.ran == {UNRELATED_GREEN}
         assert run.native_deselected() == 1
 
+    def test_node_under_an_active_and_a_parked_bound_runs(self, sandbox: ParkedSandbox) -> None:
+        # D5 (ruling A1): active wins. The parked set is the registry's, so an id an ACTIVE bound also lists
+        # is never in it.
+        document = registry_document()
+        document["bounds"][2]["files"].append({"path": "test_parked.py", "red_nodeids": [PARKED_RED]})
+        sandbox.write_registry(registry_text(document))
+        run = sandbox.run()
+        assert run.ran == (ALL_COLLECTED - PARKED_COLLECTED) | {PARKED_RED}
+        assert PARKED_RED in run.failed
+        line = run.summary_line()
+        assert EXPECTED_PARKED_COUNT - 1 in _standalone_integers(line), line
+        assert GAMMA_ID not in line, line
+
+    def test_run_from_a_subdirectory_reads_the_rootdirs_registry(
+        self, sandbox: ParkedSandbox, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # D1 (ruling A4): the registry is ``<rootdir>/scripts/pending_contracts.yaml``, never cwd-relative.
+        subdirectory = sandbox.pytester.path / "sub"
+        subdirectory.mkdir()
+        monkeypatch.chdir(subdirectory)
+        run = sandbox.run(str(sandbox.pytester.path))
+        assert run.ran == ALL_COLLECTED - PARKED_COLLECTED
+
 
 # ---------------------------------------------------------------------------
 # S2 — what the run reports
@@ -394,6 +430,22 @@ class TestDeselectionReport:
         assert BETA_ID in line and ALPHA_ID not in line, line
         stated = _standalone_integers(line)
         assert 1 in stated and EXPECTED_PARKED_COUNT not in stated, line
+
+    def test_entry_whose_file_was_collected_but_no_node_deselected_is_not_named(
+        self, sandbox: ParkedSandbox
+    ) -> None:
+        # D3 (ruling A3): involvement comes from the DESELECTED items. test_shelved.py is collected here (for
+        # UNRELATED_GREEN), but beta's only id was not selected, so beta deselected nothing.
+        line = sandbox.run(PARKED_RED, UNRELATED_GREEN).summary_line()
+        assert ALPHA_ID in line and BETA_ID not in line, line
+
+    def test_summary_counts_only_the_nodes_the_hook_itself_removed(self, sandbox: ParkedSandbox) -> None:
+        # A8: ``-k`` removes PARKED_RED (parked) and SIBLING_RED (not) first; the hook runs after other
+        # deselection and counts only the three parked nodes still left for it to remove.
+        run = sandbox.run("-k", "not test_parked_red")
+        assert run.native_deselected() == EXPECTED_PARKED_COUNT + 1
+        stated = _standalone_integers(run.summary_line())
+        assert EXPECTED_PARKED_COUNT - 1 in stated and EXPECTED_PARKED_COUNT not in stated, stated
 
     def test_summary_line_is_printed_once_under_xdist(self, sandbox: ParkedSandbox) -> None:
         # Under xdist the controller collects nothing and worker stdout is not shown: the line must still
@@ -472,6 +524,18 @@ class TestBrokenRegistry:
         assert len(warnings) == 1, f"S5: expected ONE line naming {REGISTRY_FILENAME}, got {warnings}"
         assert problem_token in warnings[0], warnings[0]
 
+    def test_broken_registry_warns_once_under_xdist(self, sandbox: ParkedSandbox) -> None:
+        # Ruling A5: every repo run uses -n, so the ONE warning must reach the terminal from the controller.
+        sandbox.write_registry(_unknown_key_registry())
+        run = sandbox.run("-n", SANDBOX_WORKERS, PARKED_GREEN, LIVE_GREEN)
+        assert run.ran == {PARKED_GREEN, LIVE_GREEN}
+        assert run.result.ret == pytest.ExitCode.OK, os.linesep.join(run.lines)
+        warnings = run.lines_containing(REGISTRY_FILENAME)
+        assert len(warnings) == 1, (
+            f"S5 under xdist: expected ONE line naming {REGISTRY_FILENAME}, got {warnings}"
+        )
+        assert "parked_until" in warnings[0], warnings[0]
+
 
 # ---------------------------------------------------------------------------
 # S7 — the registry schema
@@ -489,7 +553,10 @@ class TestActiveField:
         active = {bound.id: bound.model_dump()["active"] for bound in registry.bounds}
         assert active == {ALPHA_ID: False, BETA_ID: False, GAMMA_ID: True, DELTA_ID: False}
 
-    @pytest.mark.parametrize("value", [pytest.param("true", id="string"), pytest.param(1, id="integer")])
+    @pytest.mark.parametrize(
+        "value",
+        [pytest.param("true", id="string"), pytest.param(1, id="integer"), pytest.param(None, id="null")],
+    )
     def test_non_boolean_active_is_a_registry_error(self, tmp_path: Path, value: object) -> None:
         # Control first, failing for a different reason than the refusal: a real boolean IS accepted, so the
         # refusal below is about the value's type and not about an unknown ``active`` key.
@@ -560,3 +627,77 @@ class TestGateRunsParked:
         # Every parked red is collected, fails, and is OWNED by its bound — not STALE, not missing.
         assert {PARKED_RED, PARKED_PARAMETER, SHELVED_METHOD} <= expected
         assert PARKED_GREEN in run.ran
+
+
+# ---------------------------------------------------------------------------
+# Ruling A7 — the plugin opt-out, and the repo tools that MEASURE the tree
+# ---------------------------------------------------------------------------
+
+
+def _whole_file_parked_registry() -> str:
+    """Beta parks EVERY node of test_shelved.py — the shape that blinded gated_ground's collector."""
+    document = registry_document()
+    document["bounds"][1]["files"][0]["red_nodeids"] = [SHELVED_METHOD, UNRELATED_GREEN]
+    return registry_text(document)
+
+
+#: A tree shaped for gated_ground: it reads ``testpaths`` from pyproject.toml, refuses a testpath that widens
+#: to the whole tree, and lists tracked files with git — so the sandbox carries all three.
+GATED_GROUND_PYPROJECT = (
+    '[tool.pytest.ini_options]\naddopts = "--import-mode=importlib"\ntestpaths = ["suite"]\n'
+)
+GATED_GROUND_PARKED_FILE = "suite/test_whole.py"
+GATED_GROUND_OPEN_FILE = "suite/test_open.py"
+
+
+class TestPluginOptOut:
+    """A7: ``-p no:lore-parked-contracts`` disables the hook; the tools that MEASURE collection pass it."""
+
+    def test_opt_out_collects_every_node_of_a_wholly_parked_file(self, sandbox: ParkedSandbox) -> None:
+        sandbox.write_registry(_whole_file_parked_registry())
+        # Control, failing for a different reason than the opt-out leg: without the opt-out the file is
+        # wholly deselected, so this registry really does park it.
+        default_result, default_ids = sandbox.collect_only("test_shelved.py")
+        assert default_ids == frozenset(), default_result.outlines
+        _result, opted_out_ids = sandbox.collect_only(*OPT_OUT_ARGS, "test_shelved.py")
+        assert opted_out_ids == {SHELVED_METHOD, UNRELATED_GREEN}
+
+    def test_concurrent_wire_acceptance_collect_counts_parked_nodes(
+        self, sandbox: ParkedSandbox, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The driver derives its expected pass count from --collect-only (``expected_passed``), run from
+        # ``REPO_ROOT``; pointed at the sandbox it must count every test_parked.py node, parked ones included.
+        monkeypatch.setattr(cwa, "REPO_ROOT", sandbox.pytester.path)
+        driver = cwa.ConcurrentPairDriver(
+            target="test_parked.py", workers=2, timeout_s=SANDBOX_TIMEOUT_SECONDS
+        )
+        test_parked_nodes = {node for node in ALL_COLLECTED if node.startswith("test_parked.py::")}
+        assert driver.expected_passed() == len(test_parked_nodes)
+
+    def test_gated_ground_collector_sees_a_wholly_parked_file(
+        self, pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for name in XDIST_WORKER_ENV:
+            monkeypatch.delenv(name, raising=False)
+        pytester.makefile(".toml", pyproject=GATED_GROUND_PYPROJECT)
+        pytester.makeconftest(SANDBOX_CONFTEST)
+        (pytester.path / "suite").mkdir()
+        (pytester.path / GATED_GROUND_PARKED_FILE).write_text(
+            "def test_a():\n    assert 'a' == 'b'\n\n\ndef test_b():\n    assert 'b' == 'b'\n",
+            encoding="utf-8",
+        )
+        (pytester.path / GATED_GROUND_OPEN_FILE).write_text("def test_c():\n    pass\n", encoding="utf-8")
+        parked_ids = [f"{GATED_GROUND_PARKED_FILE}::test_a", f"{GATED_GROUND_PARKED_FILE}::test_b"]
+        document = {
+            "version": 1,
+            "bounds": [_bound(ALPHA_ID, [{"path": GATED_GROUND_PARKED_FILE, "red_nodeids": parked_ids}])],
+        }
+        registry = pytester.path / REGISTRY_RELATIVE
+        registry.parent.mkdir(parents=True)
+        registry.write_text(registry_text(document), encoding="utf-8")
+        # gated_ground lists tracked files from the git INDEX: init and stage, no commit (no identity needed).
+        subprocess.run(["git", "init", "-q", "."], cwd=pytester.path, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=pytester.path, check=True)
+        contributing = gg.collected_test_files(pytester.path)
+        # A wholly parked file is still a file pytest collects: the guard must not read it as ungated.
+        assert {GATED_GROUND_PARKED_FILE, GATED_GROUND_OPEN_FILE} <= contributing, contributing

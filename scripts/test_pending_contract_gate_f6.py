@@ -806,10 +806,10 @@ def test_D2_a_CLASS_scoped_run_judges_only_what_it_SELECTED(tmp_path: Path) -> N
         tmp_path, gate, [(_LISTED_CLASS_NODE, True), (_UNLISTED_NODE, True)], selection=(_CLASS_ID,)
     )
     stale = _stale_line_for(_RENAMED_NODE, currency)
-    assert stale and f"selected by '{_CLASS_ID}'" in stale[0] and "--collect-only" in stale[0], (
+    assert stale and f"selected by '{_CLASS_ID}'" in stale[0] and "--collect-only --run-parked" in stale[0], (
         f"the selected-and-gone id must be STALE naming its selector and saying to confirm with "
-        f"--collect-only "
-        f"(R17 Leg 1): {currency.orphans}"
+        f"--collect-only --run-parked (R17 Leg 1; parked-contracts ruling A6 / D4 — a plain --collect-only "
+        f"hides a parked id, so the advice would read a live entry as gone): {currency.orphans}"
     )
     assert not any(_OTHER_CLASS_ID in orphan for orphan in currency.orphans), (
         f"ClassB was not selected: its listed ids get NO verdict (registration kept): {currency.orphans}"
