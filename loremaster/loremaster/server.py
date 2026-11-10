@@ -4857,7 +4857,8 @@ class AppContext:
         The ledger rewires every dependent of the predecessor to the successor in the SAME
         transaction, so nothing is stranded; this render is the RECEIPT — it names the
         re-anchored rows (from ``SupersedeResult.reanchored``, the PRE-write list; a post-write
-        ``direct_dependents`` read is ``[]`` by construction) and, per amendment 1 (FORK-A),
+        ``direct_dependents`` read is ``[]`` for those rows, but a dependent CREATED after the pre-write
+        read can still exist and is re-anchored by the next boot's heal) and, per amendment 1 (FORK-A),
         the subset that was CLAIMABLE before and now waits on the open successor
         (``reblocked``) — a consequence served, never silent. Both lines are absent when
         their list is empty, so a no-dependent reframe renders byte-unchanged.

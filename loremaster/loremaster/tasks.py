@@ -186,7 +186,8 @@ _COL_PROVENANCE = "provenance"
 _COL_SUPERSEDED_BY = "superseded_by"
 _COL_CREATED_AT = "created_at"
 # PKT-06 §1/§4: the rollup's leg-1 activity stamp (``updated_at``, stamped
-# ``time::now()`` inside claim/transition/supersede-of-old — never at create)
+# ``time::now()`` inside claim/transition/supersede-of-old, the supersede's re-anchor of each dependent
+# and the boot heal's re-anchor of a straggler — never at create)
 # and the done-transition's two completion-record columns (``summary``
 # mandatory, ``report_path`` optional). All three are ``option`` so a legacy
 # (pre-deploy) row decodes them back to ``None``.
@@ -219,12 +220,12 @@ _HEAL_EVENT = "task.backfill.stragglers_reanchored"
 _HEAL_PHANTOM_EVENT = "task.backfill.straggler_phantom_head"
 _HEAL_CYCLE_EVENT = "task.backfill.straggler_chain_cycle"
 _HEAL_CHUNK_REJECTED_EVENT = "task.backfill.straggler_chunk_rejected"
-_REANCHOR_LOST_MESSAGE = "cas_lost: a dependent no longer names the superseded task"
-_HEAL_CHUNK_MESSAGE = "heal_chunk: a straggler no longer names its superseded blocker"
+_REANCHOR_LOST_MESSAGE = f"{_txn_module.CAS_LOST_MARKER} a dependent no longer names the superseded task"
+_HEAL_CHUNK_MESSAGE = f"{_txn_module.HEAL_CHUNK_MARKER} a straggler no longer names its superseded blocker"
 _STRAGGLER_MESSAGE = (
-    "reanchor_straggler: a dependent of the superseded task appeared after the dependents read"
+    f"{_txn_module.REANCHOR_STRAGGLER_MARKER} a dependent of the superseded task appeared "
+    f"after the dependents read"
 )
-_CLAIM_LOST_PREFIX = "claim_lost:"
 
 # (The signin credential keys moved to the ONE shared ``store._txn.signin_credentials`` seam — #211/#102;
 # a record id's bare key is ``store._txn.record_key`` — R8 F16.)
@@ -259,7 +260,7 @@ _SUPERSEDE_EVENT_PARAM = "sup_event"
 # bound value), so the rolled-back rejection carries no interpolated data
 # (ledger #31); it surfaces only server-side, mapped to IllegalTransitionError.
 _SUPERSEDE_STAMPED_VAR = "sup_stamped"
-_SUPERSEDE_ALREADY_MESSAGE = "cas_lost: task is already superseded"
+_SUPERSEDE_ALREADY_MESSAGE = f"{_txn_module.CAS_LOST_MARKER} task is already superseded"
 
 # The transition UPDATE's bound-parameter names (the ``tr_`` prefix).
 _TRANSITION_ID_PARAM = "tr_id"
@@ -284,7 +285,9 @@ _TRANSITION_EXPECTED_FROM_PARAM = "tr_expected_from"
 # caller could mistake for success (a same-target race a bare post-CAS
 # ``status`` re-read cannot distinguish from a genuine win).
 _TRANSITION_UPDATED_VAR = "tr_updated"
-_TRANSITION_ALREADY_MESSAGE = "cas_lost: task transition lost a concurrent compare-and-set"
+_TRANSITION_ALREADY_MESSAGE = (
+    f"{_txn_module.CAS_LOST_MARKER} task transition lost a concurrent compare-and-set"
+)
 
 # The single-record read's param name. (The create path's own params moved to the
 # shared ``cm<i>_`` namespacing when packet 04b-1 made ``create_task`` transactional,
@@ -1468,13 +1471,11 @@ class TaskLedger:
     async def direct_dependents(self, task_id: str) -> list[str]:
         """The ids of the tasks whose OWN ``blocked_by`` column names ``task_id``.
 
-        Ruling **R10(iii)**: superseding a task STRANDS everything blocked on it —
-        supersession is not terminal (R10 refused to make it so), so the claim CAS keeps
-        counting the predecessor as unresolved and every dependent is unclaimable
-        **forever**, silently. This is the read the supersede render's warning rides, so
-        the caller learns WHICH rows to re-point at the successor. It only reports; the
-        dependency transfer itself is R10(iv) and is DEFERRED, because ``blocked_by`` is
-        immutable after creation and the claim path leans on that.
+        Ruling **R10(iii)** (before packet 58): superseding a task stranded everything blocked on it.
+        Packet 58 re-anchors those dependents to the successor in the SAME transaction
+        (:meth:`supersede_task`, which serves the re-anchored ids in its :class:`SupersedeResult`), so the
+        supersede render no longer rides this read. It remains the ledger's one-hop dependents read: the
+        supersede itself uses it to detect a dependent that appeared mid-prepare.
 
         **ONE HOP, deliberately** — the rows whose own column names this id, never the
         transitive downstream reach. The CAS that strands them is itself a strictly one-hop
@@ -1565,9 +1566,10 @@ class TaskLedger:
         Raises:
             TaskNotFoundError: No task with ``task_id`` exists.
         """
-        # Existence + the (immutable) dependency list. ``blocked_by`` never
-        # changes after creation, so reading it here is consistent; the blocker
-        # STATUSES are read inside the claim transaction, not here.
+        # Existence + the dependency list as read NOW. ``blocked_by`` CAN change after creation (a
+        # supersede re-anchors it), so the claim CAS guards ``blocked_by = $clm_blocked_by``: a list that
+        # moved between this read and the commit loses the claim. The blocker STATUSES are read inside
+        # the claim transaction, not here.
         row = await self._select_row(task_id)
         if row is None:
             raise TaskNotFoundError(f"no task with id {render_attributed(task_id)}")
@@ -1604,28 +1606,6 @@ class TaskLedger:
         return ClaimResult(
             claimed=won, task=updated, superseded_blockers=superseded_blockers
         )
-
-    async def _still_claimable(self, row: Mapping[str, Any], pre_read: list[str]) -> bool:
-        """Whether ``row`` would STILL pass the claim CAS — a rollback on such a row is inexplicable."""
-        if str(row.get(_COL_STATUS)) != STATUS_OPEN or row.get(_COL_OWNER) is not None:
-            return False
-        if row.get(_COL_SUPERSEDED_BY) is not None:
-            return False
-        current = [str(b) for b in (row.get(_COL_BLOCKED_BY) or ())]
-        if current != pre_read:
-            return False
-        distinct = list(dict.fromkeys(current))
-        if not distinct:
-            return True
-        rows = self._as_rows(
-            await self._query(
-                f"SELECT record::id({_ID_KEY}) AS {_ID_KEY}, {_COL_STATUS} FROM {TASK_TABLE} "
-                f"WHERE record::id({_ID_KEY}) IN $sc_ids",
-                {"sc_ids": distinct},
-            )
-        )
-        resolved = {str(r.get(_ID_KEY)) for r in rows if str(r.get(_COL_STATUS)) in TERMINAL_STATUSES}
-        return resolved == set(distinct)
 
     @staticmethod
     def _claim_fragment(
@@ -1677,7 +1657,7 @@ class TaskLedger:
                 f"{_COL_BLOCKED_BY} = ${_CLAIM_BLOCKED_BY_PARAM}",
                 f"array::len(array::distinct({_COL_BLOCKED_BY})) = array::len(${_CLAIM_RESOLVED_VAR})",
             ],
-            throw_message=f"{_CLAIM_LOST_PREFIX}{task_id}",
+            throw_message=f"{_txn_module.CLAIM_LOST_MARKER}{task_id}",
             namespace="clmg",
             params={
                 _CLAIM_OWNER_PARAM: owner,
@@ -2031,10 +2011,16 @@ class TaskLedger:
                 resolved set, deduped order-preserving — NOT a merge).
 
         Returns:
-            The newly created successor task's opaque id.
+            A :class:`SupersedeResult`: ``successor_id`` (the new task's opaque id), ``reanchored``
+            (the dependents rewired to the successor in the SAME transaction — the PRE-write list) and
+            ``reblocked`` (the subset that was claimable before and now waits on the open successor).
 
         Raises:
             TaskNotFoundError: No task with ``task_id`` exists.
+            HubSupersedeRefusedError: The task has more dependents than
+                :meth:`max_reanchor_dependents` admits (refused before any write; nothing changed).
+            SupersedeStragglerError: A dependent appeared while the supersede was being prepared
+                (nothing changed; retry the supersede).
             IllegalTransitionError: The task is ALREADY superseded (sequentially,
                 or as the loser of a concurrent double supersede).
             UnknownBlockerError: A resolved ``blocked_by`` entry names no task row, or
@@ -2214,11 +2200,16 @@ class TaskLedger:
         succeeds).
 
         ⚠ KNOWN BOUND (packet 58 amendment 17 §4, correcting amendment 15 §1.3): near the cap a supersede
-        times out BEFORE it is refused. Measured 2026-11-09 on the real schema (TEST store, engine 3.3.5,
-        SDK 3.0.0): 3 332 dependents commit in 10.2 s, 6 000 time out at 30 s (the 30 s line is interpolated
-        near 5 700 dependents, not measured there). Between about 5 700 and the cap of 16 665 dependents a
-        supersede is not refused with the teaching error: it times out loud and commits nothing. Trigger: a
-        ``store.apply.large_transaction`` record from the task ledger. Probe: ``scripts/probe_hub_txn_58.py``.
+        times out BEFORE it is refused. Measured 2026-11-09 on the REAL schema (TEST store, engine 3.3.5,
+        SDK 3.0.0, a real ``supersede_task`` of a hub under the served 30 s timeout; amendment 17 §1.4, from
+        ``scripts/probe_heal_curve_58.py`` part C — NOT ``probe_hub_txn_58.py``, whose ``task`` table is
+        schemaless and un-indexed): 1 665 dependents (5 000 rows) commit in 2.82 s; 3 332 dependents
+        (10 001 rows) commit in 10.15 s; 6 000 dependents (18 005 rows) time out at 30.34 s with
+        ``SurrealOutcomeUnknownError`` and nothing committed. The 30 s line interpolates to about 5 700
+        dependents (not measured there). Between about 5 700 and the cap of 16 665 dependents a supersede is
+        not refused with the teaching error: it times out loud and commits nothing. Trigger: a
+        ``store.apply.large_transaction`` record from the task ledger (see ``scripts/probe_hub_txn_58.py``
+        for the schemaless lower bound).
         """
         fixed = self._supersede_rows(successor_blocked_by_count, 0)
         per = self._supersede_rows(successor_blocked_by_count, 1) - fixed
@@ -2560,7 +2551,9 @@ class TaskLedger:
 
         Reads the ``updated_at`` column — stamped ``time::now()`` inside the
         SAME guarded CAS by :meth:`claim_task`, :meth:`transition`, and
-        :meth:`supersede_task` (of the OLD row) — NEVER at :meth:`create_task`,
+        :meth:`supersede_task` (of the OLD row) AND of every dependent the supersede RE-ANCHORS, and
+        by the boot heal's re-anchor of a straggler (packet 58: a dependency rewrite counts as
+        activity, terminal dependents included) — NEVER at :meth:`create_task`,
         so a never-mutated task never appears. ``NONE > $since`` is falsy in
         SurrealDB, so a legacy (never-mutated) row is excluded by the WHERE
         clause itself. Ordered ``updated_at`` ASC, at most ``limit``, never ending inside a stamp group (a

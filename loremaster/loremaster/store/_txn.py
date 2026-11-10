@@ -1163,13 +1163,15 @@ _QUERY_RECURSION_DEPTH_MARKER = "recursion depth"
 # ("governed_conflict:<t>:<id>") — the classification key. The `<t>:<id>` suffix is free-form
 # forensics that rides only the server-side rollback log, never the raised message (rider ii).
 _GOVERNED_CONFLICT_MARKER = "governed_conflict:"
-# packet 58 am-3 §3: the claim shell's THROW prefix — the ONE copy of the marker in this module.
+# packet 58 am-3 §3: the claim shell's THROW prefix. The four 58 markers below are the ONE spelling of each:
+# the guarded shells in ``tasks.py`` / ``findings.py`` build their THROW text FROM these constants and the
+# classifier (``_THROWN_DOMAIN_MARKERS``) matches the same constants (cold audit F4, #624).
 CLAIM_LOST_MARKER = "claim_lost:"
 # packet 58 am-6 FORK-3: the ONE app-THROW tier table — keyed on WHO decided the rollback; anything
 # unrecognised is ERROR (deny-by-default).
-_CAS_LOST_MARKER = "cas_lost:"
-_REANCHOR_STRAGGLER_MARKER = "reanchor_straggler:"
-_HEAL_CHUNK_MARKER = "heal_chunk:"
+CAS_LOST_MARKER = "cas_lost:"
+REANCHOR_STRAGGLER_MARKER = "reanchor_straggler:"
+HEAL_CHUNK_MARKER = "heal_chunk:"
 # amendment 32 §1 (+ FK-a28b-1): the two live-verified identity-taken texts (3.2.4, probe_exists_texts.py):
 # a record-id collision "Database record `t:x` already exists" and a UNIQUE-index collision "Database index
 # `k` already contains 'v', with record `k:1`". A table-level "The table 't' already exists" matches neither.
@@ -1183,9 +1185,9 @@ _ENGINE_THROW_PREFIX = "an error occurred: "
 #: (63c-i-a's typed decision — never a substring of echoed text).
 _THROWN_DOMAIN_MARKERS: tuple[tuple[str, str], ...] = (
     (CLAIM_LOST_MARKER, _ERROR_CLASS_CLAIM_LOST),
-    (_CAS_LOST_MARKER, _ERROR_CLASS_CAS_LOST),
-    (_REANCHOR_STRAGGLER_MARKER, _ERROR_CLASS_REANCHOR_STRAGGLER),
-    (_HEAL_CHUNK_MARKER, _ERROR_CLASS_HEAL_CHUNK),
+    (CAS_LOST_MARKER, _ERROR_CLASS_CAS_LOST),
+    (REANCHOR_STRAGGLER_MARKER, _ERROR_CLASS_REANCHOR_STRAGGLER),
+    (HEAL_CHUNK_MARKER, _ERROR_CLASS_HEAL_CHUNK),
 )
 
 # The correlation hint appended to every classified rollback message, so an
