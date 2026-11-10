@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     def _a28c_register_has_no_compensation() -> object:
         return TxnUniqueViolationError
 
+    # ⚠ DISCHARGED 2026-11-10 (a77f72e): the build landed this symbol; bound packet-58-contract is deleted.
     # packet 58 contract r4 (amendment 12 §2): the lease rows' ``logs-error-class`` evidence is RED until 58's
     # BUILD adds the rider — owned by bound ``packet-58-contract`` through this ruled symbol (#461 shape).
     from loremaster.tasks import TaskLedger

@@ -474,16 +474,28 @@ class ApplyHook:
     verb's pre-reads and its transaction"* at the ONE seam every task write composes through
     (``TaskLedger._apply``).  It FAILS CLOSED: :attr:`fired` is asserted by every pin that uses it,
     so a build that stops routing the verb through ``_apply`` reddens rather than passing vacuously.
+
+    ``when`` (r5.3, lead #20070): optional predicate over the fragments ``_apply`` receives; the hook fires
+    at the first ``_apply`` it accepts instead of the first one (``None``, the default, keeps the original
+    first-``_apply`` behaviour for every existing caller). Used by packet 58 r5.3's EXPLAIN legs, whose
+    statement is in the boot heal's transaction, after any earlier boot write.
     """
 
-    def __init__(self, ledger: Any, before: Callable[[], Awaitable[Any]]) -> None:
+    def __init__(
+        self,
+        ledger: Any,
+        before: Callable[[], Awaitable[Any]],
+        *,
+        when: Callable[[Any], bool] | None = None,
+    ) -> None:
         self._ledger = ledger
         self._before = before
+        self._when = when
         self._original = ledger._apply  # noqa: SLF001
         self.fired = False
 
     async def __call__(self, fragments: Any) -> None:
-        if not self.fired:
+        if not self.fired and (self._when is None or self._when(fragments)):
             self.fired = True
             await self._before()
         await self._original(fragments)

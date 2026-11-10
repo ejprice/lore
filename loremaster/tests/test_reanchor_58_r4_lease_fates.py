@@ -44,6 +44,7 @@ from loremaster.store.lease import LockAbsent, SurrealLeaderLock
 from test_exhaustion_fates import derived_fate, in_domain
 
 if TYPE_CHECKING:
+    # ⚠ DISCHARGED 2026-11-10 (a77f72e): the build landed this symbol; bound packet-58-contract is deleted.
     # ⚠ packet 58's RULED, not-yet-built symbol named STATICALLY (the #461 shape): the ``error_class`` rider
     # is
     # carried by 58's BUILD (lead scope call, am-12 §6), so this file's RED@HEAD legs share the one

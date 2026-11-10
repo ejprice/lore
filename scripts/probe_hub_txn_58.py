@@ -13,15 +13,19 @@ ASSERTs and indexes), so these timings are a LOWER bound on the real cost.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import os
 import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loremaster.store._txn import signin_credentials
 from surrealdb import AsyncSurreal, RecordID
+
+if TYPE_CHECKING:
+    from _surreal_harness import SurrealEnv
 
 URL = "ws://127.0.0.1:18000/rpc"
 NAMESPACE = "lore_test"
@@ -43,6 +47,18 @@ def _surreal_harness() -> Any:
     import _surreal_harness
 
     return _surreal_harness
+
+
+def fresh_test_store_env() -> SurrealEnv:
+    """A fresh throwaway database on the TEST store ONLY: the suite harness's env (its TEST-store credential,
+    a ``unique_database()`` name, the production embedding width), with the URL pinned to :data:`URL` whatever
+    the harness env override says. The packet 58 am-17 probes build every env through this (lead #20070)."""
+    harness = _surreal_harness()
+    env: SurrealEnv = dataclasses.replace(
+        harness.make_env(database=harness.unique_database(), dim=harness.PRODUCTION_DIM), url=URL
+    )
+    assert env.url == URL, "TEST store only"
+    return env
 
 
 async def run_one(dependents: int) -> None:

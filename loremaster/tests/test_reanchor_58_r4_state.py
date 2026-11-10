@@ -68,6 +68,8 @@ from test_reanchor_58_r3_cas_seam import (
 )
 
 if TYPE_CHECKING:
+    # ⚠ DISCHARGED 2026-11-10 (a77f72e): packet 58's half — the build landed the heal symbol and bound
+    # packet-58-contract is deleted; the 64b-i half below is still pending (packet-64b-i-contract).
     # ⚠ RULED, not-yet-built symbols named STATICALLY for the typecheck gate (the #461 shape): packet 58's
     # heal
     # (owned by ``scripts/pending_contracts.yaml`` bound ``packet-58-contract``) and packet 64b-i's

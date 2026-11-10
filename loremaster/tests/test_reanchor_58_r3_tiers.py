@@ -60,6 +60,7 @@ from loremaster.store.surreal_schema import TASK_TABLE
 from loremaster.tasks import STATUS_BLOCKED, IllegalTransitionError, TaskLedger, TaskLedgerError
 
 if TYPE_CHECKING:
+    # ⚠ DISCHARGED 2026-11-10 (a77f72e): the build landed this symbol; bound packet-58-contract is deleted.
     # ⚠ packet 58's RULED, not-yet-built symbol, named STATICALLY for the typecheck gate (lead #17055, the
     # #461 shape): a mypy error at HEAD owned by `scripts/pending_contracts.yaml` bound `packet-58-contract`,
     # which owns this file's RED@HEAD pytest legs too and self-destructs with the build.  Runtime-inert.

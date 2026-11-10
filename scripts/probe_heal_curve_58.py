@@ -5,6 +5,7 @@
 # pinned to the TEST store (probe_hub_txn_58.URL = ws://127.0.0.1:18000/rpc; the harness env override is
 # ignored). Sign-in: the env carries the suite harness's TEST-store credential, and every TaskLedger the probe
 # builds signs in through loremaster.store._txn.signin_credentials (TaskLedger's own connect path).
+# The pinned env is built by ONE helper, `probe_hub_txn_58.fresh_test_store_env` (lead #20070; was one copy per probe).
 # Type annotations added (the gate types `scripts/`); lint-only edits besides: `ruff check --fix` (import order; an import made unused or duplicate by the above dropped).
 """am-17: the boot heal's cost CURVE on the REAL schema (TEST store :18000 only), and what drives it.
 
@@ -21,17 +22,16 @@ import dataclasses
 import sys
 import time
 
-from probe_hub_txn_58 import URL as TEST_STORE_URL  # noqa: E402 - ws://127.0.0.1:18000/rpc, the TEST store
-from probe_hub_txn_58 import _surreal_harness  # noqa: E402 - puts loremaster/tests on sys.path
+from probe_hub_txn_58 import (
+    _surreal_harness,  # noqa: E402 - puts loremaster/tests on sys.path
+    fresh_test_store_env,  # noqa: E402 - the env pinned to the TEST store
+)
 
 _surreal_harness()
 import _reanchor_58_support as s  # noqa: E402
 from _surreal_harness import (  # noqa: E402
-    PRODUCTION_DIM,
     SurrealEnv,
     drop_database,
-    make_env,
-    unique_database,
 )
 from loremaster.store import _txn  # noqa: E402
 from loremaster.store._txn import TxnFragment, ensure_ready_operation  # noqa: E402
@@ -43,13 +43,6 @@ B_SIZES = (1000, 2000, 4000)
 C_SIZES = (1665, 3332, 6000)
 
 
-
-def fresh_test_store_env() -> SurrealEnv:
-    """A fresh throwaway database on the TEST store ONLY: the harness env (its TEST-store credential),
-    with the URL pinned to ``TEST_STORE_URL`` whatever the harness env override says."""
-    env = dataclasses.replace(make_env(database=unique_database(), dim=PRODUCTION_DIM), url=TEST_STORE_URL)
-    assert env.url == TEST_STORE_URL, "TEST store only"
-    return env
 
 async def fresh() -> tuple[SurrealEnv, TaskLedger]:
     env = fresh_test_store_env()

@@ -5,26 +5,24 @@
 # pinned to the TEST store (probe_hub_txn_58.URL = ws://127.0.0.1:18000/rpc; the harness env override is
 # ignored). Sign-in: the env carries the suite harness's TEST-store credential, and every TaskLedger the probe
 # builds signs in through loremaster.store._txn.signin_credentials (TaskLedger's own connect path).
+# The pinned env is built by ONE helper, `probe_hub_txn_58.fresh_test_store_env` (lead #20070; was one copy per probe).
 # Type annotations added (the gate types `scripts/`); lint-only edits besides: `ruff check --fix` (import order; an import made unused or duplicate by the above dropped).
 """am-17 §9: the supersede's edge DELETE — is a DELETE's plan observable (EXPLAIN), and do the two forms
 delete the same set at the same cost? TEST store :18000 only. Run from the repo root: `uv run python <file>`."""
 import asyncio
-import dataclasses
 import json
 import sys
 import time
 
-from probe_hub_txn_58 import URL as TEST_STORE_URL  # noqa: E402 - ws://127.0.0.1:18000/rpc, the TEST store
-from probe_hub_txn_58 import _surreal_harness  # noqa: E402 - puts loremaster/tests on sys.path
+from probe_hub_txn_58 import (
+    _surreal_harness,  # noqa: E402 - puts loremaster/tests on sys.path
+    fresh_test_store_env,  # noqa: E402 - the env pinned to the TEST store
+)
 
 _surreal_harness()
 import _reanchor_58_support as s  # noqa: E402
 from _surreal_harness import (  # noqa: E402
-    PRODUCTION_DIM,
-    SurrealEnv,
     drop_database,
-    make_env,
-    unique_database,
 )
 from surrealdb import RecordID  # noqa: E402
 
@@ -35,13 +33,6 @@ FORMS = {
 HUB, NOISE = (int(sys.argv[1]), int(sys.argv[2])) if len(sys.argv) > 2 else (3000, 30000)
 
 
-
-def fresh_test_store_env() -> SurrealEnv:
-    """A fresh throwaway database on the TEST store ONLY: the harness env (its TEST-store credential),
-    with the URL pinned to ``TEST_STORE_URL`` whatever the harness env override says."""
-    env = dataclasses.replace(make_env(database=unique_database(), dim=PRODUCTION_DIM), url=TEST_STORE_URL)
-    assert env.url == TEST_STORE_URL, "TEST store only"
-    return env
 
 async def main() -> None:
     env = fresh_test_store_env()

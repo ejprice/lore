@@ -37,7 +37,7 @@ upgrade that renames them reds the C+ control first.
 from __future__ import annotations
 
 import re
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Sequence
 from typing import Any
 
 import pytest
@@ -46,6 +46,7 @@ from _reanchor_58_support import (
     SHRUNK_ROW_HARD_CAP,
     SHRUNK_ROW_WARN_THRESHOLD,
     UNPATCHED_ROW_WARN_THRESHOLD,
+    ApplyHook,
     ComposeSpy,
     assert_edge_mirrors_column_for_every_row,
     assert_unpatched_row_cap,
@@ -234,41 +235,42 @@ def _statements_with_params(fragments: Sequence[Any]) -> list[tuple[str, dict[st
     ]
 
 
-class _ExplainBeforeTheWrite:
-    """Wrap ONE ledger's write door (``TaskLedger._apply``): at the first transaction holding a statement that
-    binds every record in ``anchors``, EXPLAIN that statement over the world as it stands BEFORE the write (on
-    a SECOND connection), record the plan and the ``blocks`` edge count around the EXPLAIN, then let the write
-    through. Fails closed: :attr:`matches` lists every matching statement, and a leg asserts exactly one."""
+class _PlanBeforeTheWrite:
+    """The EXPLAIN capture, ridden on :class:`_reanchor_58_support.ApplyHook` (``when=``; lead #20070): at
+    the first transaction holding a statement that binds every record in ``anchors``, EXPLAIN that statement
+    over the world as it stands BEFORE the write (on a SECOND connection), recording the plan and the
+    ``blocks`` edge count around the EXPLAIN; the write then goes through. Fails closed: :attr:`matches`
+    lists every matching
+    statement, and a leg asserts exactly one."""
 
-    def __init__(self, ledger: Any, explainer: TaskLedger, anchors: Sequence[RecordID]) -> None:
-        self._ledger = ledger
+    def __init__(self, explainer: TaskLedger, anchors: Sequence[RecordID]) -> None:
         self._explainer = explainer
         self._anchors = list(anchors)
-        self._original: Callable[[Any], Awaitable[Any]] = ledger._apply  # noqa: SLF001 - the one write door
         self.matches: list[tuple[str, dict[str, Any]]] = []
         self.plan: Any = None
         self.edges_around_explain: tuple[int, int] | None = None
 
-    async def __call__(self, fragments: Any) -> Any:
-        if self.plan is None:
-            hits = [
-                (statement, params)
-                for statement, params in _statements_with_params(fragments)
-                if all(_binds(params, statement, anchor) for anchor in self._anchors)
-            ]
-            if hits:
-                self.matches = hits
-                statement, params = hits[0]
-                before = await _edge_count(self._explainer)
-                self.plan = await raw(self._explainer, f"{statement} EXPLAIN", params)
-                self.edges_around_explain = (before, await _edge_count(self._explainer))
-        return await self._original(fragments)
+    def holds_the_statement(self, fragments: Any) -> bool:
+        """``ApplyHook``'s ``when``: does this transaction hold a statement binding every anchor?"""
+        hits = [
+            (statement, params)
+            for statement, params in _statements_with_params(fragments)
+            if all(_binds(params, statement, anchor) for anchor in self._anchors)
+        ]
+        if hits:
+            self.matches = hits
+        return bool(hits)
 
-    def install(self) -> None:
-        self._ledger._apply = self  # noqa: SLF001
+    async def explain(self) -> None:
+        """``ApplyHook``'s ``before``: EXPLAIN the first matching statement over the pre-write world."""
+        statement, params = self.matches[0]
+        before = await _edge_count(self._explainer)
+        self.plan = await raw(self._explainer, f"{statement} EXPLAIN", params)
+        self.edges_around_explain = (before, await _edge_count(self._explainer))
 
-    def restore(self) -> None:
-        self._ledger._apply = self._original  # noqa: SLF001
+    def on(self, ledger: Any) -> ApplyHook:
+        """The ``ApplyHook`` on ``ledger``'s write door that runs this capture."""
+        return ApplyHook(ledger, self.explain, when=self.holds_the_statement)
 
 
 async def _edge_count(ledger: TaskLedger) -> int:
@@ -325,12 +327,9 @@ class TestNoEdgeDeleteIteratesTheBlocksTable:
         await _seed_unrelated_edges(ledger, "r53s")
         explainer = new_ledger(env)
         try:
-            hook = _ExplainBeforeTheWrite(ledger, explainer, [RecordID(TASK_TABLE, hub)])
-            hook.install()
-            try:
+            hook = _PlanBeforeTheWrite(explainer, [RecordID(TASK_TABLE, hub)])
+            with hook.on(ledger).installed():
                 await supersede(ledger, hub)
-            finally:
-                hook.restore()
             assert len(hook.matches) == 1, (
                 f"non-vacuity: exactly ONE statement of the supersede transaction must bind the hub's "
                 f"RecordID "
@@ -378,11 +377,9 @@ class TestNoEdgeDeleteIteratesTheBlocksTable:
         await _seed_unrelated_edges(ledger, "r53h")
         booted, explainer = new_ledger(env), new_ledger(env)
         try:
-            hook = _ExplainBeforeTheWrite(
-                booted, explainer, [RecordID(TASK_TABLE, target), RecordID(TASK_TABLE, old)]
-            )
-            hook.install()
-            await booted.ensure_ready()  # the boot heal is the only door to this statement
+            hook = _PlanBeforeTheWrite(explainer, [RecordID(TASK_TABLE, target), RecordID(TASK_TABLE, old)])
+            with hook.on(booted).installed():
+                await booted.ensure_ready()  # the boot heal is the only door to this statement
             assert len(hook.matches) == 1, (
                 f"non-vacuity: exactly ONE heal statement must bind both the straggler's and the superseded "
                 f"blocker's RecordID (the edge DELETE); found {[statement for statement, _ in hook.matches]}"

@@ -41,6 +41,7 @@ from loremaster.store._txn import TxnDomainRejectionError, TxnFragment
 from loremaster.tasks import TaskLedger
 
 if TYPE_CHECKING:
+    # ⚠ DISCHARGED 2026-11-10 (a77f72e): the build landed this symbol; bound packet-58-contract is deleted.
     # ⚠ packet 58's RULED, not-yet-built symbols, named STATICALLY for the typecheck gate (the #461 shape):
     # mypy errors at HEAD owned by `scripts/pending_contracts.yaml` packet-58-contract.
     from loremaster.store._txn import TxnCasLostError  # noqa: F401
