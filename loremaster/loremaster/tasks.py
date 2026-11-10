@@ -219,6 +219,7 @@ _HEAL_REASON = "straggler"
 _HEAL_EVENT = "task.backfill.stragglers_reanchored"
 _HEAL_PHANTOM_EVENT = "task.backfill.straggler_phantom_head"
 _HEAL_CYCLE_EVENT = "task.backfill.straggler_chain_cycle"
+_HEAL_WOULD_CLOSE_CYCLE_EVENT = "task.backfill.straggler_would_close_cycle"
 _HEAL_CHUNK_REJECTED_EVENT = "task.backfill.straggler_chunk_rejected"
 _REANCHOR_LOST_MESSAGE = f"{_txn_module.CAS_LOST_MARKER} a dependent no longer names the superseded task"
 _HEAL_CHUNK_MESSAGE = f"{_txn_module.HEAL_CHUNK_MARKER} a straggler no longer names its superseded blocker"
@@ -585,21 +586,21 @@ class SupersedeStragglerError(TaskLedgerError):
 
 
 class StragglerHealPackerError(TaskLedgerError):
-    """A single straggler row composes more ROWS than one transaction may carry (am-3 §1; am-16 §2.1 sibling).
+    """A single straggler row composes more ROWS than one heal chunk may carry (am-3 §1; am-16 §2.1 sibling).
 
-    Typed facts: ``row_id`` (the straggler), ``weight`` (its ``fragment_rows``), ``row_cap`` (the live
-    cap)."""
+    Typed facts: ``row_id`` (the straggler), ``weight`` (its ``fragment_rows``), ``row_cap`` (the live heal
+    CHUNK bound, ``min(TXN_ROW_WARN_THRESHOLD, TXN_ROW_HARD_CAP)`` — amendment 17 §2; #625 a)."""
 
     def __init__(self, *, row_id: str, weight: int, row_cap: int) -> None:
         self.row_id, self.weight, self.row_cap = row_id, weight, row_cap
         super().__init__(
             f"straggler {render_attributed(row_id)} alone composes {weight} rows, over the {row_cap}-row "
-            f"transaction cap — the heal cannot pack it"
+            f"heal chunk bound — the heal cannot pack it into one transaction"
         )
 
 
 class HubSupersedeRefusedError(TaskLedgerError):
-    """A supersede whose re-anchor would exceed the derived transaction bound (F-1; am-16 §2.1).
+    """A supersede whose re-anchor would exceed the derived transaction bound (F-1; am-16 §2.1; #625 b).
 
     Typed facts, each derived by the ledger's own pricing: ``dependents`` (N), ``rows`` (``fragment_rows``
     of the supersede it would compose), ``row_cap`` (the live ``TXN_ROW_HARD_CAP``), ``cap_dependents``
@@ -614,8 +615,8 @@ class HubSupersedeRefusedError(TaskLedgerError):
         super().__init__(
             f"task {render_attributed(task_id)} has {dependents} dependents; re-anchoring them "
             f"composes {rows} rows, over the {row_cap}-row transaction cap (the build-time bound admits "
-            f"at most {cap_dependents} dependents) — refused, nothing changed. This is a pinned KNOWN "
-            f"BOUND (58 F-1); file it with lore_findings."
+            f"at most {cap_dependents} dependents) — refused, nothing changed. A hub near that size can "
+            f"instead time out without being refused (finding #628)."
         )
 
 
@@ -794,26 +795,67 @@ def raise_cycle_refusal(*, noun: str, cycle: Sequence[str]) -> NoReturn:
     raise TaskCycleError(format_cycle_refusal(noun=noun, cycle=cycle))
 
 
-def _drop_one_cycle_edge(
-    graph: dict[str, set[str]], cycle: Sequence[str]
-) -> bool:
-    """Remove ONE edge of ``cycle`` from ``graph`` in place; ``True`` if one was removed.
+def find_row_blocked_by_cycles(
+    stored: Mapping[str, Iterable[str]],
+    proposed: Mapping[str, Sequence[str]],
+    asked: Iterable[str],
+    *,
+    all_or_nothing: bool,
+) -> dict[str, list[str]]:
+    """The ONE answer to *"does this row's write close a ``blocked_by`` cycle through persisted rows?"*
 
-    Used to keep looking PAST a cycle that is not the caller's business — a legacy loop
-    among rows this call did not write, which the write guard must not blame a new caller
-    for, and which the backfill has already RECORDED. One edge per iteration (never the
-    whole member set) so a DIFFERENT loop sharing some of these nodes still surfaces on a
-    later pass; progress is guaranteed because every iteration removes an edge.
+    Packet 58 amendment 17 §13.2 (replaces the drop-one-edge step-over, finding #631): every writer of
+    ``blocked_by`` — create, create_many, supersede and the boot heal — asks THIS function and nothing
+    else answers it. A row is a HIT iff one of its PROPOSED blockers is the row itself or lies in the
+    row's own strongly connected component of the graph: that blocker reaches the row, so the write
+    closes a loop through it. ONE :func:`networkx.strongly_connected_components` pass, no edge dropping.
+    A legacy loop that touches no asked row is therefore never refused (it shares no component with one).
+
+    Args:
+        stored: ``{row: its persisted blocked_by}`` — the bounded ancestor closure of the proposed blockers.
+        proposed: ``{row: the blocked_by column the write would give it}``.
+        asked: The rows to answer for (create / create_many: every proposed row; supersede: the successor
+            only, am-3 §4; the heal: every pending straggler).
+        all_or_nothing: ``True`` when the proposed rows are written in ONE transaction, so each
+            proposed column REPLACES the stored one (create, create_many, supersede). ``False`` when
+            any proposed row may stay unwritten (the heal: a chunk can be rejected alone), so a pending
+            row keeps its stored edges AND gains the proposed ones — the only rule measured safe when
+            some subset of the pending rows is applied (am-17 §13.1).
+
+    Returns:
+        ``{hit row: its cycle}``, each cycle ``[row, blocker, …, row]`` — the row, the first proposed
+        blocker (in sorted order) that reaches it, then the shortest path back. Nodes and edges are
+        added SORTED, so the answer is the same every run; the shape is the one
+        :func:`format_cycle_refusal` already takes. Empty when no asked row is hit.
+
+    **Packages considered — ``replace``:** :mod:`networkx` (already a production dependency, used by
+    :meth:`TaskLedger._record_legacy_cycles`): ``strongly_connected_components`` and ``shortest_path``
+    were read in the installed package; nothing is hand-rolled.
     """
-    for index in range(len(cycle) - 1):
-        first, second = cycle[index], cycle[index + 1]
-        if second in graph.get(first, ()):
-            graph[first] = graph[first] - {second}
-            return True
-        if first in graph.get(second, ()):
-            graph[second] = graph[second] - {first}
-            return True
-    return False
+    graph = networkx.DiGraph()
+    for node, blockers in sorted(stored.items()):
+        if all_or_nothing and node in proposed:
+            continue  # the write REPLACES this row's column, so its stored edges do not exist afterwards
+        graph.add_node(node)
+        for blocker in sorted(set(blockers)):
+            graph.add_edge(node, blocker)
+    for node, blockers in sorted(proposed.items()):
+        graph.add_node(node)
+        for blocker in sorted(set(blockers)):
+            graph.add_edge(node, blocker)
+    component_of: dict[str, frozenset[str]] = {}
+    for component in networkx.strongly_connected_components(graph):
+        members = frozenset(component)
+        for member in members:
+            component_of[member] = members
+    hits: dict[str, list[str]] = {}
+    for row in sorted(set(asked)):
+        for blocker in sorted(set(proposed.get(row, ()))):
+            if blocker == row or blocker in component_of.get(row, ()):
+                path = [row] if blocker == row else networkx.shortest_path(graph, blocker, row)
+                hits[row] = [row, *(str(node) for node in path)]
+                break
+    return hits
 
 
 def _superseded_blocker_clause(row_id: str, row: Mapping[str, Any]) -> str | None:
@@ -1031,6 +1073,9 @@ class TaskLedger:
         transaction, and a build issuing one ``RELATE`` per edge makes that rationale false.
         """
         columns, existing = await self._read_mirror_state()
+        # Recorded at EVERY boot, before the nothing-missing early return (amendment 17 §12.8 item 1): a
+        # legacy loop is a standing DATA defect; its mirror edges need not be missing for it to exist.
+        self._record_legacy_cycles(columns)
         wanted = {
             (blocker, task_id)
             for task_id, blockers in columns.items()
@@ -1056,7 +1101,6 @@ class TaskLedger:
                     "phantom_blocker_id": blocker,
                 },
             )
-        self._record_legacy_cycles(columns)
         if not mintable:
             return
         await self._apply([self._relate_fragment(mintable)])
@@ -2384,7 +2428,12 @@ class TaskLedger:
             )
         )
         at = datetime.now(UTC).isoformat()
-        built = self._plan_heal_rows(stragglers, successor, heads, existing, at)
+        built, proposed, superseded_blockers = self._plan_heal_rows(
+            stragglers, successor, heads, existing, at
+        )
+        # Amendment 17 §13.4: ONE read and ONE predicate call over the WHOLE pending set, BEFORE packing —
+        # never per chunk, never a loop. A row the predicate hits is skipped WHOLE and recorded every boot.
+        built = await self._skip_cycle_closing_rows(built, proposed, superseded_blockers)
         chunks = self._pack_heal_chunks(built)
         healed = 0
         for chunk_index, chunk in enumerate(chunks):
@@ -2414,10 +2463,20 @@ class TaskLedger:
         heads: Mapping[str, tuple[str | None, bool]],
         existing: set[str],
         at: str,
-    ) -> list[tuple[str, list[TxnFragment], list[tuple[str, str]], int]]:
+    ) -> tuple[
+        list[tuple[str, list[TxnFragment], list[tuple[str, str]], int]],
+        dict[str, list[str]],
+        dict[str, list[str]],
+    ]:
         """Each healable straggler as ``(dependent, fragments, relates, cost)``; a phantom or cyclic chain
-        head skips the WHOLE row, recorded every boot (am-3). ``cost`` is the ONE house row count."""
+        head skips the WHOLE row, recorded every boot (am-3). ``cost`` is the ONE house row count.
+
+        Also returns, per planned row, the ``blocked_by`` column the re-anchor WOULD write (``proposed``) and
+        the superseded blockers it still names (``superseded_blockers``) — the inputs of
+        :meth:`_skip_cycle_closing_rows`."""
         built: list[tuple[str, list[TxnFragment], list[tuple[str, str]], int]] = []
+        proposed: dict[str, list[str]] = {}
+        superseded_blockers: dict[str, list[str]] = {}
         for row_index, straggler in enumerate(stragglers):
             dependent = str(straggler.get(_ID_KEY))
             columns = [str(b) for b in (straggler.get(_COL_BLOCKED_BY) or ())]
@@ -2473,7 +2532,43 @@ class TaskLedger:
             ]
             cost = _txn_module.fragment_rows([*fragments, self._relate_fragment(relates)])
             built.append((dependent, fragments, relates, cost))
-        return built
+            proposed[dependent] = final
+            superseded_blockers[dependent] = olds
+        return built, proposed, superseded_blockers
+
+    async def _skip_cycle_closing_rows(
+        self,
+        built: list[tuple[str, list[TxnFragment], list[tuple[str, str]], int]],
+        proposed: Mapping[str, Sequence[str]],
+        superseded_blockers: Mapping[str, Sequence[str]],
+    ) -> list[tuple[str, list[TxnFragment], list[tuple[str, str]], int]]:
+        """Drop every planned row whose re-anchor would close a ``blocked_by`` cycle, recording each (#623).
+
+        The heal is a second writer of ``blocked_by``, so it asks the SAME predicate the live writers do
+        (:func:`find_row_blocked_by_cycles`, ``all_or_nothing=False`` — a chunk can be rejected alone, so a
+        pending row keeps its stored edges as well). ONE closure read seeded by every proposed blocker and ONE
+        predicate call over the whole pending set (two stragglers can close a loop jointly that neither
+        closes alone). A hit row is skipped WHOLE: its column, edges and ``updated_at`` are untouched, it is
+        counted nowhere and sits in no chunk; the WARNING ``task.backfill.straggler_would_close_cycle`` is
+        emitted at every boot until the data is repaired (am-17 §12.2, §13.4).
+        """
+        if not built:
+            return built
+        seeds = {blocker for column in proposed.values() for blocker in column}
+        stored = await self._bounded_dependency_graph(seeds)
+        cycles = find_row_blocked_by_cycles(stored, proposed, proposed, all_or_nothing=False)
+        for dependent, cycle in sorted(cycles.items()):
+            logger.warning(
+                _HEAL_WOULD_CLOSE_CYCLE_EVENT,
+                extra={
+                    "database": self._database,
+                    "task_id": dependent,
+                    "blocker_ids": list(superseded_blockers[dependent]),
+                    "cycle": " -> ".join(cycle),
+                    "members": sorted(set(cycle)),
+                },
+            )
+        return [entry for entry in built if entry[0] not in cycles]
 
     @staticmethod
     def _pack_heal_chunks(
@@ -2825,37 +2920,29 @@ class TaskLedger:
         reintroduces #253 on the write path, invisibly: one round trip says nothing about
         how many rows it reads.
 
-        A cycle among rows this call did NOT write is a pre-existing DATA defect that
-        ``ensure_ready``'s backfill has already RECORDED; refusing a caller for it would
-        make an unrelated legacy loop block every future create. So such a loop is stepped
-        over — one edge at a time, so a DIFFERENT loop through the same rows still
-        surfaces — and only a cycle a ``pending`` task actually lies on is refused. The
-        step-over drop-loop is UNCHANGED by ESC-1 (variant D): it routes through the shared
-        ``find_blocked_by_cycle`` (R6), and it is what keeps the guard SOUND when a legacy
-        cycle coexists with the minted one in the bounded closure (MP-1) — a single-witness
-        check would return the legacy cycle first and wave the minted create through.
+        A loop among rows this call did NOT write is a pre-existing DATA defect: ``ensure_ready`` records
+        every such loop at EVERY boot (``task.backfill.legacy_cycle_minted``, :meth:`_record_legacy_cycles`),
+        and refusing a caller for it would make an unrelated legacy loop block every future create. The
+        decision is :func:`find_row_blocked_by_cycles` (amendment 17 §13.2, the ONE predicate every writer of
+        ``blocked_by`` asks): a row is refused iff one of its proposed blockers lies in the row's own strongly
+        connected component, so a legacy loop through none of the asked rows is never refused, and one that
+        shares an edge with a loop the write would close is still seen (finding #631).
 
         Args:
-            pending: ``{the id about to be created: its deduped blocked_by}``.
+            pending: ``{task id: the deduped blocked_by it is about to be given}`` — a row about to be
+                created, or (supersede) a dependent about to be re-anchored.
+            minted: The rows to answer for; ``None`` means every ``pending`` row (supersede passes the
+                successor alone, amendment 3 §4).
         """
         if not any(pending.values()):
             return
         seeds = {blocker for blockers in pending.values() for blocker in blockers}
-        graph: dict[str, set[str]] = {
-            node: set(refs)
-            for node, refs in (await self._bounded_dependency_graph(seeds)).items()
-        }
-        for task_id, blockers in pending.items():
-            graph[task_id] = set(blockers)
-        minted = set(pending) if minted is None else minted
-        while True:
-            cycle = find_blocked_by_cycle(graph)
-            if cycle is None:
-                return
-            if minted.intersection(cycle):
-                raise_cycle_refusal(noun=CYCLE_NOUN_PERSISTED_IDS, cycle=cycle)
-            if not _drop_one_cycle_edge(graph, cycle):
-                return
+        stored = await self._bounded_dependency_graph(seeds)
+        cycles = find_row_blocked_by_cycles(
+            stored, pending, set(pending) if minted is None else minted, all_or_nothing=True
+        )
+        if cycles:
+            raise_cycle_refusal(noun=CYCLE_NOUN_PERSISTED_IDS, cycle=cycles[min(cycles)])
 
     async def _bounded_dependency_graph(
         self, seeds: Iterable[str]

@@ -4360,7 +4360,8 @@ class AppContext:
         elif result.superseded_blockers:
             # Ruling R10(iii), the moment-of-CAUSATION door: a blocker that was SUPERSEDED
             # after this task was created can never resolve — supersession is not terminal,
-            # so the CAS counts it forever and this claim can NEVER win. "blocked_by [...]
+            # so the CAS counts it forever. The claim itself may still be repaired: the NEXT boot's
+            # heal re-anchors such a dependent (a create that raced a supersede). "blocked_by [...]
             # unresolved" is true and useless: it invites the agent to poll a door that is
             # nailed shut, when the actionable fact is that the work moved.
             moved = ", ".join(
@@ -4369,8 +4370,7 @@ class AppContext:
             )
             reason = (
                 f"blocked_by {render_attributed(task.blocked_by)} unresolved, and {moved} — a SUPERSEDED "
-                f"blocker can never resolve, so this claim can never win: block on the "
-                f"successor instead"
+                f"blocker can never resolve: block on the successor instead"
             )
         elif task.blocked_by:
             reason = f"blocked_by {render_attributed(task.blocked_by)} unresolved"
@@ -4643,7 +4643,8 @@ class AppContext:
         ``LIMIT $k`` with ``$k = NONE`` returns ZERO rows and NO error.
 
         Args:
-            status: The exact-status filter, or ``None``.
+            status: The exact-status filter, or ``None``. A status (or ``blocked``) filter EXCLUDES
+                SUPERSEDED tasks (they are retired, not work).
             owner: The exact-owner filter, or ``None``.
             blocked: The dependency partition, or ``None`` for no partition.
             limit: The caller's own cap, or ``None`` for every match.
@@ -12066,7 +12067,8 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 description=(
                     "For 'transition', the target status to move the task to (a target "
                     "of 'done' additionally requires 'summary'). For 'query', an "
-                    "optional exact-status filter. Omit otherwise."
+                    "optional exact-status filter; a status (or blocked) filter excludes "
+                    "SUPERSEDED tasks. Omit otherwise."
                 )
             ),
         ] = None,
