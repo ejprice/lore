@@ -315,8 +315,12 @@ rendered free text). Therefore:
   stayed green.
 - Structural pins guard the served surface: the exact-set registration pin, the
   dead-name hygiene scan, the instructions-names-every-tool pin (all in
-  test_mcp_server.py). Every audit-caught defect CLASS gets converted into a pin like
-  these — a fix without an invariant is half a fix.
+  test_mcp_server.py). An audit-caught defect CLASS is closed where production enforces
+  it: one chokepoint, plus a behaviour test that goes red when that enforcement is removed
+  (global `~/.claude/CLAUDE.md` §Tests). A new source scanner, run-wide recorder or meta-suite
+  needs operator approval; an existing scanner that fires on your code is answered by fixing the
+  behaviour it protects or reporting that it fires on correct code, never by re-spelling
+  (operator, 2026-11-09: the global test rules win over this file).
 
 ## READ THE DEPENDENCY'S DOCS — THEN VERIFY THEM (the #107 production outage, 2026-07-13)
 A widened field ASSERT shipped with 1040 tests green, a cold code audit GO, and a
@@ -372,17 +376,36 @@ outages are.
   the opposite.** Virgin DB vs long-lived store. Dev host vs slim image. Writable tree vs `:ro`
   mount. Aligned uid vs mismatched. Each one has already bitten or is ledgered (#132, #134, #135).
 
-## WHEN YOU CANNOT CLOSE A HOLE, PIN IT (packet 01, #137 + #138)
+## WHEN YOU CANNOT CLOSE A HOLE, RECORD IT (packet 01, #137 + #138; re-ruled 2026-11-09)
 Some holes are not worth closing (the cure costs more than the disease) and some cannot be closed at
-all. **An unpinned known limitation is indistinguishable from an unknown one** — the next engineer
+all. **An unrecorded known limitation is indistinguishable from an unknown one** — the next engineer
 rediscovers it from an outage, or "helpfully" closes it and re-opens a settled trade.
-- **PIN THE MISS.** A test that ASSERTS the hole exists, and **goes RED the day someone closes it**,
-  carrying the message *"this is a KNOWN BOUND (#NNN) — if you closed it deliberately, delete this
-  pin and say so."* Receipts: #137 (a third-party dep that spawns is invisible to any AST scan of our
+- **A known hole is a lore finding plus a docstring or comment, never a test.** File it with
+  `lore_findings`, and write the docstring (or, outside Python — YAML, DDL strings, the
+  Containerfile, shell — a comment) at the code it concerns, naming the finding number and its
+  re-open trigger. Examples: #137 (a third-party dep that spawns is invisible to any AST scan of our
   source — not closable without demanding every binary every dependency can reach) · #138 (four
   obfuscation doors in the exec seam — closing them taxes four shipped modules doing nothing wrong).
-- **A bound that is pinned is a bound the next engineer meets DELIBERATELY**, with its rationale
-  attached. It cannot be silently inherited, and it cannot be silently "fixed".
+- **A hole on a SERVED surface is also named in the render, or closed.** A finding and a docstring
+  inform engineers, not the consuming agent; per the TRUST doctrine above, a response that hits an
+  unnamed bound is a false clear. Name the bound in what is served (Leg 1), or close the hole in
+  production — as packet 69 is minted to close #597 with a boot-time integrity count (not built as
+  of 2026-11-09; #597's pin still stands until then).
+- **Never write a test that asserts a hole exists** (the old "PIN THE MISS" law, retired by the
+  operator 2026-11-09: the global test rules win). Such a test checks absence, not behaviour, and it
+  taxes every run and every review. **Dropped deliberately:** the old pin's one virtue — an
+  ACCIDENTAL close went red. Now nothing reddens; whoever closes a hole resolves its finding and
+  removes the docstring paragraph in the same change. Older rulings and design docs that order a
+  pin-the-miss are superseded on that point.
+- **Converting an existing pin-the-miss test.** The tell is a failure message like *"KNOWN BOUND
+  (#NNN) — if you closed it deliberately, delete this pin"*. A contract author (or a test-writing agent
+  the lead assigns; the lead writes no tests) converts it; **a builder never does** (builders do not
+  edit tests): a builder whose change reddens one STOPs and escalates, as for any red test. Converting means: delete the hole-asserting assertion, KEEP any
+  real behaviour the same test also checks (move it to a behaviour test if it has none), write or
+  keep the docstring and the finding, and re-point every reference that named the deleted test
+  (docstrings, `scripts/pending_contracts.yaml`, amendment citations) at the finding.
+- **A recorded bound is met DELIBERATELY**: the docstring sits where the next engineer reads, and the
+  finding is where the fleet looks.
 - **Every bound carries a NAMED RE-OPEN TRIGGER** (per the deferral law): the condition under which
   the trade changes. #137's is "the day we add ANY spawning dependency"; #138's is "if the threat
   model changes — untrusted contributors, or a hosted deployment" (→ packet 39 MUST consult it).
@@ -428,9 +451,11 @@ prose was true.
 
 Therefore, standing law:
 - **When a defect CLASS is identified, ship the INSTRUMENT in the same breath as the law.**
-  A rule people must remember is not a guard; it is a hope. "Every audit-caught defect class
-  becomes a repo-local invariant test" is already written above — this section exists because
-  we wrote the law and skipped the instrument.
+  A rule people must remember is not a guard; it is a hope. The instrument is production
+  enforcement at one chokepoint (a type, a schema ASSERT, a runtime check), proven by a
+  behaviour test that goes red without it; a new source scanner, run-wide recorder or meta-suite
+  needs operator approval (global `~/.claude/CLAUDE.md` §Tests). This section exists because we wrote the law and
+  skipped the instrument.
 - **Prose that describes behaviour must be DERIVED from the behaviour, not re-stated beside
   it.** Renders take typed applicability (`auto_ack_at_register: bool`), never a name they
   compare. A role ("the standing brief") gets ONE accessor, not seven hardcoded lookups. Then
@@ -462,6 +487,7 @@ hope."*
   this twice AFTER writing it down): **the tell is a ruling sentence containing "and pin/measure/
   verify it like this." If you implemented the clause BEFORE that phrase and not AFTER, you are not
   done.** Three of the six were caught by asking that retroactively; a fourth needed an auditor.
+  (A rider that orders a pin-the-miss is superseded: see WHEN YOU CANNOT CLOSE A HOLE, RECORD IT.)
 - **A ruling's rider is not commentary and not bureaucracy — it is frequently the only thing
   between a correct build and a silently deletable one.** Two mutation proofs in this packet came
   back GREEN on first attempt because the ruling was implemented and its rider skipped: the
@@ -586,7 +612,10 @@ A rune is the atomic mark a sigil is composed from, so the name states the depen
   whose *rules must agree everywhere*.
 - **`lorerunes` depends on NO sibling, ever.** The moment it imports `loremaster` or `loresigil`
   it stops being importable by them, and it is back to being nowhere. That is the whole
-  constraint; guard it with a pin, not a habit.
+  constraint. It is DECLARED in `lorerunes/pyproject.toml` (`dependencies = []`; keep it empty) and
+  ENFORCED BY NOTHING: every workspace member is installed in dev and bundled into the image, so a
+  sibling import would resolve in both (checked 2026-11-09). A known hole, recorded per WHEN YOU
+  CANNOT CLOSE A HOLE, RECORD IT; whether to enforce it is an operator decision.
 - **It holds PREDICATES, not ENTRY POINTS.** Origin case (packet 42, #222): the blankness rule
   `not value or not value.strip()` moved there so `loremaster.config.resolve_secret` and
   `loresigil`'s `api_key` validator share one answer to *"what counts as blank?"* — while
@@ -649,8 +678,9 @@ A rune is the atomic mark a sigil is composed from, so the name states the depen
 set is unbounded; the SAFE set is small and enumerable. **Allowlist the safe.** When even that
 fails, stop looking at *code* — enforce at **RUNTIME** (wrap the SDK connection; any call with
 no driver frame above it is an escape, named by `file:line`). ⚠ And a runtime gate is an
-invariant **only over code it RUNS** — so make coverage a *checked* variable (AST-enumerate every
-call site; assert the guard OBSERVED each), or reach becomes the next name-list. Every exemption
+invariant **only over code it RUNS** — so put it at the ONE door every call must pass (the
+connection, the driver), where no call site can route around it, rather than enumerating call
+sites. Every exemption
 in a deny-by-default safe-set must be **evidence-backed** (a live probe proving it cannot
 conflict), never *"it writes no row"* — that opinion is what blessed the bootstrap DDL right
 before it lost **6.2%–34.4% of concurrent first-connects** (measured across three 160-connect
@@ -660,23 +690,22 @@ own earlier "13%" as a fourth, unreproducible value alongside two production com
 **THE ASKABLE FORM, so this lesson installs itself instead of being re-learned a seventh time
 (INSTRUMENT 0, lore #344/#345, 2026-08-09).** All seven defeats are ONE class — *a guard certifies
 only the sites it EXECUTES over, and its reach is written as a hidden constant instead of a
-checked variable.* Before shipping ANY guard / gate / scan / sweep, ask it of your own instrument:
-***"What is the SET of sites this guard covers, is that set DERIVED from production truth or a
-name/prefix/hand-list, and does a test go RED when the derived set GROWS but the observed set does
-not? — and would this pin still read as success if the guard ran AFTER the thing it guards, or
-against a baseline that measured nothing?"*** A reach that is a hidden constant is the eighth
-defeat waiting to happen. This is a QUESTION, not a property to remember (per THE LEVER), and it
-has a MECHANICAL home so it is not only a hope: the **`contract-adversary` now forces it
-per-instrument (its REACH ATTACK, P1c)** — a contract that stands up a guard whose reach is a
-hand-list, or whose coverage is not a checked variable, or that observes a proxy, cannot pass the
-adversary, so instance #9 of the class is caught at CONTRACT time rather than by the next agent
-who trips over it.
+checked variable.* Before shipping ANY guard / gate, ask it of your own instrument:
+***"Where is the ONE production place that enforces this, can any call reach the effect without
+passing it, and does a behaviour test that drives a real door go RED when I remove that place —
+and when I move it AFTER the thing it guards?"*** A guard with a reach written as a hand-list is
+the eighth defeat waiting to happen; the answer is a chokepoint, not a scanner that enumerates
+sites (a new source scanner, run-wide recorder or meta-suite needs operator approval, global
+`~/.claude/CLAUDE.md` §Tests; re-ruled 2026-11-09). This is a QUESTION, not a property to
+remember (per THE LEVER), and it has a MECHANICAL home: the **`contract-adversary`'s ENFORCEMENT
+ATTACK (P1c)** asks it of every rule a contract introduces — one chokepoint, effect not proxy,
+sharing proven by mutation — so the next instance is caught at CONTRACT time.
 
 **The STOP-rule for a reach attack (heuristic, NOT an instrument — labelled so per THE LEVER and
 A DIAGNOSIS IS NOT AN INSTRUMENT).** The askable form: *"is this guard's reach receding one level
 deeper every round?"* If each round's fix just RELOCATES the hidden constant to a new site the
-guard still doesn't cover, the surface is adversarial-only — **accept a pinned bound with a named
-re-open trigger; do not run another round.** And before standing up a full multi-agent pipeline
+guard still doesn't cover, the surface is adversarial-only — **accept a recorded bound (a finding plus
+a docstring) with a named re-open trigger; do not run another round.** And before standing up a full multi-agent pipeline
 for a cleanup/hardening wave, surface the value-vs-depth trade to the operator (*"ship the 2–3
 that matter simply and ledger the rest?"*) rather than defaulting to max machinery because the
 findings exist — the operator sets importance, not the lead. Receipts: the G/A-SUB spiral
