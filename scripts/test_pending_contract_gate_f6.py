@@ -31,8 +31,8 @@ without them:
 
 * a node-listed file is adjudicated PER NODE — an unlisted red in it is orphaned (else ``red_nodeids`` would
   be the file-only matching the existing refusal forbids, re-entered through a new key);
-* a file registered by symbols only owns NO pytest red (#615, contract-ahead — r5.1 converted every registry
-  entry to ``red_nodeids``, so the file-level fallback that used to keep packet 58's reds owned has no user);
+* a file registered by symbols only owns NO pytest red (#615, ``c7f8f1d``): adjudication is PER NODE only — a
+  typing claim never becomes pytest ownership, so a red no entry LISTS is orphaned;
 * a ``red_nodeids``-only file does NOT self-destruct on the typecheck leg for having no mypy error (it never
   claimed one).
 
@@ -119,7 +119,7 @@ def _registry_yaml(node_ids: list[str], *, with_symbol_bound: bool = True) -> st
         owner: "packet 58"
         reopen_trigger: "the packet-58 build"
         ruling: "R12 F19"
-        rationale: "file-level owner of its pytest reds today"
+        rationale: "a symbols-only entry: it owns its mypy claim, and (#615) NO pytest red"
         files:
           - path: {_SYMBOL_FILE}
             missing_symbols:
@@ -238,17 +238,14 @@ def test_a_failing_node_outside_the_registry_is_RED_ORPHANED(tmp_path: Path) -> 
 
 
 def test_615_an_entry_with_no_red_nodeids_owns_NO_pytest_red(tmp_path: Path) -> None:
-    """Finding #615 (packet 58 amendment 15 §10.2; contract-58-r5, CONTRACT-AHEAD — RED until a builder
-    removes the file-level fallback in ``PendingContractGate.partition_pytest``): an entry that claims
-    only mypy symbols (no ``red_nodeids``) owns NO pytest red. A typing claim never becomes pytest
-    ownership — the mask that made packet 66's close-out ``RED_ORPHANED 0`` a false clear over
-    ``scripts/test_forgery_door_sweep.py`` (#614).
+    """Finding #615 (packet 58 amendment 15 §10.2; fixed by ``c7f8f1d``): an entry that claims only mypy
+    symbols (no ``red_nodeids``) owns NO pytest red. A typing claim never becomes pytest ownership — the
+    file-level fallback that made packet 66's close-out ``RED_ORPHANED 0`` a false clear over
+    ``scripts/test_forgery_door_sweep.py`` (#614) is gone, and this pin keeps it gone.
 
-    ⚠ DUAL (contract-58-r5, lead grant #20014 step 3(c)): REPLACES
-    ``test_CONTROL_a_symbols_only_file_keeps_file_level_pytest_adjudication``, which pinned the
-    fallback (its premise — "a universal per-node rule would orphan packet 58's reds overnight" —
-    retired when every registry entry gained its ``red_nodeids``, r5.1 steps 1 and 3(a); #615's trigger
-    "the last file-level entry converts" is met)."""
+    ⚠ DUAL (contract-58-r5, lead grant #20014 step 3(c)): REPLACED
+    ``test_CONTROL_a_symbols_only_file_keeps_file_level_pytest_adjudication``, which pinned that fallback
+    (its premise retired when every registry entry gained its ``red_nodeids``, r5.1 steps 1 and 3(a))."""
     gate = _gate(tmp_path, [_LISTED_CLASS_NODE, _LISTED_PARAM_NODE])
     symbol_red = f"{_SYMBOL_FILE}::test_any_packet_58_red"
     currency = _pytest_currency(tmp_path, gate, [*_ALL_LISTED_RED, (symbol_red, True)])

@@ -1096,3 +1096,8 @@ Written BEFORE the adversary's enumeration; the adversary diffs its own list aga
 - **Added to the r5.1 commit-ready list:** `scripts/probe_hub_txn_58.py`.
 - **Gate after the probe edit** (`r51/gate-currency-final3.log`, HEAD `c7f8f1d`, TREE `8ef7da2b…`): `typecheck RED_ADJUDICATED — 84`, `ruff GREEN`, no RED_ORPHANED (EXIT=1 only for the leg-filtered pytest NOT_RUN).
 - **State at HEAD `c7f8f1d`:** r5.1 steps 1–4 + the trap edit are committed (`3371e3b`, `805a687`); `fix(615)` landed (`c7f8f1d`, pin GREEN, its entry deleted). **Remaining commit-ready:** `scripts/probe_hub_txn_58.py` (md5 `0ff0ca6f…`) and this report.
+
+### #20024 — the F6 module's prose, after `fix(615)` (2026-11-09)
+- `scripts/test_pending_contract_gate_f6.py`, prose only (the diff touches no `assert` line): the header bullet now states the per-node rule as fixed by `c7f8f1d`; the fixture's `packet-58-contract` rationale reads "a symbols-only entry: it owns its mypy claim, and (#615) NO pytest red" (was "file-level owner of its pytest reds today"); the #615 pin's docstring drops "CONTRACT-AHEAD — RED until a builder …" for "fixed by `c7f8f1d` … this pin keeps it gone" (its DUAL note kept). Left as-is, still accurate: L7 (F6's general contract-ahead rationale) and the MP-F6-3 comment (it names the `f6_mixed_file_level` wrong build).
+- **Receipt** (`r51/run_gate_tests.sh` → `r51/run_gate_tests.log`, HEAD `5ff9209`, TREE `d83c6fe1…`): `scripts/test_pending_contract_gate.py` + `…_f6.py` **109 passed**, EXIT=0.
+- **Commit-ready:** `scripts/test_pending_contract_gate_f6.py` (+ `scripts/probe_hub_txn_58.py` from #20022 if not yet committed, + this report).
