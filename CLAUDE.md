@@ -155,8 +155,9 @@ than read and the store reference is cited rather than re-transcribed.
     adversary (wrong builds, SAT), the implementer, the refactorer, audits between checkpoints,
     and the lead. It is **the changed/new test files + the COVERING TESTS of every production
     symbol the change touches** (`lore_impact` — its covering-tests view is built for exactly
-    this; reconcile first per the dogfood protocol) **+ the structural/AST pin files that scan
-    the tree**.
+    this; reconcile first per the dogfood protocol) **+ the #131 image binary check when the
+    change adds or moves a shell-out** (the one approved source scanner; § Rename/reshape sweeps,
+    "Approved checks").
     - The receipt NAMES the derivation (which symbols, which tool) and the passed-COUNT.
     - A satisfiability receipt is "0 attributable reds over THAT set". A full suite is not a
       satisfiability receipt requirement.
@@ -318,9 +319,17 @@ rendered free text). Therefore:
   Its tests MUST include a hostile fixture (newlines + a row-shaped forgery line +
   backtick runs). Single-line-only fixtures are the documented way these defects
   stayed green.
-- Structural pins guard the served surface: the exact-set registration pin, the
-  dead-name hygiene scan, the instructions-names-every-tool pin (all in
-  test_mcp_server.py). An audit-caught defect CLASS is closed where production enforces
+- **Approved checks (operator, 2026-11-09, decision 6): only these survive of the tests that
+  read code or test infrastructure instead of running behaviour.**
+  1. the image binary check: every binary the shipped code execs is in the image (#131);
+  2. the in-image provenance run: the conformance suite imports the installed artifact, not the
+     mount (#139, packet 01a);
+  3. migration tests on a store that already has a schema (#107; behaviour tests);
+  4. the served-surface pins in `test_mcp_server.py`: the exact-set tool registration and the
+     instructions-name-every-tool check (they read served output, so they are behaviour tests).
+  Every other source scanner — the dead-name hygiene scan included — is cut (Phase 4). Adding a
+  MEMBER to an approved check (a new tool in the registration set, a new binary in #131's list)
+  needs no approval; a new KIND of scan does. An audit-caught defect CLASS is closed where production enforces
   it: one chokepoint, plus a behaviour test that goes red when that enforcement is removed
   (global `~/.claude/CLAUDE.md` §Tests). A new source scanner, run-wide recorder or meta-suite
   needs operator approval; an existing scanner that fires on your code is answered by fixing the
