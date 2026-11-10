@@ -341,8 +341,9 @@ _BLOCKER_REMEDY = (
 
 #: The two CYCLE vocabularies operator ruling **R6** permits to differ — batch-local temp
 #: KEYS and PERSISTED task ids name different things — over the ONE shared sentence shape
-#: (:func:`format_cycle_refusal`) and the ONE shared detector
-#: (:func:`find_blocked_by_cycle`).
+#: (:func:`format_cycle_refusal`) and ONE detector per QUESTION (amendment 17 §13.3): *"is there a cycle among
+#: these batch keys"* is :func:`find_blocked_by_cycle`; *"does this row's write close a cycle through
+#: persisted rows"* is :func:`find_row_blocked_by_cycles`, and nothing else answers it.
 CYCLE_NOUN_PERSISTED_IDS = "task ids"
 CYCLE_NOUN_BATCH_KEYS = "batch keys"
 
@@ -357,10 +358,22 @@ _TRAVERSAL_TIMEOUT = "5s"
 # The bound-parameter names of the new statements (the house idiom: named once each, never
 # a hand-copied literal drifting between the statement and its params).
 _TRAVERSAL_START_PARAM = "tb_start"
-#: The seed list of :meth:`TaskLedger._bounded_dependency_graph`'s closure read (ESC-1 /
-#: FORK A). A LIST of ``RecordID`` starts, distinct from ``_TRAVERSAL_START_PARAM``'s single
-#: start, so the two statements never share a name that means two different shapes.
-_CLOSURE_START_PARAM = "closure_starts"
+#: The ONE statement that reads every dependency-bearing row's ``blocked_by`` column — the guard's input
+#: (:meth:`TaskLedger._read_dependency_graph`) and the first statement of the boot mirror read.
+_DEPENDENCY_COLUMNS_STATEMENT = (
+    f"SELECT record::id({_ID_KEY}) AS {_ID_KEY}, {_COL_BLOCKED_BY} FROM {TASK_TABLE} "
+    f"WHERE array::len({_COL_BLOCKED_BY}) > 0"
+)
+#: ``task.guard.graph_large`` fires when the dependency-bearing row count exceeds this — the largest size the
+#: guard's input was measured at (amendment 17 §14.1: full read + predicate about 0.18 s at 19 200 rows; the
+#: measurement ran at 300 / 2 400 / 19 200). A boot that emits it must re-run
+#: ``scripts/probe_guard_input_58.py`` at that size before the guard's cost is trusted again.
+TASK_GUARD_GRAPH_LARGE_ROWS = 20_000
+_GUARD_GRAPH_LARGE_EVENT = "task.guard.graph_large"
+#: The ``source`` extra the task ledger stamps on ``store.apply.large_transaction`` (am-17 §14.7 item 4):
+#: the record is emitted by the one house size function for EVERY composer, so #628's trigger ("a supersede
+#: crossed the WARN line") is attributable only if the composer names itself.
+_TASK_LEDGER_SOURCE = "task_ledger"
 _TRAVERSAL_WITHIN_KEY = "within"
 _TRAVERSAL_PROBE_KEY = "probe"
 _QUERY_ROWS_VAR = "qt_rows"
@@ -720,13 +733,14 @@ def validated_task_limit(limit: int | None) -> int | None:
 
 
 def find_blocked_by_cycle(edges: Mapping[str, Iterable[str]]) -> list[str] | None:
-    """The ONE ``blocked_by`` cycle detector (operator ruling **R6**).
+    """The ONE detector for *"is there a ``blocked_by`` cycle among THESE keys?"* (**R6**, amended §13.3).
 
-    Ledger-owned and shared: BOTH the write-time guard over PERSISTED ids and
-    ``server.py``'s batch-local temp-KEY check route through it, so a cyclic batch cannot
-    be refused by two detectors with two sentences and two error classes. Sharing is
-    proved by MUTATION, never by inspection — neutralise this and BOTH shapes must stop
-    being refused (``test_blocks_edge.py::TestTheCyclePolicyHasONEImplementation``).
+    Ledger-owned: ``server.py``'s batch-local temp-KEY check routes through it, so a cyclic batch
+    is refused in the ledger's one sentence and one error class (:func:`raise_cycle_refusal`).
+    The OTHER question — does a row's write close a cycle through PERSISTED rows — is
+    :func:`find_row_blocked_by_cycles`'s alone (create, create_many, supersede and the boot heal);
+    the two share the refusal SENTENCE and CLASS, not a detector. Sharing is proved by MUTATION,
+    never by inspection (``test_blocks_edge.py::TestTheCyclePolicyHasONEImplementation``).
 
     **Packages considered — ``replace``, and the library is STDLIB.**
     :class:`graphlib.TopologicalSorter` ships with Python and its
@@ -741,7 +755,8 @@ def find_blocked_by_cycle(edges: Mapping[str, Iterable[str]]) -> list[str] | Non
             itself a key is tolerated (it has no dependencies of its own).
 
     Returns:
-        The first cycle found, as an ordered path ending back at its own start, or
+        The first cycle found, as an ordered path ending back at its own start, in the PERSISTED direction
+        (each node followed by one of its blockers — the direction of every other cycle record), or
         ``None`` when the graph is acyclic. Nodes and their dependencies are SORTED
         before the walk so a graph with several cycles reports the same one every run —
         a refusal that names a different loop each attempt is not actionable.
@@ -750,7 +765,10 @@ def find_blocked_by_cycle(edges: Mapping[str, Iterable[str]]) -> list[str] | Non
     try:
         graphlib.TopologicalSorter(graph).prepare()
     except graphlib.CycleError as cycle:
-        return [str(member) for member in cycle.args[1]]
+        # graphlib lists each node as an immediate PREDECESSOR of the next (blocker -> dependent); every other
+        # cycle record in the ledger runs in the persisted direction (a row -> its blocker), so the ONE return
+        # reverses it (amendment 17 §14.7 item 3).
+        return [str(member) for member in reversed(cycle.args[1])]
     return None
 
 
@@ -928,6 +946,9 @@ class TaskLedger:
         # never each open their own underlying SDK connection (mirrors
         # ``SurrealStore`` / ``LocalMemoryBackend``'s double-checked lock).
         self._connect_lock = asyncio.Lock()
+        # Serialises :meth:`supersede_task`'s guard-then-write IN THIS PROCESS (finding #634: two processes on
+        # one database remain a named bound — see that method's docstring and its re-open trigger).
+        self._supersede_lock = asyncio.Lock()
 
     # -- connection lifecycle ----------------------------------------------
 
@@ -1076,6 +1097,15 @@ class TaskLedger:
         # Recorded at EVERY boot, before the nothing-missing early return (amendment 17 §12.8 item 1): a
         # legacy loop is a standing DATA defect; its mirror edges need not be missing for it to exist.
         self._record_legacy_cycles(columns)
+        if len(columns) > TASK_GUARD_GRAPH_LARGE_ROWS:
+            logger.warning(
+                _GUARD_GRAPH_LARGE_EVENT,
+                extra={
+                    "database": self._database,
+                    "rows": len(columns),
+                    "threshold": TASK_GUARD_GRAPH_LARGE_ROWS,
+                },
+            )
         wanted = {
             (blocker, task_id)
             for task_id, blockers in columns.items()
@@ -1121,8 +1151,7 @@ class TaskLedger:
         """
         results = await execute_read_transaction(
             "BEGIN;\n"
-            f"SELECT record::id({_ID_KEY}) AS {_ID_KEY}, {_COL_BLOCKED_BY} FROM {TASK_TABLE} "
-            f"WHERE array::len({_COL_BLOCKED_BY}) > 0;\n"
+            f"{_DEPENDENCY_COLUMNS_STATEMENT};\n"
             f"SELECT record::id(in) AS {_BACKFILL_IN_KEY}, record::id(out) AS "
             f"{_BACKFILL_OUT_KEY} FROM {BLOCKS_RELATION};\n"
             "COMMIT;\n",
@@ -1165,8 +1194,8 @@ class TaskLedger:
         choice.** It is what lets ``TestTheEnumerationEQUALSNetworkxAfterTheSwap``'s MP-4
         mutation prove the LIBRARY is called rather than merely imported beside a retained
         hand-roll (routing-is-not-sharing, #102) — a ``from networkx import simple_cycles``
-        binding would escape that patch. DETECTION stays the shared ``find_blocked_by_cycle``
-        (R6, one ledger-owned detector); this swaps ENUMERATION only.
+        binding would escape that patch. DETECTION of a row's write closing a cycle is
+        :func:`find_row_blocked_by_cycles`; this swaps ENUMERATION only.
         """
         graph = networkx.DiGraph()
         for node, blockers in columns.items():
@@ -1248,6 +1277,7 @@ class TaskLedger:
             sum(len(fragment.statements) for fragment in fragments),
             len(merged_params),
             _txn_module.fragment_rows(fragments),
+            source=_TASK_LEDGER_SOURCE,
         )
         await execute_transaction(
             statement_text,
@@ -1364,6 +1394,10 @@ class TaskLedger:
         the two disagree, in a direction that hides claimable work from the fleet
         forever. (The TRANSITIVE view is :meth:`transitive_blockers`, and it is a
         different question.)
+
+        **SUPERSEDED rows are EXCLUDED** whenever a ``status`` or a ``blocked`` filter is
+        supplied (a superseded task is retired work, not a task to pick up; amendment 17
+        §12.7, #130(a)). With no ``status`` and no ``blocked`` filter every row is served.
 
         **#253 — the read is BOUNDED by the caller's filter.** ``status``/``owner`` push
         into the STATEMENT, so the work scales with the ANSWER rather than with the
@@ -2072,118 +2106,128 @@ class TaskLedger:
             TaskCycleError: The resolved ``blocked_by`` would put the successor on a
                 ``blocked_by`` cycle, OR names the very task being superseded (a successor
                 blocked by its predecessor is unclaimable forever).
+
+        ⚠ **KNOWN BOUND (finding #634): two PROCESSES writing one database can still write a joint
+        cycle.** Supersedes on ONE ledger run one at a time (``self._supersede_lock``, held from before
+        the guard read until the transaction returns), so the second supersede reads the first one's
+        writes and is refused. The lock is in-process: two lore servers writing the same database can
+        each pass the guard before either commits. The served shape is one lore server per project.
+        Re-open trigger: any deployment with two task-writing processes on one database — packet 39
+        consults it. The held lock makes other supersedes on this ledger wait (a 3 332-dependent hub
+        holds it about 10 s); claims, transitions, creates and reads are not held.
         """
-        row = await self._select_row(task_id)
-        if row is None:
-            raise TaskNotFoundError(f"no task with id {render_attributed(task_id)}")
-        # Sequential guard: a superseded task is terminal-like (exactly as it
-        # refuses transitions), so a second supersede is refused up front. The
-        # RACING double-supersede is caught transactionally below (the guarded
-        # stamp + IF/THROW), not here — this pre-read only fast-fails the already
-        # -settled sequential case.
-        if row.get(_COL_SUPERSEDED_BY) is not None:
-            raise IllegalTransitionError(
-                f"task {render_attributed(task_id)} is already superseded by "
-                f"{row.get(_COL_SUPERSEDED_BY)!r} and cannot be superseded again"
-            )
-
-        # #174: resolve the successor's dependency SENTINEL (INHERIT / CLEAR / REPLACE),
-        # deduped order-preserving, exactly as create_task normalises its own blocked_by.
-        if blocked_by is None:
-            dependencies = [str(blocker) for blocker in (row.get(_COL_BLOCKED_BY) or ())]
-        else:
-            dependencies = [str(blocker) for blocker in blocked_by]
-        dependencies = list(dict.fromkeys(dependencies))
-        new_id = uuid4().hex
-        # A successor blocked_by the task it supersedes is UNCLAIMABLE FOREVER: the
-        # predecessor is stamped ``superseded`` (a NON-terminal status) in this very
-        # transaction, so the successor's claim CAS can never resolve it. Neither shared
-        # pre-check below can see it — ``_reject_unusable_blockers`` finds the predecessor
-        # present and not-yet-superseded at check time, and ``_refuse_a_cycle`` finds a
-        # fresh successor id on no COLUMN cycle — so this dedicated guard covers BOTH the
-        # explicit-override and the inherited (legacy self-loop) paths.
-        if task_id in dependencies:
-            raise TaskCycleError(
-                f"a successor cannot be blocked by the task it supersedes: "
-                f"{render_attributed(task_id)} — supersede reframes the same work item, so "
-                f"re-point the dependency at the successor (or drop it) rather than at the "
-                f"task being superseded"
-            )
-        # The SAME shared pre-checks create_task runs, over the RESOLVED deps (L3 / R6 —
-        # ONE implementation): a phantom/superseded blocker or a column cycle is refused
-        # atomically before any write. Both short-circuit on empty deps (no wire cost).
-        await self._reject_unusable_blockers([(entry, entry) for entry in dependencies])
-        dependent_rows = await self._dependent_rows(task_id)
-        dependent_ids = sorted(dependent_rows)
-        cap = self.max_reanchor_dependents(len(dependencies))
-        if len(dependent_ids) > cap:
-            raise HubSupersedeRefusedError(
-                task_id=task_id,
-                dependents=len(dependent_ids),
-                rows=self._supersede_rows(len(dependencies), len(dependent_ids)),
-                row_cap=_txn_module.TXN_ROW_HARD_CAP,
-                cap_dependents=cap,
-            )
-        rewired = {
-            dependent: list(
-                dict.fromkeys(new_id if entry == task_id else entry for entry in columns)
-            )
-            for dependent, (columns, _row) in dependent_rows.items()
-        }
-        await self._refuse_a_cycle({new_id: dependencies, **rewired}, minted={new_id})
-        reblocked = await self._reblocked(row, dependent_rows, task_id)
-
-        now = datetime.now(UTC)
-        content = self._new_task_content(subject, description, dependencies, created_by, now)
-        event = {
-            _PROV_ACTOR: created_by,
-            _PROV_ACTION: _ACTION_SUPERSEDE,
-            _PROV_SUCCESSOR: new_id,
-            _PROV_AT: now.isoformat(),
-        }
-        try:
-            # The successor CREATE (in the supersede fragment) and its blocks-edge mirror
-            # ride ONE transaction: RELATE comes AFTER the CREATE so the ENFORCED ``out``
-            # endpoint (the fresh successor) exists, and the loser of a raced supersede
-            # rolls back the WHOLE txn (stamp + CREATE + RELATEs) — ZERO orphan edges.
-            await self._apply(
-                self._supersede_transaction(
-                    task_id, new_id, content, event, dependencies, dependent_ids,
-                    actor=created_by, at=now.isoformat(),
-                )
-            )
-        except SurrealConnectionError:
-            # A genuine transport fault — never a lost race; propagate untouched
-            # (must not be masked as an already-superseded rejection).
-            raise
-        except TxnContentionExhaustedError:
-            # A genuine conflict outlived the retry budget — this is NOT a lost
-            # race (finding #102): the old row may be un-stamped and this
-            # supersede perfectly legal, so it must never be reported as
-            # "already superseded by someone else". Propagate untouched.
-            raise
-        except SurrealStoreError as error:
-            # The transaction rolled back. The in-contract cause is the guarded
-            # stamp matching zero rows (a concurrent supersede won the race and
-            # stamped the old row first), whose IF/THROW aborts the WHOLE txn so
-            # NO orphan successor is left behind. Confirm the row is now
-            # superseded by someone else and surface the decided lost-race
-            # semantics; anything else is a genuine store fault, re-raised as-is.
-            settled = await self._select_row(task_id)
-            if settled is not None and settled.get(_COL_SUPERSEDED_BY) is not None:
+        async with self._supersede_lock:
+            row = await self._select_row(task_id)
+            if row is None:
+                raise TaskNotFoundError(f"no task with id {render_attributed(task_id)}")
+            # Sequential guard: a superseded task is terminal-like (exactly as it
+            # refuses transitions), so a second supersede is refused up front. The
+            # RACING double-supersede is caught transactionally below (the guarded
+            # stamp + IF/THROW), not here — this pre-read only fast-fails the already
+            # -settled sequential case.
+            if row.get(_COL_SUPERSEDED_BY) is not None:
                 raise IllegalTransitionError(
                     f"task {render_attributed(task_id)} is already superseded by "
-                    f"{settled.get(_COL_SUPERSEDED_BY)!r} and cannot be superseded again"
-                ) from error
-            if sorted(await self.direct_dependents(task_id)) != dependent_ids:
-                raise SupersedeStragglerError(
-                    f"a task blocked on {render_attributed(task_id)} was created while this "
-                    f"supersede was being prepared — nothing changed; retry the supersede"
-                ) from error
-            raise
-        return SupersedeResult(
-            successor_id=new_id, reanchored=dependent_ids, reblocked=sorted(reblocked)
-        )
+                    f"{row.get(_COL_SUPERSEDED_BY)!r} and cannot be superseded again"
+                )
+
+            # #174: resolve the successor's dependency SENTINEL (INHERIT / CLEAR / REPLACE),
+            # deduped order-preserving, exactly as create_task normalises its own blocked_by.
+            if blocked_by is None:
+                dependencies = [str(blocker) for blocker in (row.get(_COL_BLOCKED_BY) or ())]
+            else:
+                dependencies = [str(blocker) for blocker in blocked_by]
+            dependencies = list(dict.fromkeys(dependencies))
+            new_id = uuid4().hex
+            # A successor blocked_by the task it supersedes is UNCLAIMABLE FOREVER: the
+            # predecessor is stamped ``superseded`` (a NON-terminal status) in this very
+            # transaction, so the successor's claim CAS can never resolve it. Neither shared
+            # pre-check below can see it — ``_reject_unusable_blockers`` finds the predecessor
+            # present and not-yet-superseded at check time, and ``_refuse_a_cycle`` finds a
+            # fresh successor id on no COLUMN cycle — so this dedicated guard covers BOTH the
+            # explicit-override and the inherited (legacy self-loop) paths.
+            if task_id in dependencies:
+                raise TaskCycleError(
+                    f"a successor cannot be blocked by the task it supersedes: "
+                    f"{render_attributed(task_id)} — supersede reframes the same work item, so "
+                    f"re-point the dependency at the successor (or drop it) rather than at the "
+                    f"task being superseded"
+                )
+            # The SAME shared pre-checks create_task runs, over the RESOLVED deps (L3 / R6 —
+            # ONE implementation): a phantom/superseded blocker or a column cycle is refused
+            # atomically before any write. Both short-circuit on empty deps (no wire cost).
+            await self._reject_unusable_blockers([(entry, entry) for entry in dependencies])
+            dependent_rows = await self._dependent_rows(task_id)
+            dependent_ids = sorted(dependent_rows)
+            cap = self.max_reanchor_dependents(len(dependencies))
+            if len(dependent_ids) > cap:
+                raise HubSupersedeRefusedError(
+                    task_id=task_id,
+                    dependents=len(dependent_ids),
+                    rows=self._supersede_rows(len(dependencies), len(dependent_ids)),
+                    row_cap=_txn_module.TXN_ROW_HARD_CAP,
+                    cap_dependents=cap,
+                )
+            rewired = {
+                dependent: list(
+                    dict.fromkeys(new_id if entry == task_id else entry for entry in columns)
+                )
+                for dependent, (columns, _row) in dependent_rows.items()
+            }
+            await self._refuse_a_cycle({new_id: dependencies, **rewired}, minted={new_id})
+            reblocked = await self._reblocked(row, dependent_rows, task_id)
+
+            now = datetime.now(UTC)
+            content = self._new_task_content(subject, description, dependencies, created_by, now)
+            event = {
+                _PROV_ACTOR: created_by,
+                _PROV_ACTION: _ACTION_SUPERSEDE,
+                _PROV_SUCCESSOR: new_id,
+                _PROV_AT: now.isoformat(),
+            }
+            try:
+                # The successor CREATE (in the supersede fragment) and its blocks-edge mirror
+                # ride ONE transaction: RELATE comes AFTER the CREATE so the ENFORCED ``out``
+                # endpoint (the fresh successor) exists, and the loser of a raced supersede
+                # rolls back the WHOLE txn (stamp + CREATE + RELATEs) — ZERO orphan edges.
+                await self._apply(
+                    self._supersede_transaction(
+                        task_id, new_id, content, event, dependencies, dependent_ids,
+                        actor=created_by, at=now.isoformat(),
+                    )
+                )
+            except SurrealConnectionError:
+                # A genuine transport fault — never a lost race; propagate untouched
+                # (must not be masked as an already-superseded rejection).
+                raise
+            except TxnContentionExhaustedError:
+                # A genuine conflict outlived the retry budget — this is NOT a lost
+                # race (finding #102): the old row may be un-stamped and this
+                # supersede perfectly legal, so it must never be reported as
+                # "already superseded by someone else". Propagate untouched.
+                raise
+            except SurrealStoreError as error:
+                # The transaction rolled back. The in-contract cause is the guarded
+                # stamp matching zero rows (a concurrent supersede won the race and
+                # stamped the old row first), whose IF/THROW aborts the WHOLE txn so
+                # NO orphan successor is left behind. Confirm the row is now
+                # superseded by someone else and surface the decided lost-race
+                # semantics; anything else is a genuine store fault, re-raised as-is.
+                settled = await self._select_row(task_id)
+                if settled is not None and settled.get(_COL_SUPERSEDED_BY) is not None:
+                    raise IllegalTransitionError(
+                        f"task {render_attributed(task_id)} is already superseded by "
+                        f"{settled.get(_COL_SUPERSEDED_BY)!r} and cannot be superseded again"
+                    ) from error
+                if sorted(await self.direct_dependents(task_id)) != dependent_ids:
+                    raise SupersedeStragglerError(
+                        f"a task blocked on {render_attributed(task_id)} was created while this "
+                        f"supersede was being prepared — nothing changed; retry the supersede"
+                    ) from error
+                raise
+            return SupersedeResult(
+                successor_id=new_id, reanchored=dependent_ids, reblocked=sorted(reblocked)
+            )
 
     async def _dependent_rows(
         self, task_id: str
@@ -2554,8 +2598,7 @@ class TaskLedger:
         """
         if not built:
             return built
-        seeds = {blocker for column in proposed.values() for blocker in column}
-        stored = await self._bounded_dependency_graph(seeds)
+        stored = await self._read_dependency_graph()
         cycles = find_row_blocked_by_cycles(stored, proposed, proposed, all_or_nothing=False)
         for dependent, cycle in sorted(cycles.items()):
             logger.warning(
@@ -2912,13 +2955,9 @@ class TaskLedger:
         ``blocked_by``, so a COLUMN cycle is what makes a task unclaimable forever, which
         is the harm this guard exists to prevent.
 
-        ⚠ **AND IT COMPOSES WITH RULING R7:** a client-side walk over a chain of depth N
-        is N reads, and R7 puts exactly that shape inside ONE snapshot — so the graph
-        arrives in ONE round trip, bounded by the pending dependency's ANCESTOR CLOSURE
-        (ESC-1 / FORK A, :meth:`_bounded_dependency_graph`) rather than seeded with the
-        whole task table OR even the whole dependency-bearing backlog — either of which
-        reintroduces #253 on the write path, invisibly: one round trip says nothing about
-        how many rows it reads.
+        ⚠ **AND IT COMPOSES WITH RULING R7:** the graph arrives in ONE round trip whatever the chain's depth —
+        :meth:`_read_dependency_graph`, every dependency-bearing row's column in one statement (amendment 17
+        §14.2; the ancestor-closure read it replaces measured slower than reading everything, #636).
 
         A loop among rows this call did NOT write is a pre-existing DATA defect: ``ensure_ready`` records
         every such loop at EVERY boot (``task.backfill.legacy_cycle_minted``, :meth:`_record_legacy_cycles`),
@@ -2936,67 +2975,37 @@ class TaskLedger:
         """
         if not any(pending.values()):
             return
-        seeds = {blocker for blockers in pending.values() for blocker in blockers}
-        stored = await self._bounded_dependency_graph(seeds)
+        stored = await self._read_dependency_graph()
         cycles = find_row_blocked_by_cycles(
             stored, pending, set(pending) if minted is None else minted, all_or_nothing=True
         )
         if cycles:
             raise_cycle_refusal(noun=CYCLE_NOUN_PERSISTED_IDS, cycle=cycles[min(cycles)])
 
-    async def _bounded_dependency_graph(
-        self, seeds: Iterable[str]
-    ) -> dict[str, list[str]]:
-        """The ``blocked_by`` graph BOUNDED to the ancestor CLOSURE of ``seeds``.
+    async def _read_dependency_graph(self) -> dict[str, list[str]]:
+        """``{task id: its blocked_by}`` for EVERY row with a non-empty column — the guard's ONE input.
 
-        ESC-1 / FORK A (packet 04b-3). ``seeds`` are the pending task's persisted blockers.
-        The write guard must not scale with the whole dependency-bearing backlog (#253 on
-        the write path), and it does not need to: every row that could close a cycle THROUGH
-        a pending task ``N`` is an ANCESTOR of one of ``N``'s blockers — a cycle
-        ``N -> a1 -> … -> ak -> N`` has ``ak.blocked_by ∋ N``, so ``ak`` is an ancestor of
-        ``N`` — hence reachable upstream over the persisted ``blocks`` EDGE. That is FORK A's
-        soundness proof, resting on ESC-1's measured YES that every persisted ancestor is
-        edge-reachable after ``ensure_ready``. Bounding to the closure therefore loses no
-        cycle; it is sound, not a heuristic.
+        Packet 58 amendment 17 §14.2 (#636, #635): the four writers of ``blocked_by`` (create, create_many,
+        supersede and the boot heal) all decide through :func:`find_row_blocked_by_cycles` over THIS graph,
+        read in ONE statement through the ordinary read seam, with no seeds, no closure walk, no depth bound
+        and no ``TIMEOUT``. A row with an empty column has no out-edge, so it can only be a leaf; a blocker
+        naming no row is a leaf too (a phantom adds no row and no error).
 
-        ⚠ **The COLUMN is KEPT, never abandoned for the edge.** The edge walk only BOUNDS
-        which rows to read; the cycle is read from the ``blocked_by`` COLUMN, because the
-        closing link of a would-be cycle names a task that does not exist yet, ``ENFORCED``
-        forbids that ``RELATE`` (store reference §4), so it can only ever be a COLUMN and an
-        edge-only read returns *"acyclic"* — the reason
-        ``test_a_create_that_would_close_a_cycle_through_PERSISTED_tasks_is_REFUSED`` fails
-        an edge-only guard.
+        Replaces the ancestor-closure read of ESC-1 / FORK A (packet 04b-3), whose premise — that a closure
+        read keeps the write guard from scaling with the backlog — measured FALSE on engine 3.3.5: it scaled
+        with the backlog AND the seed count (19 200 dependency-bearing rows: 0.706 s with one seed, 4.59 s
+        with ten, refused by its own 5 s ``TIMEOUT`` with fifty, against 0.072 s for this read) and silently
+        truncated a chain at 32 hops (#635). The statement text is the SAME one the boot mirror read uses
+        (:data:`_DEPENDENCY_COLUMNS_STATEMENT`).
 
-        It is ONE round trip whatever the chain's depth (R7): the seeds, their bounded
-        ancestor closure walked over ``blocks`` (a ``GraphEdgeScan`` per seed, cost bounded
-        by the closure — store reference §4, and ``+collect`` with an explicit depth bound +
-        ``TIMEOUT`` per §4's recursive-path rule), and every closure member's column all
-        arrive together. A phantom seed (a ``create_many`` sibling ref with no row yet)
-        contributes no row and no error — the ESC-1 residue, overlaid by the caller instead.
-
-        ``record::id(id)`` decodes the id, never a hand-rolled ``str(row["id"]).split(":")``
-        — right for ``task:abc`` and WRONG for a uuid-shaped id, which the SDK renders
-        ``task:⟨0199c4f1-…⟩`` (store reference §7, finding #248).
-
-        Args:
-            seeds: The pending task's blocker ids to seed the ancestor-closure walk from.
+        ⚠ BOUND (amendment 17 §14.2): the cost is now linear in the dependency-bearing rows (about 0.18 s with
+        the predicate at 19 200 rows). :meth:`_backfill_blocks_edges` logs WARNING ``task.guard.graph_large``
+        when that count exceeds :data:`TASK_GUARD_GRAPH_LARGE_ROWS`; a boot that emits it re-runs
+        ``scripts/probe_guard_input_58.py`` at that size.
         """
-        starts = [RecordID(TASK_TABLE, seed) for seed in sorted(seeds)]
-        rows = self._as_rows(
-            await self._query(
-                f"SELECT record::id({_ID_KEY}) AS {_ID_KEY}, {_COL_BLOCKED_BY} "
-                f"FROM {TASK_TABLE} WHERE {_ID_KEY} IN array::distinct(array::flatten("
-                f"array::concat([${_CLOSURE_START_PARAM}], (SELECT VALUE "
-                f"@.{{1..{TASK_BLOCKER_MAX_DEPTH}+collect}}"
-                f"(<-{BLOCKS_RELATION}<-{TASK_TABLE}) "
-                f"FROM ${_CLOSURE_START_PARAM})))) TIMEOUT {_TRAVERSAL_TIMEOUT}",
-                {_CLOSURE_START_PARAM: starts},
-            )
-        )
+        rows = self._as_rows(await self._query(_DEPENDENCY_COLUMNS_STATEMENT))
         return {
-            str(row.get(_ID_KEY)): [
-                str(blocker) for blocker in (row.get(_COL_BLOCKED_BY) or ())
-            ]
+            str(row.get(_ID_KEY)): [str(blocker) for blocker in (row.get(_COL_BLOCKED_BY) or ())]
             for row in rows
         }
 

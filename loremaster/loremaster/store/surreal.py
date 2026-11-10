@@ -156,6 +156,10 @@ from loremaster.store.surreal_schema import (
 
 logger = logging.getLogger(__name__)
 
+#: The ``source`` extra of ``store.apply.transaction`` / ``store.apply.large_transaction`` for a
+#: transaction the index writer composed (:meth:`SurrealStore.apply`); another composer passes its own.
+_APPLY_SOURCE = "index_writer"
+
 # The public surface. The connection/error vocabulary below is imported from
 # :mod:`loremaster.store._txn` (see the note under the imports); naming it in
 # ``__all__`` marks it as an EXPLICIT re-export so mypy-strict
@@ -1181,16 +1185,25 @@ class SurrealStore:
         )
 
     @staticmethod
-    def _log_transaction_size(statement_count: int, param_count: int, row_count: int) -> None:
+    def _log_transaction_size(
+        statement_count: int, param_count: int, row_count: int, *, source: str = _APPLY_SOURCE
+    ) -> None:
         """Emit the transaction-size telemetry, WARNing above the ceiling.
 
         A DEBUG record for a normal-sized transaction; a WARNING once the ROW count
         crosses :data:`~loremaster.store._txn.TXN_ROW_WARN_THRESHOLD` (R9 D2: rows are the one strain
         measure; read live from ``_txn`` so one value governs), so a runaway batch is visible before it
         strains the engine. Both records carry ``statement_count`` / ``param_count`` / ``row_count`` as
-        structured fields.
+        structured fields, and ``source`` — WHICH composer built the transaction (the index writer's
+        :data:`_APPLY_SOURCE` by default; the task ledger names itself), so a record is attributable
+        to its caller (packet 58 amendment 17 §14.7 item 4, #628's trigger).
         """
-        extra = {"statement_count": statement_count, "param_count": param_count, "row_count": row_count}
+        extra = {
+            "statement_count": statement_count,
+            "param_count": param_count,
+            "row_count": row_count,
+            "source": source,
+        }
         if row_count > _txn.TXN_ROW_WARN_THRESHOLD:
             logger.warning("store.apply.large_transaction", extra=extra)
         else:
