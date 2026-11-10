@@ -31,6 +31,8 @@ Spec and every ruling: `docs/design/2026-11-09-parked-contracts-rulings.md`.
 - F1 fix was not re-audited; the lead verified it in full: diff read, 209 passed (contract 36 + gate suites 173), verify-registry EXIT=0, ruff clean.
 
 ## Open, each with an owner
+**Update 2026-11-10 (operator):** the `lorerunes` row and R3 are closed. `worker_output.py` was deleted and both plugins call pytest-xdist's own `is_xdist_worker()`, so no charter amendment and no image rebuild for it are needed (commit after `d27e8ab`; lead run 132 passed). The contract author's package survey had missed that API.
+
 | item | owner / next step |
 |---|---|
 | `lorerunes` now holds `worker_output.py`, a stdlib-only pytest/xdist channel helper used only by test tooling; the audit recommends keeping it there with a charter amendment ("may hold stdlib-only protocol helpers for repo tooling; never imported by production code") | operator ruling (the charter is a 2026-07-27 operator ruling) |
