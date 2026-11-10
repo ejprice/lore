@@ -491,7 +491,7 @@ partition that still adjudicates an unlisted red in a 58 file (§10.2).
 
 Sources: finding #616 (site list as filed); `git log` and a literal sweep for each probe's name over
 `docs/reference/`, `CLAUDE.md`, `scripts/gates.yaml` and every `.py` under `scripts/` and `loremaster/` (non-symbol
-textual seam — grep is right; 7 names swept, 7 reported). `REPORT-builder-614-1.md` §CLASS-HITS was NOT read; I
+textual seam — grep is right; 7 names swept, 7 reported). `receipts/2026-11-09-packet58/REPORT-builder-614-1.md` §CLASS-HITS was NOT read; I
 rule from the finding's list.
 
 ### 11.0 What the sweep says about "probes nobody runs"
