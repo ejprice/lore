@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -608,6 +609,19 @@ class TestARowOverTheCapFailsTheBootLOUD:
                 f"boot {boot_number}: the packer error's typed facts must EQUAL their derivations "
                 f"(am-16 §2.1): served {facts}, derived {derived}"
             )
+            # #625 a (packet 58 fix wave): the served text calls the bound the heal CHUNK bound and serves its
+            # LIVE value — 800 here, under the 5 000 / 800 shrink — never "the transaction cap" (50 000) nor a
+            # hardcoded 10 000.
+            assert "transaction cap" not in message, (
+                f"boot {boot_number}: {message!r} still says transaction cap"
+            )
+            assert "chunk" in message.lower(), (
+                f"boot {boot_number}: {message!r} does not name the chunk bound"
+            )
+            assert re.search(rf"(?<![0-9,]){_cap()}(?![0-9])", message), (
+                f"boot {boot_number}: {message!r} does not serve the live chunk bound {_cap()}"
+            )
+            assert "10000" not in message and "10,000" not in message, f"boot {boot_number}: {message!r}"
             assert await snapshot(ledger) == before, (
                 f"boot {boot_number}: a boot that fails LOUD must change NOTHING — the companion rows "
                 f"{companion.rows} included (a packer that applies a batch before reaching the monster reds)"

@@ -58,6 +58,7 @@ from _reanchor_58_support import (
     ComposeSpy,
     all_columns,
     assert_edge_mirrors_column_for_every_row,
+    assert_hub_refusal_serves_its_facts,
     assert_unpatched_row_cap,
     bulk_seed_dependents,
     column,
@@ -66,7 +67,6 @@ from _reanchor_58_support import (
     drive_to,
     edge_pairs,
     events_of,
-    hub_refusal_sentence,
     ledger58,
     new_ledger,
     raw,
@@ -749,10 +749,9 @@ class TestTheHubBoundIsDERIVED:
             f"the refusal's typed facts must EQUAL their derivations (am-16 §2.1; fixed={fixed}, per={per}): "
             f"served {facts}, derived {derived}"
         )
-        assert str(served) == hub_refusal_sentence(old, **derived), (
-            f"the refusal must serve EXACTLY the ruled sentence rendered from its facts (am-16 §2.1):\n"
-            f"  served: {str(served)!r}\n  ruled:  {hub_refusal_sentence(old, **derived)!r}"
-        )
+        # ⚠ DUAL (packet 58 fix wave, #625 b): was an exact-sentence pin (am-16 §2.1); the sentence changes
+        # (no retired KNOWN BOUND / lore_findings wording; it names #628), so the pin re-keys to its facts.
+        assert_hub_refusal_serves_its_facts(str(served), old, **derived)
         assert spy.over_cap() == [], (
             f"a transaction over the {_txn.TXN_ROW_HARD_CAP}-row cap reached compose "
             f"({spy.over_cap()} rows): "

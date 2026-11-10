@@ -12,6 +12,7 @@ ASSERTs and indexes), so these timings are a LOWER bound on the real cost.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import dataclasses
 import os
@@ -31,11 +32,13 @@ URL = "ws://127.0.0.1:18000/rpc"
 NAMESPACE = "lore_test"
 SEED_BATCH = 2000
 REQUEST_TIMEOUT_SECONDS = 900.0
-#: PROBE_TXN_TIMEOUT=<seconds> runs the timed transaction under that request timeout (streaming ON, as
-#: lore's shared factory sets it) and then re-reads the store after PROBE_SETTLE seconds on the same
-#: connection: did a timed-out supersede commit anything?
-TXN_TIMEOUT_SECONDS = float(os.environ.get("PROBE_TXN_TIMEOUT", "0")) or None
-SETTLE_SECONDS = float(os.environ.get("PROBE_SETTLE", "75"))
+#: ``--txn-timeout <seconds>`` runs the timed transaction under that request timeout (streaming ON, as
+#: lore's shared factory sets it) and then re-reads the store after ``--settle`` seconds on the same
+#: connection: did a timed-out supersede commit anything? (Packet 58 fix wave, cold audit decision 3
+#: option (ii): these were the ``PROBE_TXN_TIMEOUT`` / ``PROBE_SETTLE`` environment reads, same defaults;
+#: ``0`` means no timeout.)
+DEFAULT_TXN_TIMEOUT_SECONDS = 0.0
+DEFAULT_SETTLE_SECONDS = 75.0
 
 
 def _surreal_harness() -> Any:
@@ -61,7 +64,7 @@ def fresh_test_store_env() -> SurrealEnv:
     return env
 
 
-async def run_one(dependents: int) -> None:
+async def run_one(dependents: int, *, txn_timeout: float | None, settle: float) -> None:
     database = f"test_{os.getpid()}_{uuid.uuid4().hex}"
     connection = AsyncSurreal(URL, timeout=REQUEST_TIMEOUT_SECONDS, streaming=True)
     await connection.connect()
@@ -116,16 +119,16 @@ async def run_one(dependents: int) -> None:
         started = time.monotonic()
         outcome = "committed"
         try:
-            if TXN_TIMEOUT_SECONDS is None:
+            if txn_timeout is None:
                 await connection.query(text, params)
             else:
-                with connection.timeout(TXN_TIMEOUT_SECONDS):
+                with connection.timeout(txn_timeout):
                     await connection.query(text, params)
         except Exception as error:  # noqa: BLE001 - a probe reports whatever the engine says
             outcome = f"RAISED {type(error).__name__}: {str(error)[:200]}"
         elapsed = time.monotonic() - started
-        if TXN_TIMEOUT_SECONDS is not None:
-            await asyncio.sleep(SETTLE_SECONDS)
+        if txn_timeout is not None:
+            await asyncio.sleep(settle)
 
         rewired = await connection.query(
             "RETURN array::len((SELECT id FROM task WHERE blocked_by CONTAINS $new))", {"new": new}
@@ -138,7 +141,7 @@ async def run_one(dependents: int) -> None:
         )
         stamped = await connection.query("RETURN (SELECT VALUE superseded_by FROM ONLY $old)", {"old": old})
         print(
-            f"timeout={TXN_TIMEOUT_SECONDS} settle={SETTLE_SECONDS if TXN_TIMEOUT_SECONDS else 0} "
+            f"timeout={txn_timeout} settle={settle if txn_timeout else 0} "
             f"old.superseded_by={stamped} "
             f"N={dependents} statements={len(statements)} params={len(params)} text_bytes={len(text)} "
             f"elapsed_s={elapsed:.2f} outcome={outcome} rewired={rewired} new_edges={new_edges} "
@@ -150,9 +153,27 @@ async def run_one(dependents: int) -> None:
         await connection.close()
 
 
+def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
+    """The probe's command line: the hub sizes, plus the two operational knobs (formerly env reads)."""
+    parser = argparse.ArgumentParser(
+        description="Time ONE supersede-shaped transaction at hub scale (TEST store)."
+    )
+    parser.add_argument("dependents", nargs="+", type=int, help="hub sizes to probe, one run each")
+    parser.add_argument(
+        "--txn-timeout", type=float, default=DEFAULT_TXN_TIMEOUT_SECONDS,
+        help="request timeout (s) for the timed transaction; 0 (default) = none",
+    )
+    parser.add_argument(
+        "--settle", type=float, default=DEFAULT_SETTLE_SECONDS,
+        help="seconds to wait before re-reading the store after a timed-out transaction (default 75)",
+    )
+    return parser.parse_args(argv)
+
+
 async def main() -> None:
-    for dependents in [int(argument) for argument in sys.argv[1:]]:
-        await run_one(dependents)
+    arguments = parse_arguments()
+    for dependents in arguments.dependents:
+        await run_one(dependents, txn_timeout=arguments.txn_timeout or None, settle=arguments.settle)
 
 
 if __name__ == "__main__":

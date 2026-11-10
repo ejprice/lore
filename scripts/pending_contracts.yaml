@@ -73,6 +73,31 @@ version: 1
 # REPORT-contract-58-r53.md §RIDER3 — not a registry entry, because those legs are green on the committed tree.
 #
 bounds:
+# Packet 58 FIX WAVE contract (contract-58-r53, 2026-11-10, lead #20079; am-17 §12 + §12.8 item 1 + #625 + #626 +
+# §12.7 + #130(a)). Owns exactly the fix-wave contract's RED@HEAD node ids (declared from --collect-only, red at
+# 380414c whose production equals the graded build aa4ea04). ACTIVE: the fix-wave builder works against these reds now.
+- id: packet-58-fixwave
+  owner: "packet 58 fix wave (the boot heal's cycle predicate, legacy-loop record every boot, served-text fixes) \u2014 the 58 fix-wave builder"
+  reopen_trigger: "the fix-wave build lands am-17 \u00a712.2-\u00a712.3 (the heal skips and records a straggler whose re-anchor would close a blocked_by cycle, through _refuse_a_cycle's extracted predicate), \u00a712.8 item 1 (legacy loops recorded every boot), \u00a712.7 F5 and #130(a) served text, and #625 a/b served text \u2014 then every id below goes GREEN and this entry self-destructs and is deleted with the build"
+  ruling: "docs/design/2026-11-09-packet58-amendment-17.md \u00a712 (380414c); findings #623, #625, #626, #628; cold audit docs/plans/v2/receipts/2026-11-09-packet58/coldaudit-58.md"
+  rationale: "contract-ahead \u2014 the fix-wave contract is written before its build (am-17 \u00a712.6: one scoped contract, one adversary grade); receipts REPORT-contract-58-r53.md \u00a7FIXWAVE"
+  active: true
+  files:
+  - path: loremaster/tests/test_reanchor_58_fixwave.py
+    red_nodeids:
+    - "loremaster/tests/test_reanchor_58_fixwave.py::TestTheHealNeverWritesARowOntoACycle::test_A_a_straggler_whose_reanchor_closes_a_cycle_is_skipped_WHOLE_and_recorded_every_boot"
+    - "loremaster/tests/test_reanchor_58_fixwave.py::TestTheHealNeverWritesARowOntoACycle::test_B_two_stragglers_that_close_a_cycle_JOINTLY_are_both_skipped"
+    - "loremaster/tests/test_reanchor_58_fixwave.py::TestTheHealNeverWritesARowOntoACycle::test_C_a_straggler_already_on_a_LEGACY_loop_is_skipped_stricter_than_the_live_supersede"
+    - "loremaster/tests/test_reanchor_58_fixwave.py::TestALegacyLoopIsRecordedEveryBoot::test_D_a_legacy_loop_with_NO_missing_edge_is_recorded_on_every_boot_and_nothing_changes"
+    - "loremaster/tests/test_reanchor_58_fixwave.py::TestTheServedTextSaysWhatIsTrue::test_F5_a_claim_lost_to_a_superseded_blocker_says_can_never_resolve_not_can_never_win"
+    - "loremaster/tests/test_reanchor_58_fixwave.py::TestTheServedTextSaysWhatIsTrue::test_130a_the_served_status_field_names_the_superseded_row_exclusion"
+  - path: loremaster/tests/test_supersede_reanchor_58.py
+    red_nodeids:
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheHubBoundIsDERIVED::test_one_past_the_cap_is_REFUSED_byte_inert_and_TEACHES[0]"
+    - "loremaster/tests/test_supersede_reanchor_58.py::TestTheHubBoundIsDERIVED::test_one_past_the_cap_is_REFUSED_byte_inert_and_TEACHES[2]"
+  - path: loremaster/tests/test_reanchor_58_r3_convergence.py
+    red_nodeids:
+    - "loremaster/tests/test_reanchor_58_r3_convergence.py::TestARowOverTheCapFailsTheBootLOUD::test_a_single_row_over_the_cap_raises_the_typed_packer_error_and_changes_NOTHING"
 # Packet 64b-i contract r2 (contract-64b-r2, 2026-09-27 — the adversary-64b survivors + packet-64 amendments 7-10 +
 # 63c amendment 35 §6, the #461 shape, lead #17055). Every file listed below: the 64b-i contract files declare 64b-i's
 # RULED, not-yet-built symbols as TYPED CALLS in a runtime-inert `if TYPE_CHECKING:` block, and the two CONVERTED

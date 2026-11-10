@@ -102,20 +102,37 @@ def shrunk_row_caps(monkeypatch: pytest.MonkeyPatch) -> tuple[int, int]:
     return SHRUNK_ROW_HARD_CAP, SHRUNK_ROW_WARN_THRESHOLD
 
 
-def hub_refusal_sentence(
-    task_id: str, *, dependents: int, rows: int, row_cap: int, cap_dependents: int
-) -> str:
-    """The hub refusal's text, built from the RULING (packet 58 amendment 16 §2.1, which supersedes kickoff
-    §1's wording), never from the implementation. ``<X>`` is the task id, contained the house way for an id
-    in a teaching error (``render_attributed``, #321)."""
+#: #625 b (packet 58 fix wave): the finding the hub refusal now cites for the ~5,700-16,665-dependent
+#: timeout band.
+HUB_TIMEOUT_BAND_FINDING = "#628"
+#: The retired served phrases #625 b removes (a pin-the-miss reference the consumer cannot resolve, and an
+#: invitation to file a duplicate finding per refusal).
+HUB_REFUSAL_RETIRED_PHRASES = ("KNOWN BOUND", "58 F-1", "file it with lore_findings")
+
+
+def assert_hub_refusal_serves_its_facts(
+    served: str, task_id: str, *, dependents: int, rows: int, row_cap: int, cap_dependents: int
+) -> None:
+    """#625 b re-key of the am-16 §2.1 exact-sentence pin: the refusal's TEXT carries its facts (the
+    contained id, each number as a whole token), says nothing changed, names finding #628 for the timeout
+    band, and serves none of the retired phrases. Facts, not prose (lead #20079)."""
+    import re
+
     from loremaster.render import render_attributed
 
-    return (
-        f"task {render_attributed(task_id)} has {dependents} dependents; re-anchoring them composes {rows} "
-        f"rows, over the {row_cap}-row transaction cap (the build-time bound admits at most {cap_dependents} "
-        f"dependents) — refused, nothing changed. This is a pinned KNOWN BOUND (58 F-1); file it with "
-        f"lore_findings."
+    assert render_attributed(task_id) in served, f"the refusal does not name the task: {served!r}"
+    for name, value in {
+        "dependents": dependents, "rows": rows, "row_cap": row_cap, "cap_dependents": cap_dependents
+    }.items():
+        assert re.search(rf"(?<![0-9]){value}(?![0-9])", served), (
+            f"the refusal does not serve {name}={value}: {served!r}"
+        )
+    assert "nothing changed" in served.lower(), f"the refusal does not say nothing changed: {served!r}"
+    assert HUB_TIMEOUT_BAND_FINDING in served, (
+        f"the refusal does not name {HUB_TIMEOUT_BAND_FINDING}: {served!r}"
     )
+    retired = [phrase for phrase in HUB_REFUSAL_RETIRED_PHRASES if phrase in served]
+    assert not retired, f"the refusal still serves retired phrasing {retired}: {served!r}"
 
 
 def assert_unpatched_row_cap() -> int:
