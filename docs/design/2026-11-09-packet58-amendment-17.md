@@ -158,7 +158,7 @@ Splitting is also cheaper in total, as the square law predicts (229 s in one chu
   index, it adds a write to every `RELATE`, and it grows the DDL exact-set pins. V3 changes one statement. Both
   measure the same.
 - **Bound, named:** V3 costs the dependent's incoming edge count per statement. A task with thousands of blockers pays
-  for them. Trigger: a `blocked_by` column longer than about 1,000 entries (none exists; production holds 116 tasks).
+  for them. Trigger: a `blocked_by` column longer than about 1,000 entries (none exists; production holds 234 tasks per the 2026-11-08 export — corrected from 116 by the packet 58 cold audit, sharing F-2).
 - **Not changed:** the supersede's `DELETE blocks WHERE in = $old` (`tasks.py`, the `$ssx_old_rec` fragment). It is ONE
   scan per supersede, about 4.8 µs per edge in the store: 1 s at 200,000 edges. See §8.
 
@@ -179,8 +179,8 @@ Splitting is also cheaper in total, as the square law predicts (229 s in one chu
   same `min(WARN, hard)` bound. The hub cap becomes 3,332 dependents (10.2 s, 3× inside the timeout), the band
   disappears, and no constant is added. Cost: hubs of 3,333 to about 5,700 dependents, which commit today, would be
   refused; the refusal sentence, its four typed facts, L1, L2 and the WARN pin (a supersede over the threshold must
-  SUCCEED and warn) all change, in the half of the contract that r5.2 closed. I do not take it for a population 29×
-  production's whole task table. **Trigger, unchanged:** the first `store.apply.large_transaction` record from a
+  SUCCEED and warn) all change, in the half of the contract that r5.2 closed. I do not take it for a population about 14×
+  production's whole task table (234 tasks in the 2026-11-08 export; "29×" used the stale 116, cold audit sharing F-2). **Trigger, unchanged:** the first `store.apply.large_transaction` record from a
   supersede.
 - **Rider — and pin it like this:** `max_reanchor_dependents`'s docstring (BC-r5-3) states the corrected band (§1.4's
   three rows, the date, this section). The cold audit reads it. No test: the timing is a receipt (F19).
@@ -919,3 +919,154 @@ written about populations and said more than that; it is reworded in place. Conf
   `StragglerHealPackerError` with `row_cap == 800`, and the row and its edges are unchanged. Control in
   the same leg: a straggler weighing at most 800 heals. This is the leg WB9 dies on; the existing F10
   monster (5,101, over both bounds) cannot kill it.
+
+## 12. Follow-up (lead-58, lore_comms #20077): cold-audit F1 (#623) — the boot heal writes a `blocked_by` cycle
+
+Sources read: `coldaudit-58.md` (FINDINGS, DECISIONS), `coldaudit-58-ca58-blind.md` F1, am-3 §4/§5,
+`tasks.py` (`_reanchor_stragglers`, `_plan_heal_rows`, `_refuse_a_cycle`, `_backfill_blocks_edges`,
+`_record_legacy_cycles`, `supersede_task`'s guard), `server.py` (the superseded-blocker claim text).
+**No probe run by me**: the defect is the verifier's receipt; the ruling below is design, and every
+"pin" in it is unproven until the contract's RED. Confidence: HIGH on the fate and the chokepoint,
+MEDIUM on the pending-set detail in 12.2 (reasoned from the code, not executed).
+
+### 12.0 In one screen
+
+| # | question | ruling |
+|---|---|---|
+| (1) | the straggler whose re-anchor would close a cycle | **Skip the WHOLE row, leave it byte-identical, record a WARNING every boot.** Never a boot denial, never a partial re-anchor. Same posture as am-3 §5's phantom head. |
+| (1) | the chokepoint | The cycle PREDICATE inside `_refuse_a_cycle`, extracted so it returns the cycle instead of raising. `_refuse_a_cycle` raises on it; the heal skips on it. No second walk. |
+| (2) | round cap | F1 is a new property, so the cap's own exception applies: ONE scoped fix-wave contract, ONE adversary grade, no re-grade. Probes-F1 (OB3) rides along. |
+| (3) | the two wording items | Both confirmed as ruling-alignment, in the wave. |
+
+### 12.1 The three lines (fix the class)
+
+- **SHOULDN'T BE DOING:** the boot heal, a second writer of `blocked_by`, writes the column without
+  the write path's cycle invariant.
+- **OTHER CONSEQUENCES:** (a) the claim text for the row drifts from "can never resolve" to
+  "unresolved", which invites polling; (b) the cycle is logged as a successful heal and counted;
+  (c) `_refuse_a_cycle`'s docstring ("a legacy loop the backfill has already RECORDED") becomes false
+  for a loop the heal made; (d) later boots label it `legacy_cycle_minted`, a cause it does not have.
+- **SIMPLEST CLOSING RULE:** a bound at the point of use. Every writer of `blocked_by` passes the
+  rows it is about to write through the one predicate. After this section the writers are create,
+  create_many, supersede and the heal; the backfill writes edges only, never the column.
+
+### 12.2 The fate, exactly
+
+**Property P (new): after a boot heal, no row the heal wrote lies on a `blocked_by` cycle.**
+
+- **The check is over the heal's whole pending set at once**, not row by row: `pending = {dependent:
+  its post-rewrite column}` for every row `_plan_heal_rows` would build, `minted = set(pending)`.
+  Two stragglers can close a cycle jointly that neither closes alone (12.4 leg B).
+- **Loop:** ask the predicate for a cycle through a pending row. None → done. Otherwise every
+  pending row ON that cycle is skipped and recorded, removed from `pending` (its graph entry returns
+  to its stored column), and the predicate is asked again. It ends because `pending` shrinks.
+- **One graph read per heal** (`_bounded_dependency_graph` over the pending rows' blockers), then the
+  loop runs in memory. A skipped row is on a cycle, so it is in that closure and its stored column is
+  already in hand. Cost on a healthy store: one extra round trip on a boot that has stragglers, none
+  on a boot that has none.
+- **A skipped row:** column, edges and `updated_at` untouched; not in `count`; not in any chunk.
+- **Record:** WARNING `task.backfill.straggler_would_close_cycle`, extra `database`, `task_id`,
+  `blocker_ids` (the superseded blockers it still names), `cycle` (the `a -> b -> …` string the
+  backfill's record uses) and `members`. Repeated every boot until the data is repaired. The
+  backfill's `legacy_cycle_minted` is NOT emitted for it: no cycle exists in the store.
+- **Deliberately stricter than the live supersede, stated so nobody "aligns" it:** am-3 §4 lets a
+  live supersede re-anchor a dependent that already sits on a legacy loop through ANOTHER blocker,
+  because refusing there makes the superseded task un-supersedable forever. The heal's refusal is
+  per row, so that reason does not apply, and such a row is unclaimable on either blocker. The heal
+  skips and records it (12.4 leg C). P implies the lead's wording ("never writes a cycle the live
+  path refuses") and is simpler to state and to pin.
+- **Why not a boot denial:** one legacy row's shape would stop the server for every consumer, which
+  am-3 §5 already refused for phantoms. **Why not a partial re-anchor** (move the row's other
+  superseded blockers, leave the cyclic one): am-3 §5 skips the whole row, and a half-moved row is a
+  third state no render describes.
+
+### 12.3 The chokepoint (builder rider)
+
+- Extract from `_refuse_a_cycle` a non-raising predicate over `(graph, pending, minted)` that returns
+  the first cycle a minted row lies on, or `None`, keeping the existing step-over of loops that touch
+  no minted row. `_refuse_a_cycle` becomes: read the graph, call it, raise on a cycle. The heal: read
+  the graph, call it in 12.2's loop. `find_blocked_by_cycle` and `_drop_one_cycle_edge` stay the only
+  detector and the only step-over.
+- Correct `_refuse_a_cycle`'s docstring sentence about legacy loops being "already RECORDED" to what
+  12.5 item 1 finds true.
+- **Prove the sharing by mutation at audit time, as a run** (make the predicate return `None`): the
+  live create-cycle pin, the supersede-cycle pin and 12.4 leg A must all redden. A heal leg that stays
+  green means a private copy.
+
+### 12.4 Pin it like this (contract author; raw-seeded worlds, each leg names the wrong build it kills)
+
+- **Leg A, the audit's world plus two riders.** X superseded by H with no re-anchor (seeded raw), H
+  `blocked_by [D]`, D `blocked_by [X, X2]` where X2 is superseded by a healthy H2, plus one unrelated
+  healthy straggler S. Boot → completes; S healed and `count == 1`; D's column and its edges are
+  byte-identical; no cycle over all columns (`find_blocked_by_cycle` on a full read); exactly one
+  WARNING of the new event naming D with `members` ⊇ {D, H}. Second boot → the same WARNING again.
+  Controls in the leg: on the same shape built fresh, the LIVE supersede is refused with
+  `TaskCycleError`; and after removing D from H's `blocked_by` by hand, the next boot heals D to
+  `[H, H2]` with no WARNING. Kills: no check (today), check-then-write-anyway, raise (boot denial),
+  silent skip, partial re-anchor (X2 moved).
+- **Leg B, joint.** D1 `[X1]`, D2 `[X2]`, H1 `blocked_by [D2]`, H2 `blocked_by [D1]`. Boot → no
+  cycle over all columns; both rows unchanged; both recorded. Kills a row-by-row check, which heals
+  both and writes D1 → H1 → D2 → H2 → D1.
+- **Leg C, the stricter-than-live fate.** D `blocked_by [X, Z]`, Z `blocked_by [D]`, X superseded by
+  a healthy H. Boot → D unchanged and recorded. Kills a build that copies am-3 §4's `minted` choice.
+- Values: at least one leg uses a chain of two supersessions (X → X′ → H) so the cycle closes at the
+  chain HEAD, not at the first successor.
+
+### 12.5 Bounds and surfaced items (not ruled)
+
+1. **Legacy cycles are recorded only on a boot that has edges to mint** (`_backfill_blocks_edges`
+   returns before `_record_legacy_cycles` when nothing is missing). After 12.2 the heal makes no
+   cycle, so the mislabel goes away, but a true legacy loop still falls silent after its first boot,
+   unlike the phantom record, which repeats. This predates the heal. Recommendation: record on every
+   boot (the columns are already read). Do you want that in this wave, or ledgered?
+2. **The claim text on a skipped row** says "block on the successor instead" while that successor
+   itself waits on this task. True first half, unhelpful second half; the boot WARNING is the only
+   place the loop is named. No verb edits `blocked_by`, so repair is by hand in the store.
+   Decision point: the count of 12.2 WARNINGs on the first production boot of this build, read by
+   the lead. Zero → the bound is theoretical. Non-zero → the render and a repair verb are the
+   operator's call.
+3. **Production occurrence of the F1 shape is unmeasured** (the audit did not touch :18500, and
+   neither may I). If any long-lived store has already booted aa4ea04, it may hold a heal-written
+   cycle that this fix will not undo; it would then be recorded as a legacy loop. Has aa4ea04 been
+   deployed anywhere?
+
+### 12.6 (2) The round cap
+
+- **Ruling: yes, ONE scoped fix-wave contract, ONE adversary grade, no re-grade.** The operator's
+  "r5.3 is the last round" closed the am-17 loop; the tdd cap's stated exception is a new property,
+  and P is one that no round has stated. The operator may overturn this reading.
+- **Contract scope, exhaustive:** 12.4 legs A–C, and probes-F1's missing pin (a fixture with a drift
+  edge out of the hub, so OB3 dies; a new case of am-17 §9.2's pinned property). Nothing else.
+- **Grade scope:** SAT on the adversary's own reference; wrong builds = the five named in leg A, the
+  row-by-row check, the am-3 §4 `minted` copy, and OB3. Anything it finds missing after that becomes a
+  builder requirement plus a cold-audit probe, as r5.3's MP-1/MP-2 did.
+- **Why not skip the contract** (builder requirement + audit mutation proofs only): it is a confirmed
+  major on a production write path whose first build shipped the defect green through every gate.
+- **Cost:** one author run, one adversary run, one builder pass, one delta audit. The packet's one
+  full suite runs again at the end of the wave, because the first one graded a NO-GO build.
+
+### 12.7 (3) The two wording items — both confirmed, in the wave
+
+- **F5:** `"… can never resolve, so this claim can never win: block on the successor instead"` →
+  `"… can never resolve: block on the successor instead"`. "Can never win" is false for a row
+  stranded by a create racing a supersede: the next boot heal re-anchors it. The code comment above
+  the text says the same thing in capitals and is corrected with it. Pin: the existing render pin
+  re-keys to the new string; grep the test tree for the old phrase first.
+- **#130 shape (a):** the `lore_tasks` `status` Field (`server.py`, "exact-status filter" at two
+  sites) and the `query_tasks` docstring name that superseded rows are excluded from a status or
+  blocked filter. Already ruled (kickoff §5(a)); this only makes the served text say it.
+
+### 12.8 Lead answers to 12.5 (lead-58, 2026-11-10; the operator may overturn each)
+
+1. **Record legacy cycles on every boot: IN this wave.** A true legacy loop going silent after its first boot is a
+   quiet failure on a boot path packet 58 reworked, and the columns are already read, so the fix is small. It joins
+   the one scoped contract as **leg D**: a raw-seeded legacy `blocked_by` loop with no missing edge. Boot twice; each
+   boot records it (`legacy_cycle_minted` or its existing record), and nothing else changes. It kills the
+   early-return build at HEAD. Still ONE contract and ONE adversary grade; the grade's wrong builds add the
+   early-return-kept build.
+2. **The skipped row's claim text and a repair verb: ledgered**, with 12.5's decision point (the count of
+   `task.backfill.straggler_would_close_cycle` WARNINGs on the first production boot of this build, read by the
+   lead at the packet 65 cutover smoke). Zero means the bound is theoretical; non-zero goes to the operator.
+3. **aa4ea04 has not been deployed anywhere long-lived.** The production container `lore-lore` was created
+   2026-10-31 21:01 -0400, before packet 58's first build commit (`fa073bc`, 2026-11-09 22:54 -0500), and packet 58
+   is commit-only (its DEPLOY rides packet 65). So no store holds a heal-written cycle. HIGH.

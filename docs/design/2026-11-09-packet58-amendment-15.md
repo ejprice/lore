@@ -107,7 +107,7 @@ Measured 2026-11-09 at `99044d0`, SDK 3.0.0 + engine 3.3.5, TEST store, the kick
 - **Ruling: ACCEPT as a named bound.** Not closed, because every closing move is worse: a second, lower hub
   constant is the "statement cap kept somewhere" F12 forbids and a number nobody derived; a long-operation override
   cannot help a served verb past the ~60 s MCP ceiling; collapsing the per-dependent statements into set
-  statements re-opens the shell contract four rounds graded. Production holds 116 task rows (am-2).
+  statements re-opens the shell contract four rounds graded. Production holds 116 task rows (am-2). ⚠ Superseded: the 2026-11-08 export holds 234 (packet 58 cold audit sharing F-2; no ruling changes).
 - **Re-open trigger, with the instrument that measures it (same bullet):** the house size WARN
   (`store.apply.large_transaction`, `row_count > 10,000` ≈ 3,332 dependents ≈ 3.4 s) emitted from the task ledger.
   It fires an order of magnitude in time before the band. The first such record from a supersede re-opens this
