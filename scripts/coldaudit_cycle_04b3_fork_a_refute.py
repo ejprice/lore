@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ⚠ SUPERSEDED (packet 58 am-17 §14, 2026-11-10): FORK A overturned, `_bounded_dependency_graph` deleted.
 # ⚠ SDK-3 BOUND (packet 66, operator ruling R19 Q5) — NOT PORTED, NOT RE-RUN on surrealdb 3.0.0.
 # Written and last run against surrealdb 2.0.0. No cron or timer runs it (the R19 Q5 finding), so it was
 # left unported; its results describe the SDK and engine it ran on. SDK 3.0.0 differences a re-run meets:

@@ -12,6 +12,13 @@ forks; then an adversary (finding #326) graded the first revision INSUFFICIENT a
 coexists — MP-1).  All converged on the write-time cycle guard
 :meth:`loremaster.tasks.TaskLedger._refuse_a_cycle`:
 
+  * ⚠ **DUAL (packet 58 fix wave, am-17 §13 + §14, 2026-11-10): FORK A and VARIANT D are both
+    OVERTURNED.** §14.1 measured the bounded closure read ~10x slower than reading every column, growing
+    with the seeds and stopping at 32 hops (#635/#636); the guard's input is now every ``blocked_by``
+    column in one statement, and ``test_the_write_paths_rows_READ_is_BOUNDED_by_the_ancestor_CLOSURE``
+    is DELETED. §13 replaced the drop-loop with ONE strongly-connected-component predicate
+    (``find_row_blocked_by_cycles``); ``_drop_one_cycle_edge`` is deleted (#631). The two bullets below are
+    the 04b-3 record, kept as history.
   * **FORK A (ESC-1) — Reading 1 CONFIRMED (§C-A RETRACTED).** ESC-1 does NOT ride edges and
     "columns → RED" was wrong: a cycle's CLOSING link names a not-yet-existent task, ``ENFORCED``
     forbids that edge, so it can only be a COLUMN — an edge-only guard fails the MEASURED pin
@@ -110,6 +117,7 @@ class TestTheAllCycleEnumeratorIsNetworkxInPRODUCTION:
     ``_record_legacy_cycles`` swaps ITS hand-rolled drop-an-edge enumeration for
     ``networkx.simple_cycles`` (a PRODUCTION import), deleting ITS OWN drop-loop.
 
+    ⚠ (packet 58 am-17 §13: ``_drop_one_cycle_edge`` is DELETED; the sentence below is 04b-3's record.)
     ⚠ **``_drop_one_cycle_edge`` STAYS** — variant D keeps it as the write guard
     ``_refuse_a_cycle``'s single legitimate caller (the guard's step-over-legacy drop-loop routes
     through the SHARED ``find_blocked_by_cycle``, which R6 forbids replacing with a second
@@ -209,7 +217,7 @@ class TestConcurrentCreatesAreCycleSafeByConstruction:
     async def test_LIVENESS_eight_way_concurrent_creates_on_a_SHARED_blocker_all_land(
         self, cycle_env: SurrealEnv
     ) -> None:
-        """The no-regression guard the ESC-1 bounded-read rework must not break (store
+        """The no-regression guard the guard-read rework must not break (store
         reference §5): at least ``_CONCURRENCY_WIDTH``-way, OVERLAPPING lifetimes, every create
         lands exactly once with no loss and no corruption, its conflicts absorbed by the ONE
         shared retry driver.
@@ -217,9 +225,9 @@ class TestConcurrentCreatesAreCycleSafeByConstruction:
         ⚠ This is a LIVENESS guard, not a CA-11 fix-discriminator (CA-11 is deferred — a joint
         cycle is verb-unreachable): 8-way contention here can only prove "no loss / no storm,"
         which the current build already satisfies (that green is itself the FORK-C evidence).
-        It is kept because the ESC-1 bounded read still touches shared blocker rows under
-        contention, so it must not reintroduce a storm.  The 20-consecutive-green discipline is
-        a run requirement on the builder.
+        It is kept because the guard's read (since packet 58 am-17 §14.2: every ``blocked_by`` column,
+        one statement) still runs under contention, so it must not reintroduce a storm.  The
+        20-consecutive-green discipline is a run requirement on the builder.
 
         DISCRIMINATION — "what wrong build fails this?": one whose create path drops the shared
         retry driver, so ≥8 racers on a shared blocker storm to txn-exhaustion and some creates

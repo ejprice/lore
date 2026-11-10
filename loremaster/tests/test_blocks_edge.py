@@ -2013,6 +2013,11 @@ class TestCreateRefusesToFormACycle:
         seed/minted ids, so ``find_blocked_by_cycle`` (which sorts) returns the legacy cycle first —
         the exact condition under which a single-witness build accepts.  DISCRIMINATION: a build
         detecting via a single ``find_blocked_by_cycle`` witness (no drop-loop) FAILS here.
+
+        ⚠ DUAL (packet 58 fix wave, am-17 §13 / §14): the drop-loop and the bounded closure read are
+        both gone. The guard is ONE strongly-connected-component predicate (``find_row_blocked_by_cycles``)
+        over every ``blocked_by`` column; this leg still pins the property above — a legacy loop cannot mask
+        the cycle through the minted row.
         """
         from loremaster.tasks import TaskSpec
 
@@ -2046,11 +2051,10 @@ class TestCreateRefusesToFormACycle:
             await ledger.create_many(specs, created_by=CREATOR, ids=[new_id])
         assert await _task_row_count(ledger) == before, (
             "a create forming the persisted-id cycle N->seed->X->N was ACCEPTED while a LEGACY "
-            "cycle (P<->Q) coexisted in the bounded closure. The guard used a SINGLE "
-            "find_blocked_by_cycle witness (variant S): it returned the legacy cycle first, its "
-            "minted-intersection was empty, and it waved the create through — an unclaimable-"
-            "forever task. ESC-1's bounded read must KEEP the drop-loop (variant D) so it steps "
-            "over the legacy cycle and finds the minted one. See "
+            "cycle (P<->Q) coexisted in the store: the guard let a legacy loop mask the cycle "
+            "through the minted row (a single-witness detector returns the legacy cycle first) "
+            "and waved the create through — an unclaimable-forever task. The persisted-row "
+            "predicate must find the minted row's cycle whatever other loop exists (am-17 §13.2). See "
             "scripts/cycle_coexisting_legacy_soundness_probe.py and §CYCLE-TRILEMMA MP-1."
         )
 
@@ -2195,134 +2199,15 @@ class TestCreateRefusesToFormACycle:
             await ledger.close()
             await drop_database(env)
 
-    @staticmethod
-    async def _blocked_noise_traffic(blocked_pair_count: int) -> tuple[StoreTraffic, int]:
-        """Traffic for ONE ``create_many`` against a ledger of ``blocked_pair_count``
-        DEPENDENCY-BEARING rows that have nothing to do with the dependency under check.
-
-        The sibling helper above seeds UNBLOCKED noise, which is exactly the population the
-        write guard's own read excludes (``WHERE array::len(blocked_by) > 0``).  This one
-        seeds the population it INCLUDES: ``blocked_pair_count`` blockers and one dependent
-        each, so the guard's filtered read genuinely grows.
-        """
-        from loremaster.tasks import TaskSpec
-
-        env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
-        ledger = TaskLedger(
-            url=env.url,
-            namespace=env.namespace,
-            database=env.database,
-            user=env.user,
-            password=env.password,
-        )
-        try:
-            await ledger.ensure_ready()
-            noise_blockers = await ledger.create_many(
-                [
-                    TaskSpec(subject=f"noise blocker {index}", description=DESCRIPTION)
-                    for index in range(blocked_pair_count)
-                ],
-                created_by=CREATOR,
-            )
-            await ledger.create_many(
-                [
-                    TaskSpec(
-                        subject=f"noise dependent {index}",
-                        description=DESCRIPTION,
-                        blocked_by=[blocker],
-                    )
-                    for index, blocker in enumerate(noise_blockers)
-                ],
-                created_by=CREATOR,
-            )
-            blocker = await ledger.create_task(
-                "a real blocker", DESCRIPTION, created_by=CREATOR
-            )
-            created: list[str] = []
-
-            async def _run() -> None:
-                created.extend(
-                    await ledger.create_many(
-                        [
-                            TaskSpec(
-                                subject=SUBJECT,
-                                description=DESCRIPTION,
-                                blocked_by=[blocker],
-                            )
-                        ],
-                        created_by=CREATOR,
-                    )
-                )
-
-            traffic = await measure_store_traffic(ledger, _run)
-            return traffic, len(created)
-        finally:
-            await ledger.close()
-            await drop_database(env)
-
-    async def test_the_write_paths_rows_READ_is_BOUNDED_by_the_ancestor_CLOSURE(
-        self,
-    ) -> None:
-        """RED at ``4b952f3``.  ⛔ **ESC-1's satisfiable pin — the replacement for the deleted
-        KNOWN_BOUND leg** (packet 04b-3; ``REPORT-design-sidecar-04b3-1.md`` §CYCLE-FORKS
-        FORK A, ruled 2026-08-03; ``REPORT-contract-cycle-04b3-1.md`` §ESC-1-FLAGS).
-
-        The pin this replaces — ``test_KNOWN_BOUND_..._rows_READ_DOES_grow_with_the_BLOCKED_
-        population`` — asserted the write-time guard reads ~one row per DEPENDENCY-BEARING row
-        in the ledger, and its own docstring PINNED that as a bound *"escalated, not settled
-        here"*, naming *"an ancestor-closure seed"* as the candidate and *"a builder must not
-        be handed 'invent the general form'"*.  FORK A settled it: ESC-1's real deliverable is
-        to BOUND the guard's read to the ancestor CLOSURE of the pending task's blockers — seed
-        from those blockers, walk the closure via persisted ``blocks`` EDGES (ESC-1's measured
-        YES: every persisted ancestor is edge-reachable after ``ensure_ready``, so edges
-        soundly bound WHICH rows to read), read the ``blocked_by`` COLUMNS of exactly those
-        bounded rows for the closing link, overlay the pending ``create_many`` sibling refs,
-        and run the shared ``find_blocked_by_cycle``.  So the read no longer scales with the
-        blocked backlog — it scales with the new dependency's ancestor closure.
-
-        ⚠ **NO "columns → RED" pin, deliberately** (FORK A retraction): the guard MUST still
-        read the ``blocked_by`` column — the closing link of a would-be cycle names a
-        not-yet-existent task, ``ENFORCED`` forbids that edge, so it can only be a COLUMN, and
-        an edge-only guard returns *"acyclic"* and FAILS
-        ``test_a_create_that_would_close_a_cycle_through_PERSISTED_tasks_is_REFUSED``.  This
-        pin asserts the read is BOUNDED, never that it abandons the column.
-
-        DISCRIMINATION — "what wrong build still passes this?": the whole-dependency-bearing-
-        population scan (the build at HEAD) reads ~one row per blocked pair, so ``large.rows``
-        grows past ``small.rows`` and this pin is RED.  The soundness of bounding is not a
-        heuristic: any row that closes a cycle THROUGH the pending task N is an ancestor of N,
-        hence in ``closure(N.blockers)``, hence its column IS read (FORK A soundness proof).
-
-        ⚠ **Its two siblings STAY GREEN and the ruling requires it:**
-        ``test_the_WRITE_paths_rows_READ_does_NOT_grow_with_the_DEPENDENCY_FREE_population``
-        (the bounded read touches no dependency-free row either) and
-        ``test_the_cycle_WALK_is_ONE_round_trip`` (R7: the bounded read is still ONE round
-        trip, sharing one snapshot).  This leg reuses ``_blocked_noise_traffic`` — the SAME
-        helper the deleted pin used — never a second copy (repo law #102).
-        """
-        small, small_created = await self._blocked_noise_traffic(UNRELATED_TASK_COUNT_SMALL)
-        large, large_created = await self._blocked_noise_traffic(UNRELATED_TASK_COUNT_LARGE)
-        assert small_created == large_created == 1, (
-            f"the two measurements created {small_created} and {large_created} tasks; each "
-            f"must create the ONE item, or the comparison is between two different amounts "
-            f"of work"
-        )
-        assert small.rows > 0, (
-            f"the instrument counted ZERO rows for a create that landed a task — it is not "
-            f"observing this call path, so this bound is unmeasured rather than confirmed: "
-            f"{small}"
-        )
-        assert large.rows == small.rows, (
-            f"a create_many naming ONE blocker read {small.rows} rows against "
-            f"{UNRELATED_TASK_COUNT_SMALL} unrelated BLOCKED pairs and {large.rows} against "
-            f"{UNRELATED_TASK_COUNT_LARGE} — the guard's read STILL grows with the "
-            f"dependency-bearing population, so it is NOT bounded to the new dependency's "
-            f"ancestor closure. ESC-1 (04b-3 FORK A): seed from the pending blockers, walk "
-            f"the closure via blocks EDGES to bound WHICH rows, read only those rows' "
-            f"blocked_by COLUMNS for the closing link (the column is KEPT, never abandoned), "
-            f"overlay pending sibling refs, run find_blocked_by_cycle. small={small.statements} "
-            f"large={large.statements}"
-        )
+    # ⚠ DUAL (packet 58 fix wave, am-17 §14.2 / §14.4 item 6): DELETED
+    # `test_the_write_paths_rows_READ_is_BOUNDED_by_the_ancestor_CLOSURE`. It certified ESC-1 / FORK A
+    # (04b-3): the guard reads only the pending task's ancestor closure. §14 overturns that on measurement
+    # (§14.1: the closure read was ~10x slower than reading every column, grew with the seeds, and stopped
+    # at 32 hops, #635/#636); the guard's input is now every `blocked_by` column in one statement, which
+    # legitimately grows with the dependency-BEARING population. Its removed-behaviour row is §14.2 item (2),
+    # DROPPED deliberately. The one-round-trip half (R7) stays pinned by
+    # `test_the_cycle_WALK_is_ONE_round_trip_however_DEEP_the_chain`, and the dependency-FREE half by the leg
+    # below. Its helper `_blocked_noise_traffic` had no other caller and is deleted with it.
 
     async def test_the_WRITE_paths_rows_READ_does_NOT_grow_with_the_DEPENDENCY_FREE_population(
         self,
@@ -2358,11 +2243,10 @@ class TestCreateRefusesToFormACycle:
         the one the read EXCLUDES.  The old name and the old failure message both claimed a
         ∀-ledger property the assertion cannot perform (*"a failure message that promises a
         check the assertion does not perform is a false gate"*), and the residue is real:
-        against BLOCKED noise the read DOES grow today — a bound ESC-1 (packet 04b-3) CLOSES,
-        asserted (RED until the bounded-closure read lands) by
-        :meth:`test_the_write_paths_rows_READ_is_BOUNDED_by_the_ancestor_CLOSURE`, which REPLACED
-        the deleted known-bound leg (§CYCLE-FORKS FORK A).
-        The two legs together are the honest statement of what this build does.
+        against BLOCKED noise the read DOES grow, and since packet 58 am-17 §14.2 that is the ruled
+        design: the guard's input is every ``blocked_by`` column in one statement (ESC-1 / FORK A's
+        closure bound overturned on measurement, its pin deleted). This leg is the honest statement
+        of what the read must still NOT do: grow with the dependency-FREE rows.
 
         ⚠ **STATED SCOPE:** the guard legitimately reads more rows for a DEEPER dependency
         chain — that is the answer's cost, not the ledger's — so the chain is held constant at
@@ -2388,9 +2272,8 @@ class TestCreateRefusesToFormACycle:
             f"at — a walk seeded with the whole task table (#253's shape, on the WRITE "
             f"side). The acyclicity walk must at minimum be filtered to the "
             f"dependency-BEARING rows. ⚠ This assertion measures the DEPENDENCY-FREE "
-            f"population ONLY; growth with the dependency-BEARING population is a separate bound "
-            f"that ESC-1 (04b-3) CLOSES, asserted (RED until the bounded-closure read lands) by "
-            f"test_the_write_paths_rows_READ_is_BOUNDED_by_the_ancestor_CLOSURE. "
+            f"population ONLY; growth with the dependency-BEARING population is the ruled design "
+            f"(packet 58 am-17 §14.2: the guard reads every blocked_by column). "
             f"⚠ Do NOT fix this by moving the walk onto an ENGINE traversal of the blocks "
             f"edge: the closing dependency of a cycle cannot carry an edge (see this class's "
             f"docstring), so an engine detector returns 'acyclic'. small={small.statements} "
@@ -2492,6 +2375,63 @@ class TestTheCyclePolicyHasONEImplementation:
             f"the refusal must NAME every member of the cycle — a caller cannot break a "
             f"loop it cannot see: {str(caught.value)!r}"
         )
+
+    @staticmethod
+    def _served_cycle_path(served: str, noun: str) -> list[str]:
+        """The ``a -> b -> …`` path a cycle refusal serves after ``among <noun>: ``
+        (``format_cycle_refusal``)."""
+        marker = f"among {noun}: "
+        assert marker in served, f"the refusal does not name a cycle among {noun}: {served!r}"
+        return served.split(marker, 1)[1].split(" — ", 1)[0].split(" -> ")
+
+    async def test_a_BATCH_KEY_cycle_is_served_in_the_PERSISTED_direction_row_then_its_blocker(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """am-17 §14.7 item 3 (delta blind F3): both cycle refusals render ONE arrow direction, ``row -> its
+        blocker`` (the persisted refusal's, the heal's and the legacy record's). A 3-key loop ``a [b]``,
+        ``b [c]``, ``c [a]`` (a 2-loop reads the same both ways): every step of the served batch-key path
+        names that member's blocker, and so does the persisted refusal for the same shape under caller-chosen
+        ids.
+        RED at HEAD: the batch-key detector's path runs blocker -> dependent."""
+        from loremaster.tasks import (
+            CYCLE_NOUN_BATCH_KEYS,
+            CYCLE_NOUN_PERSISTED_IDS,
+            TaskCycleError,
+            TaskSpec,
+        )
+
+        ledger, _env, _blocker = task_ledger
+        keys = ("arrow-a", "arrow-b", "arrow-c")
+        waits_on = {keys[i]: [keys[(i + 1) % 3]] for i in range(3)}
+        items = [
+            {"key": key, "subject": f"{key} waits", "description": DESCRIPTION, "blocked_by": waits_on[key]}
+            for key in keys
+        ]
+        with pytest.raises(TaskCycleError) as batch:
+            await _tool_seam(ledger).tasks(action="create_many", created_by=CREATOR, items=items)
+        tag = uuid.uuid4().hex[:10]
+        ids = [f"arrow{tag}{i}" for i in range(3)]
+        ids_wait_on = {ids[i]: [ids[(i + 1) % 3]] for i in range(3)}
+        with pytest.raises(TaskCycleError) as persisted:
+            await ledger.create_many(
+                [
+                    TaskSpec(subject=f"{i} waits", description=DESCRIPTION, blocked_by=ids_wait_on[i])
+                    for i in ids
+                ],
+                created_by=CREATOR,
+                ids=ids,
+            )
+        for served, noun, blocked_by in (
+            (str(batch.value), CYCLE_NOUN_BATCH_KEYS, waits_on),
+            (str(persisted.value), CYCLE_NOUN_PERSISTED_IDS, ids_wait_on),
+        ):
+            path = self._served_cycle_path(served, noun)
+            assert len(path) >= 4 and path[0] == path[-1], f"not a closed path: {path} in {served!r}"
+            wrong = [(a, b) for a, b in zip(path, path[1:], strict=False) if b not in blocked_by.get(a, ())]
+            assert not wrong, (
+                f"the {noun} refusal serves {' -> '.join(path)}: steps {wrong} do not go from a member to "
+                f"ITS blocker (am-17 §14.7 item 3: one direction, row -> its blocker)"
+            )
 
     async def test_a_PERSISTED_ID_cycle_is_UNREACHABLE_at_the_TOOL_SEAM_by_construction(
         self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
@@ -9255,6 +9195,9 @@ class TestTheScopeOfTheTransitiveReadIsSTATED:
 #   ``$E2::test_the_write_paths_rows_READ_is_BOUNDED_by_the_ancestor_CLOSURE`` (asserts the read
 #   is bounded to the ancestor CLOSURE, RED until the fix lands). The bounded-closure read has no
 #   whole-table filter to drop, so the builder REVISES this WB-D mutation when landing ESC-1.
+#   ⚠ DUAL (packet 58 fix wave, am-17 §14): the closure pin above is DELETED as well; the read is every
+#   dependency-bearing column again (one statement), so WB-D's mutation (drop the `array::len` filter)
+#   targets that read once more.
 #   ⚠ ``$E2::test_the_cycle_WALK_is_ONE_round_trip_however_DEEP_the_chain`` must stay GREEN —
 #   the walk is still ONE round trip, it simply reads the whole ledger inside it. That a
 #   round-trip pin cannot see a rows defect is exactly why the rows pin had to exist.
