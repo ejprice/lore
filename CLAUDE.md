@@ -1051,6 +1051,30 @@ copy of the roster.
   SCOPE, not a fact.* A fix wave is exactly where an adversary is cheapest and most needed:
   it is written by someone who has just been told what they missed, which is the state most
   likely to produce a narrow patch that satisfies the letter of a finding.
+- **COLD AUDITS RUN AS A WORKFLOW (operator, 2026-11-10).** This ruling is the standing opt-in the
+  Workflow tool requires, for cold audits only. Pilot and receipts:
+  `docs/plans/v2/receipts/2026-11-09-packet58/workflow-pilot-coldaudit-58.md` (three uses on packet 58).
+  The shape: parallel dimensions (receipts, a contract-blind diff reader, probes, sharing), one
+  independent verifier per finding, one synthesiser. WHY, measured: in two of three uses the
+  contract-blind reader and the probes found the packet's real product defects after the contract loop
+  had passed them, and the verifiers refuted 4 wrong findings before the lead read them. Adopted with
+  five changes:
+  1. **Verdict rule:** any confirmed product defect, blocking or major, is NO-GO. GO-WITH-RESIDUALS
+     covers residuals and non-product minors only.
+  2. **The synthesiser returns at most ~2k characters** (verdict, headline, confirmed ids,
+     decisions); everything else goes in the receipts file, so the lead's notification is never cut.
+  3. **The full suite shows its passed count.** #627 (the currency gate prints no pytest count and
+     deletes its junit) is fixed before the saved workflow becomes the default; until then the runner
+     also keeps its own `--junitxml`. Until #508 is fixed the gate command is
+     `pending_contract_gate.py --currency -- --maxprocesses=12`.
+  4. **The agent that starts the full suite waits for `EXIT=` inside its own turn.** A background
+     start whose agent then returns dies with it and reads "running": a false clear (third use). The
+     synthesiser reads the ground-truth log itself.
+  5. **The script is saved** as `.claude/workflows/coldaudit.js` (args: graded commit, base,
+     receipts dir, dimensions) and reused by `scriptPath`, never re-authored per audit.
+  The receipts dimension verifies and does not rerun (global § Verification); that holds only while a
+  builder's receipts can match the graded commit, which packet 58's first audit could not (receipts
+  F-1). Making every receipt matchable is open work, ruled by the operator the same day.
 - Reports: REPORT-<agent-name>.md at repo root, EXACT name (teammates; a background subagent
   returns its report as text, brief-base §1 exception, operator 2026-11-09). One concern per commit;
   cold REFUTE audit before every wave commit (builder ≠ grader; P8d receipts: 3 of 4
