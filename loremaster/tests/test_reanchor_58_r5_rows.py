@@ -20,6 +20,7 @@ four classes on the TYPED, anchored-prefix classifier, built by the ONE mapping 
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import pytest
@@ -53,6 +54,15 @@ FIFTY_EIGHT_CLASSES = FIFTY_EIGHT_CLASS_NAMES
 THROWN_KIND = "Thrown"
 #: A payload placed BEFORE the marker for the echoed (not-at-start) control.
 ECHO_LEAD = "a client note quoting "
+#: am-16 §7: the ``<t>:<id>`` forensic suffix a 58 THROW carries after its marker (a task record id, the
+#: 32-hex house shape) — it must reach the server log, never the raised text.
+LEAK_TABLE = "task"
+LEAK_ID = "r5leak0d1e2f3a4b5c6d7e8f9a0b1c2d"
+#: The two raise sites the ledger's doors reach: ``_apply`` → ``execute_transaction``, ``_query`` →
+#: ``run_query``.
+RAISE_SITES = ("transaction", "query")
+#: The structured fields the two sites log raw engine text under (``_log_rollback`` / ``run_query``).
+RAW_LOG_FIELDS = ("engine_result", "failed_statements", "engine_error")
 
 
 def _ruled_class(name: str) -> type[TxnDomainRejectionError]:
@@ -71,6 +81,23 @@ async def _throw_through_the_ledger(ledger: TaskLedger, text: str) -> BaseExcept
     with pytest.raises(BaseException) as caught:  # noqa: PT011 - the TYPE is the assertion below
         await ledger._apply([fragment])  # noqa: SLF001 - the ledger's own write door IS the seam
     return caught.value
+
+
+async def _throw_at_site(ledger: TaskLedger, text: str, site: str) -> BaseException:
+    """Send ``THROW $text`` through one of the ledger's two store doors and return what reached the caller."""
+    if site == "transaction":
+        return await _throw_through_the_ledger(ledger, text)
+    with pytest.raises(BaseException) as caught:  # noqa: PT011 - the TYPE is asserted by the caller
+        await ledger._query("THROW $r5_payload", {"r5_payload": text})  # noqa: SLF001 - the read door IS the seam
+    return caught.value
+
+
+def _logged_raw_text(records: list[logging.LogRecord]) -> str:
+    """Everything the server-side log recorded of the engine's raw text (message + the raw-text fields)."""
+    return "\n".join(
+        f"{record.getMessage()} " + " ".join(str(getattr(record, field, "")) for field in RAW_LOG_FIELDS)
+        for record in records
+    )
 
 
 class TestFiftyEightsFragmentsAreUnannotated:
@@ -147,3 +174,39 @@ class TestTheFourClassesAreTypedAndAnchored:
             isinstance(echoed, TxnDomainRejectionError)
             and echoed.error_class == _txn._ERROR_CLASS_UNSPECIFIED
         ), f"the echoed THROW must be the unspecified residue: {type(echoed).__name__} {echoed!r}"
+
+    @pytest.mark.parametrize("site", RAISE_SITES)
+    @pytest.mark.parametrize("name", FIFTY_EIGHT_CLASSES)
+    async def test_the_raised_text_never_carries_the_raw_marker_or_its_id_suffix(
+        self,
+        ledger58: tuple[TaskLedger, SurrealEnv],
+        caplog: pytest.LogCaptureFixture,
+        name: str,
+        site: str,
+    ) -> None:
+        """Packet 58 amendment 16 §7 (63-rulings §2.5 rider ii, ledger #31, finding #456's class) — ∀ four
+        markers × both raise sites: the typed error's text teaches what happened and NEVER carries the raw
+        engine-facing marker or the THROW's ``<t>:<id>`` suffix. POSITIVE CONTROL in the same leg: the raw
+        engine text the seam received — logged server-side — DOES carry both, so the check can fire. Bound:
+        a door that catches a raw SDK error without passing the seam is outside this pin (the runtime SDK
+        guard owns it)."""
+        ledger, _env = ledger58
+        cls = _ruled_class(name)
+        marker = fifty_eight_thrown_markers()[name]
+        suffix = f"{LEAK_TABLE}:{LEAK_ID}"
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG):
+            raised = await _throw_at_site(ledger, f"{marker}{suffix}", site)
+        assert type(raised) is cls, (
+            f"{site}: a THROW led by {marker!r} raised {type(raised).__name__}: {raised}"
+        )
+        served = str(raised)
+        assert marker not in served and LEAK_ID not in served, (
+            f"{site}: {name}'s raised text LEAKED the raw marker {marker!r} or the THROW's id suffix "
+            f"{suffix!r} (am-16 §7 / 63-rulings §2.5 rider ii): {served!r}"
+        )
+        logged = _logged_raw_text(caplog.records)
+        assert marker in logged and LEAK_ID in logged, (
+            f"{site}: positive control — the raw engine text (marker + suffix) did not reach the server-side "
+            f"log, so the absence above proves nothing (logged: {logged[:400]!r})"
+        )

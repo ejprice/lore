@@ -383,6 +383,14 @@ bounds:
     - "loremaster/tests/test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored::test_the_class_is_recognised_by_construction_and_built_by_the_one_mapping_helper[TxnClaimLostError]"
     - "loremaster/tests/test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored::test_the_class_is_recognised_by_construction_and_built_by_the_one_mapping_helper[TxnHealChunkError]"
     - "loremaster/tests/test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored::test_the_class_is_recognised_by_construction_and_built_by_the_one_mapping_helper[TxnReanchorStragglerError]"
+    - "loremaster/tests/test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored::test_the_raised_text_never_carries_the_raw_marker_or_its_id_suffix[TxnCasLostError-transaction]"
+    - "loremaster/tests/test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored::test_the_raised_text_never_carries_the_raw_marker_or_its_id_suffix[TxnCasLostError-query]"
+    - "loremaster/tests/test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored::test_the_raised_text_never_carries_the_raw_marker_or_its_id_suffix[TxnClaimLostError-transaction]"
+    - "loremaster/tests/test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored::test_the_raised_text_never_carries_the_raw_marker_or_its_id_suffix[TxnClaimLostError-query]"
+    - "loremaster/tests/test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored::test_the_raised_text_never_carries_the_raw_marker_or_its_id_suffix[TxnHealChunkError-transaction]"
+    - "loremaster/tests/test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored::test_the_raised_text_never_carries_the_raw_marker_or_its_id_suffix[TxnHealChunkError-query]"
+    - "loremaster/tests/test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored::test_the_raised_text_never_carries_the_raw_marker_or_its_id_suffix[TxnReanchorStragglerError-transaction]"
+    - "loremaster/tests/test_reanchor_58_r5_rows.py::TestTheFourClassesAreTypedAndAnchored::test_the_raised_text_never_carries_the_raw_marker_or_its_id_suffix[TxnReanchorStragglerError-query]"
     missing_symbols:
     - loremaster.store._txn.TxnCasLostError
   - path: loremaster/tests/test_reanchor_58_r4_lease_fates.py
