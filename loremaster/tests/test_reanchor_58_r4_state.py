@@ -162,6 +162,11 @@ async def _drive_heal_multi_chunk(env: SurrealEnv, ledger: TaskLedger, seam: Dri
     _HEAL_SHAPE[tag] = measured
     with pytest.MonkeyPatch.context() as shrink:
         shrink.setattr(txn_module, "TXN_ROW_HARD_CAP", fixed + _HEAL_DRIVER_FIT * weight, raising=True)
+        # r5.3 (am-17 §6.1 leg 3, "hard below WARN"): this world must hold the hard cap BELOW the WARN
+        # threshold, else a packer reading the WARN threshold alone (no `min`) would pass it.
+        assert txn_module.TXN_ROW_HARD_CAP < txn_module.TXN_ROW_WARN_THRESHOLD, (
+            txn_module.TXN_ROW_HARD_CAP, txn_module.TXN_ROW_WARN_THRESHOLD,
+        )
         await seed_population(ledger, shape, 2 * _HEAL_DRIVER_FIT + 1, tag)
         booted = new_ledger(env)
         seam.arm(HEAL_VERB)

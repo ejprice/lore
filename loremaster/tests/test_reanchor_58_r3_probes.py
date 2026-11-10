@@ -39,6 +39,7 @@ from _reanchor_58_support import (
     boot,
     column,
     create,
+    heal_chunk_bound,
     ledger58,
     new_ledger,
     raw,
@@ -49,7 +50,6 @@ from _reanchor_58_support import (
     supersede,
 )
 from _surreal_harness import SurrealEnv
-from loremaster.store import _txn
 from loremaster.store.surreal_schema import BLOCKS_RELATION, TASK_TABLE
 from loremaster.tasks import IllegalTransitionError, TaskLedger, TaskLedgerError
 from surrealdb import RecordID
@@ -179,7 +179,7 @@ async def test_PC_stragglers_naming_TWO_superseded_blockers_at_scale_heal_in_ONE
     assert all(columns[t] == [head_a, head_b] for t in ids)
     heal = [r for r in caplog.records if r.getMessage() == HEAL_EVENT]
     assert len(heal) == 1 and getattr(heal[0], "count", None) == count
-    assert all(rows <= _txn.TXN_ROW_HARD_CAP for rows in spy.heal_rows()), spy.heal_rows()
+    assert all(rows <= heal_chunk_bound() for rows in spy.heal_rows()), spy.heal_rows()  # r5.3: am-17 §6.1
 
 
 # P-D (am-3 §5: "a row whose head is a phantom is SKIPPED" — the WHOLE row, excluded from count; ∀ rows

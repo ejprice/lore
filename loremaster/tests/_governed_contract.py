@@ -135,7 +135,16 @@ def operators(plan: Any) -> list[str]:
 
 
 def scans_table(plan: Any, table: str) -> bool:
-    """True iff the plan TableScans ``table`` (operator==TableScan, attributes.table==table)."""
+    """True iff the plan iterates the whole of ``table``, in either EXPLAIN shape engine 3.3.5 serves.
+
+    - a SELECT's operator tree: a node with ``operator == "TableScan"`` and ``attributes.table == table``;
+    - a write statement's plan (``<DELETE …> EXPLAIN``; packet 58 amendment 17 §9.1/§9.4, read on 3.3.5): a
+      flat list of ``{operation, detail}`` nodes, where a whole-table read is ``operation == "Iterate Table"``
+      with ``detail.table == table``.
+
+    The two arms cannot match each other's shape (``operator``/``attributes`` vs ``operation``/``detail``),
+    so a SELECT-plan caller is answered exactly as before. Stated bound: both are engine plan vocabulary
+    read on 3.3.5; an upgrade that renames them reds each arm's positive control first."""
     found = False
 
     def walk(node: Any) -> None:
@@ -148,6 +157,13 @@ def scans_table(plan: Any, table: str) -> bool:
                 and attributes.get("table") == table
             ):
                 found = True
+            detail = node.get("detail")
+            if (
+                node.get("operation") == "Iterate Table"
+                and isinstance(detail, dict)
+                and detail.get("table") == table
+            ):
+                found = True
             for child in node.values():
                 walk(child)
         elif isinstance(node, list):
@@ -156,6 +172,28 @@ def scans_table(plan: Any, table: str) -> bool:
 
     walk(plan)
     return found
+
+
+def iterated_records(plan: Any) -> int:
+    """How many ``operation == "Iterate Record"`` nodes a write statement's plan holds — one per record the
+    statement reads by id (packet 58 amendment 17 §9.4: ``DELETE $dependent<-blocks WHERE …`` iterates the
+    dependent's own incoming edges, so the count is its degree, not the size of the table). A SELECT
+    operator tree has no such node and answers 0. Same stated bound as :func:`scans_table`."""
+    count = 0
+
+    def walk(node: Any) -> None:
+        nonlocal count
+        if isinstance(node, dict):
+            if node.get("operation") == "Iterate Record":
+                count += 1
+            for child in node.values():
+                walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child)
+
+    walk(plan)
+    return count
 
 
 # The operators that READ A NAMED INDEX — an ALLOWLIST of the safe set, never a list of forbidden

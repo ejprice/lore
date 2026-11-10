@@ -1,0 +1,64 @@
+diff --git a/loremaster/loremaster/tasks.py b/loremaster/loremaster/tasks.py
+index 5b03da2..c205392 100644
+--- a/loremaster/loremaster/tasks.py
++++ b/loremaster/loremaster/tasks.py
+@@ -2213,8 +2213,11 @@ class TaskLedger:
+         live ``_txn.TXN_ROW_HARD_CAP`` (a build-time bound, never a promise that a smaller supersede
+         succeeds).
+ 
+-        ⚠ KNOWN BOUND (packet 58 amendment 15 §1.3): near the real cap a supersede times out BEFORE it is
+-        refused — roughly 12 000 to 16 665 dependents do not fit the request timeout. Trigger: a
++        ⚠ KNOWN BOUND (packet 58 amendment 17 §4, correcting amendment 15 §1.3): near the cap a supersede
++        times out BEFORE it is refused. Measured 2026-11-09 on the real schema (TEST store, engine 3.3.5,
++        SDK 3.0.0): 3 332 dependents commit in 10.2 s, 6 000 time out at 30 s (the 30 s line is interpolated
++        near 5 700 dependents, not measured there). Between about 5 700 and the cap of 16 665 dependents a
++        supersede is not refused with the teaching error: it times out loud and commits nothing. Trigger: a
+         ``store.apply.large_transaction`` record from the task ledger. Probe: ``scripts/probe_hub_txn_58.py``.
+         """
+         fixed = self._supersede_rows(successor_blocked_by_count, 0)
+@@ -2287,7 +2290,9 @@ class TaskLedger:
+         fragments = [TaskLedger._supersede_fragment(old_id, new_id, content, event)]
+         fragments.append(
+             TxnFragment(
+-                statements=[f"DELETE {BLOCKS_RELATION} WHERE in = $ssx_old_rec"],
++                # ``blocks`` has no index — a table-anchored DELETE iterates the whole table; am-17 §9.
++                # Graph-anchored at the old task: cost = its own dependent count (probe_heal_curve_58.py).
++                statements=["DELETE $ssx_old_rec->" + BLOCKS_RELATION],
+                 params={"ssx_old_rec": RecordID(TASK_TABLE, old_id), "ssx_old": old_id},
+             )
+         )
+@@ -2458,9 +2463,11 @@ class TaskLedger:
+                 final = list(dict.fromkeys(head if b == old else b for b in final))
+             fragments = [
+                 TxnFragment(
++                    # ``blocks`` has no index: a table-anchored DELETE scans it once per straggler — am-17 §3.
++                    # Anchored at the DEPENDENT (cost = its blocker count); see probe_heal_curve_58.py.
+                     statements=[
+-                        f"DELETE {BLOCKS_RELATION} WHERE in = $hd{row_index}_{i}_in "
+-                        f"AND out = $hd{row_index}_out"
++                        f"DELETE $hd{row_index}_out<-{BLOCKS_RELATION} "
++                        f"WHERE in = $hd{row_index}_{i}_in"
+                         for i in range(len(olds))
+                     ],
+                     params={
+@@ -2481,8 +2488,18 @@ class TaskLedger:
+     def _pack_heal_chunks(
+         built: Sequence[tuple[str, list[TxnFragment], list[tuple[str, str]], int]],
+     ) -> list[list[tuple[str, list[TxnFragment], list[tuple[str, str]], int]]]:
+-        """Greedy chunks sized by each row's OWN composed cost against the live row cap."""
+-        cap = _txn_module.TXN_ROW_HARD_CAP
++        """Greedy chunks sized by each row's OWN composed cost (``_txn.fragment_rows``).
++
++        The chunk bound is ``min(TXN_ROW_WARN_THRESHOLD, TXN_ROW_HARD_CAP)``, both read live when the heal
++        runs (amendment 17 §2): the WARN threshold by ruling — a heal never composes a transaction the house
++        itself would warn about — measured at 7.25 s per full chunk on the real schema (a 50 000-row chunk
++        timed out at 300 s: cost grows with the square of the size). ``min`` because a chunk must never
++        exceed what ``compose`` accepts. One row heavier than the bound makes ``constrained_batches`` raise
++        and the boot fails loud with :class:`StragglerHealPackerError` carrying the bound as ``row_cap``.
++        Re-open trigger (am-17 §5): a ``task.backfill.stragglers_reanchored`` record with ``chunks >= 2`` on
++        production, or a boot raising ``SurrealOutcomeUnknownError`` from the heal.
++        """
++        cap = min(_txn_module.TXN_ROW_WARN_THRESHOLD, _txn_module.TXN_ROW_HARD_CAP)
+         try:
+             return [
+                 list(batch)

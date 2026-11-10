@@ -52,6 +52,7 @@ from _reanchor_58_support import (
     create,
     drive_to,
     edge_pairs,
+    heal_chunk_bound,
     ledger58,
     measure_heal_shape,
     new_ledger,
@@ -204,11 +205,11 @@ class TestTheHealPacksByItsOwnComposedCount:
         ]
         assert getattr(heal[0], "chunks", None) == len(chunks) >= 2, (
             f"the logged `chunks` must equal the heal transactions actually composed ({len(chunks)}); "
-            f"{cap + 1} rows over six blockers cannot fit one {_txn.TXN_ROW_HARD_CAP}-row "
+            f"{cap + 1} rows over six blockers cannot fit one {heal_chunk_bound()}-row "
             f"transaction"
         )
         sizes = spy.heal_rows()  # r5: the ROW count of each heal chunk (am-15 §2)
-        assert all(size <= _txn.TXN_ROW_HARD_CAP for size in sizes), sizes
+        assert all(size <= heal_chunk_bound() for size in sizes), sizes  # r5.3: am-17 §6.1 re-key
         noisy = [
             # ⚠ DUAL (packet 58 contract r4 — amendment 12 §3 F-H, the same class): USED to also require
             # `r.name.startswith("loremaster")`; a clean heal emits no alarm from ANY logger.
@@ -241,7 +242,7 @@ class TestTheHealPacksByItsOwnComposedCount:
         assert ledger.max_reanchor_dependents(0) < baseline_cap, "the accessor ignored the padded shell"
         fixed, per = await measure_heal_shape(ledger, env, "padshape")
         rows = baseline_cap + 1
-        expected = predicted_chunks(rows, fixed, per, _txn.TXN_ROW_HARD_CAP)
+        expected = predicted_chunks(rows, fixed, per, heal_chunk_bound())  # r5.3: am-17 §6.1 re-key
         await seed_stragglers(ledger, rows, 1, "padone")
         records = await _boot_logged(env, caplog)
         heal = [r for r in records if r.getMessage() == HEAL_EVENT]
@@ -357,6 +358,14 @@ class TestAHealStoreFaultIsLOUD:
         ledger, env = ledger58
         fixed, per = await measure_heal_shape(ledger, env, "doorshape")
         monkeypatch.setattr(_txn, "TXN_ROW_HARD_CAP", fixed + _DOOR_FIT * per, raising=True)
+        # r5.3 (am-17 §6.1): this world holds the hard cap BELOW the WARN threshold, so the ruled bound is
+        # the hard cap here — a packer reading the WARN threshold alone packs every row into one
+        # over-cap chunk.
+        assert heal_chunk_bound() == _txn.TXN_ROW_HARD_CAP < _txn.TXN_ROW_WARN_THRESHOLD, (
+            f"the door world must shrink the hard cap below the WARN threshold: "
+            f"hard {_txn.TXN_ROW_HARD_CAP}, "
+            f"warn {_txn.TXN_ROW_WARN_THRESHOLD}"
+        )
         population = 2 * _DOOR_FIT + 1
         k = 0
         while True:
@@ -404,7 +413,7 @@ class TestAHealStoreFaultIsLOUD:
         the population is one row past a MEASURED chunk, so it spans exactly two chunks."""
         ledger, env = ledger58
         fixed, per = await measure_heal_shape(ledger, env, "rejshape")
-        fit = (_txn.TXN_ROW_HARD_CAP - fixed) // per
+        fit = (heal_chunk_bound() - fixed) // per  # r5.3: am-17 §6.1 re-key
         head, ids = await seed_stragglers(ledger, fit + 1, 1, "rej")
         victim = ids[len(ids) // 2]
         await raw(

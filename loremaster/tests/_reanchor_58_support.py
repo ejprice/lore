@@ -127,6 +127,14 @@ def assert_unpatched_row_cap() -> int:
     return UNPATCHED_ROW_HARD_CAP
 
 
+def heal_chunk_bound() -> int:
+    """The boot heal's chunk bound as RULED (packet 58 amendment 17 §2 / §6.1), stated once for the tests:
+    ``min(_txn.TXN_ROW_WARN_THRESHOLD, _txn.TXN_ROW_HARD_CAP)``, both read LIVE (F21) — so an in-test
+    shrink of either constant moves it. Every heal leg derives its ``fit`` from this, never from the hard cap
+    alone (the packer's bound since am-17; the hard cap stays the only REFUSAL size, F12)."""
+    return min(_txn_module.TXN_ROW_WARN_THRESHOLD, _txn_module.TXN_ROW_HARD_CAP)
+
+
 #: packet 58's four RULED guarded-shell THROW classes (kickoff / am-3 §3 / am-6 / am-7; am-15 §4.1 / §9).
 FIFTY_EIGHT_CLASS_NAMES: tuple[str, ...] = (
     "TxnClaimLostError",

@@ -21,6 +21,7 @@ from _reanchor_58_support import (
     bulk_seed_dependents,
     column,
     create,
+    heal_chunk_bound,
     ledger58,
     measure_heal_shape,
     new_ledger,
@@ -31,7 +32,6 @@ from _reanchor_58_support import (
     supersede,
 )
 from _surreal_harness import SurrealEnv
-from loremaster.store import _txn
 from loremaster.tasks import TaskLedger
 
 __all__ = ["ledger58", "shrunk_row_caps"]
@@ -73,14 +73,14 @@ async def test_PR18r2_cap_plus_one_of_ONE_blocker_heals_in_the_PACKERS_predicted
     fixed, per = await measure_heal_shape(ledger, env, "am3shape")
     cap = ledger.max_reanchor_dependents(0)
     ids = await _stragglers(ledger, cap + 1, 1, "am3one")
-    expected = predicted_chunks(cap + 1, fixed, per, _txn.TXN_ROW_HARD_CAP)
+    expected = predicted_chunks(cap + 1, fixed, per, heal_chunk_bound())  # r5.3: am-17 §6.1 re-key
     records = await _boot(env, caplog)
     assert len(records) == 1 and getattr(records[0], "count", None) == cap + 1, [
         (getattr(r, "count", None), getattr(r, "chunks", None)) for r in records
     ]
     assert getattr(records[0], "chunks", None) == expected, (
         f"{cap + 1} one-blocker stragglers; the heal chunk measures fixed={fixed}, per={per}, so a "
-        f"greedy packer against the {_txn.TXN_ROW_HARD_CAP}-row cap needs {expected} "
+        f"greedy packer against the {heal_chunk_bound()}-row chunk bound (am-17 §2) needs {expected} "
         f"chunk(s) — got {getattr(records[0], 'chunks', None)}. A chunk sized by the SUPERSEDE's "
         f"accessor (amendment 2's literal) is the defect amendment 3 §1 corrects"
     )

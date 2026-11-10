@@ -9,7 +9,8 @@ sizing mispriced (r1 → am-2's defect → am-3 → N3, two-blocker rows). This 
 fourth instance:
 
     ∀ straggler populations whose heads resolve, ONE boot heals ALL of them — ``count == |population|`` and
-    every sent transaction ≤ ``TXN_ROW_HARD_CAP`` — where each row's WEIGHT is its own composed ROW
+    every sent transaction ≤ the packer's bound (r5.3: ``heal_chunk_bound()`` = ``min(TXN_ROW_WARN_THRESHOLD,
+    TXN_ROW_HARD_CAP)``, am-17 §2) — where each row's WEIGHT is its own composed ROW
     count, ``_txn.fragment_rows`` (am-8 §2; r5: am-15 §2, at the §8.1 5 000-row shrink, read live).
 
 **The domain is GENERATED** (CLAUDE.md *Fix the CLASS*, rule 3) from the heal's own cost ingredients — the
@@ -67,6 +68,7 @@ from _reanchor_58_support import (
     column,
     create,
     edge_pairs,
+    heal_chunk_bound,
     ledger58,
     raw,
     raw_relate,
@@ -75,7 +77,6 @@ from _reanchor_58_support import (
     snapshot,
 )
 from _surreal_harness import SurrealEnv
-from loremaster.store import _txn
 from loremaster.store.surreal_schema import BLOCKS_RELATION, TASK_TABLE
 from loremaster.tasks import TaskLedger
 from surrealdb import RecordID
@@ -143,8 +144,10 @@ _MONSTER_ENTRIES = 1700
 
 
 def _cap() -> int:
-    """The row cap as ``compose`` and the packer see it right now (read live — F21)."""
-    return _txn.TXN_ROW_HARD_CAP
+    """The packer's chunk bound right now (read live — F21). r5.3 (packet 58 amendment 17 §6.1): the
+    ruled ``min(TXN_ROW_WARN_THRESHOLD, TXN_ROW_HARD_CAP)`` (:func:`heal_chunk_bound`), no longer the hard
+    cap alone — 800 under the 5 000 / 800 shrink; the packer error's ``row_cap`` serves it (am-17 §2)."""
+    return heal_chunk_bound()
 
 
 def _pad(text: str) -> str:
