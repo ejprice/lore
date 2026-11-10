@@ -843,3 +843,131 @@ except _txn_module.TxnRowCapExceededError:
 - Done: all brief items (own set first → §DECLINED diff; the brief's minimum set; REACH P1c; P1b; P2; §MUTATION; §10.2 node lists; SAT; W-* replay; am-16 §3 quiet verdicts).
 - NOT TRIED: an independent reference (§INDEPENDENCE — accepted by am-16 §3); the `fragment_rows` and house-comparison sharing mutations (assigned to the cold audit); X13 (58 tier dropped from `_ROLLBACK_LOG_TIERS` — r3 property, not delta); WD20 (WARN only on one path — both paths go through `_apply`, so not a distinct door); MP-3's sibling sweep over other 63c hand-lists (am-16 §4 owns it).
 - Scratch trees intact for the r5.2 replay (am-16 §5): `adv58r5b/{base,ref,wb,wb2,plain}`; switches documented in §INSTRUMENTS; `wb`/`wb2` md5s recorded. Standing by per lead directive #20031.
+
+# §REPLAY — the r5.2 re-grade (am-16 §5 items 1–4; lead directive #20036; graded commit `1292287`)
+- **Scope (exhaustive, as ruled):** (1) SAT of r5.2's new/rewritten legs on r5.2's reference; (2) replay WD17, WD16B, WD9, WD15D, WD12K, each against the pin am-16 §2 names; (3) the §3 builds on a quiet host + the author's flag (4): W-HEAL2 and WD22H on the SHRUNK r4 heal leg; (4) the §4 grown sets against WD8 / WD9 / X7B; plus the lead's three deviation checks. No new enumeration, no new P1b rows.
+- **Trees (2026-11-10 ~01:40Z):** `adv58r5b/ref52` and `adv58r5b/wb52`, each `scratch_copy.sh` of the main tree at `1292287` (clean), + §HELD 1/3/4 + `build_ref_r5.py` v4 + `my_ref_r5.py` (md5 `b54d8d75…` = r5.2's recorded, extracted by heading) → `tasks.py 401fb950…`, `_txn.py 8d37d2f4…` = r5.2's recorded REF md5s. `wb52` += `wb52_patch.py` (pasted below) → `tasks.py 89c5556b…`, `_txn.py 0a5d5b5c…`. Host: at most 2 concurrent runs (the §LOAD lesson).
+- **Replay-shape notes (my reading, written before the runs):** WD17 cannot append text to the ruled render any more (the error renders itself), so it is replayed as its two halves: **WD17** = false typed facts (`rows=7, row_cap=3`), **WD17P** = true facts + `args` overwritten with the sentence + " A smaller supersede will succeed.". WD16B = no pre-check + compose's refusal re-raised as a correctly-typed `HubSupersedeRefusedError` with a plain `raise`. Deviation (3)'s wrong build = **WD23** (the heal builds chunks and never applies — what deleted leg (iv)'s write-door comparison killed). Deviation (2)'s = **WD13** (heal swallows its READ fault, the neighbour of the SWALLOWS control). Deviation (1) is exercised by WD12K itself (fit 4 → 9 stragglers / 3 chunks).
+
+### §REPLAY instruments (verbatim)
+
+#### `wb52_patch.py` (md5 `f436160d44fc9ef28b3db07bae20ece6`)
+```python
+#!/usr/bin/env python3
+"""adversary-58-r5-2 r5.2 REPLAY: env-switched wrong builds (ADV_WB) on r5.2's reference (tasks 401fb950, _txn 8d37d2f4).
+Replays (am-16 §5 item 2/3/4): WD17 (false typed facts), WD17P (true facts + appended promise), WD16B (rewrap compose's
+refusal with a plain raise), WD9 / WD8 / X7B (classifier), WD15D (rows=1 on RELATE > 1500), WD12K (swallow a non-exhaustion
+store fault at chunk >= 2), W-HEAL2 (swallow exhaustion/store at chunk >= 2), WD22H (getattr dispatch + W-HEAL2);
+deviation checks: WD23 (heal never applies — what deleted leg (iv) killed), WD13 (heal swallows its READ — the SWALLOWS
+control's neighbour). Unset = the reference. Exact-once anchors; aborts on a miss."""
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+tasks = root / "loremaster/loremaster/tasks.py"
+txn = root / "loremaster/loremaster/store/_txn.py"
+
+
+def sub(path: Path, old: str, new: str) -> None:
+    text = path.read_text()
+    count = text.count(old)
+    assert count == 1, f"{path.name}: anchor count {count}: {old[:90]!r}"
+    path.write_text(text.replace(old, new))
+
+
+sub(tasks, "from more_itertools import constrained_batches\n",
+    "from more_itertools import constrained_batches\nimport os as _adv_os\n")
+sub(tasks, "class StragglerHealPackerError(TaskLedgerError):",
+    "def _adv(wb: str) -> bool:\n    return _adv_os.environ.get('ADV_WB') == wb\n\n\nclass StragglerHealPackerError(TaskLedgerError):")
+# refusal: WD17 false facts; WD17P an appended promise; WD16B no pre-check (compose refuses, re-wrapped below)
+sub(tasks,
+    "        if len(dependent_ids) > cap:\n            raise HubSupersedeRefusedError(\n                task_id=task_id,\n"
+    "                dependents=len(dependent_ids),\n                rows=self._supersede_rows(len(dependencies), len(dependent_ids)),\n"
+    "                row_cap=_txn_module.TXN_ROW_HARD_CAP,\n                cap_dependents=cap,\n            )\n",
+    "        if len(dependent_ids) > cap and _adv('WD17'):\n"
+    "            raise HubSupersedeRefusedError(task_id=task_id, dependents=len(dependent_ids), rows=7, row_cap=3, cap_dependents=cap)\n"
+    "        if len(dependent_ids) > cap and _adv('WD17P'):\n"
+    "            _adv_e = HubSupersedeRefusedError(task_id=task_id, dependents=len(dependent_ids),\n"
+    "                rows=self._supersede_rows(len(dependencies), len(dependent_ids)), row_cap=_txn_module.TXN_ROW_HARD_CAP, cap_dependents=cap)\n"
+    "            _adv_e.args = (str(_adv_e) + ' A smaller supersede will succeed.',)\n"
+    "            raise _adv_e\n"
+    "        if len(dependent_ids) > cap and not _adv('WD16B'):\n            raise HubSupersedeRefusedError(\n                task_id=task_id,\n"
+    "                dependents=len(dependent_ids),\n                rows=self._supersede_rows(len(dependencies), len(dependent_ids)),\n"
+    "                row_cap=_txn_module.TXN_ROW_HARD_CAP,\n                cap_dependents=cap,\n            )\n")
+sub(tasks, "                    actor=created_by, at=now.isoformat(),\n                )\n            )\n        except SurrealConnectionError:\n",
+    "                    actor=created_by, at=now.isoformat(),\n                )\n            )\n"
+    "        except _txn_module.TxnRowCapExceededError:\n"
+    "            if not _adv('WD16B'):\n                raise\n"
+    "            raise HubSupersedeRefusedError(task_id=task_id, dependents=len(dependent_ids),\n"
+    "                rows=self._supersede_rows(len(dependencies), len(dependent_ids)), row_cap=_txn_module.TXN_ROW_HARD_CAP, cap_dependents=cap)\n"
+    "        except SurrealConnectionError:\n")
+# WD15D: size-conditional rows= under-declaration on RELATE fragments
+sub(tasks, "            params[to_param] = RecordID(TASK_TABLE, blocked)\n        return TxnFragment(statements=statements, params=params)\n",
+    "            params[to_param] = RecordID(TASK_TABLE, blocked)\n"
+    "        if _adv('WD15D') and len(statements) > 1500:\n            return TxnFragment(statements=statements, params=params, rows=1)\n"
+    "        return TxnFragment(statements=statements, params=params)\n")
+# heal chunk loop: WD23 never applies; W-HEAL2 / WD22H swallow exhaustion + store at chunk >= 2; WD12K swallow non-exhaustion at chunk >= 2
+sub(tasks, "            try:\n                await self._apply([f for f in fragments if f.statements])\n            except TxnDomainRejectionError:\n",
+    "            if _adv('WD23'):\n                continue\n"
+    "            try:\n                await self._apply([f for f in fragments if f.statements])\n"
+    "            except (TxnDomainRejectionError, SurrealStoreError) as _adv_error:\n"
+    "                _later = chunk_index > 0\n"
+    "                _swallow = (_later and (_adv('W-HEAL2') or _adv('WD22H'))) or (\n"
+    "                    _later and _adv('WD12K') and not isinstance(_adv_error, TxnContentionExhaustedError))\n"
+    "                if not isinstance(_adv_error, TxnDomainRejectionError) and not _swallow:\n"
+    "                    raise\n")
+# WD13: swallow the heal's first READ fault
+sub(tasks,
+    "        rows = self._as_rows(\n            await self._query(\n                f\"SELECT record::id({_ID_KEY}) AS {_ID_KEY}, {_COL_SUPERSEDED_BY} FROM {TASK_TABLE} \"\n                f\"WHERE {_COL_SUPERSEDED_BY} IS NOT NONE\"\n            )\n        )\n",
+    "        try:\n"
+    "            rows = self._as_rows(\n                await self._query(\n                    f\"SELECT record::id({_ID_KEY}) AS {_ID_KEY}, {_COL_SUPERSEDED_BY} FROM {TASK_TABLE} \"\n                    f\"WHERE {_COL_SUPERSEDED_BY} IS NOT NONE\"\n                )\n            )\n"
+    "        except Exception:\n            if not _adv('WD13'):\n                raise\n            return\n")
+# WD22H: heal reached through getattr from a dict
+sub(tasks, "        await self._backfill_blocks_edges()\n        await self._reanchor_stragglers()\n",
+    "        await self._backfill_blocks_edges()\n"
+    "        if _adv('WD22H'):\n            await getattr(self, {'heal': '_reanchor_' + 'stragglers'}['heal'])()\n"
+    "        else:\n            await self._reanchor_stragglers()\n")
+# _txn: WD8 substring, WD9 kind-blind prefix, X7B heal marker dropped
+sub(txn, "    if untyped or kind == ErrorKind.THROWN:\n        for marker, label in _THROWN_DOMAIN_MARKERS:\n            if lowered.startswith(_ENGINE_THROW_PREFIX + marker):\n                return label\n",
+    "    import os as _adv_os\n    _wb = _adv_os.environ.get('ADV_WB')\n"
+    "    if _wb == 'WD8':\n        for marker, label in _THROWN_DOMAIN_MARKERS:\n            if marker in lowered:\n                return label\n"
+    "    if _wb == 'WD9':\n        for marker, label in _THROWN_DOMAIN_MARKERS:\n            if lowered.startswith(_ENGINE_THROW_PREFIX + marker):\n                return label\n"
+    "    if untyped or kind == ErrorKind.THROWN:\n        for marker, label in _THROWN_DOMAIN_MARKERS:\n"
+    "            if _wb == 'X7B' and marker == _HEAL_CHUNK_MARKER:\n                continue\n"
+    "            if lowered.startswith(_ENGINE_THROW_PREFIX + marker):\n                return label\n")
+print("r5.2 replay switches installed")
+```
+
+#### `replay_a.sh` (md5 `313b71e404eda83720bee925184e576e`)
+```bash
+#!/usr/bin/env bash
+# replay_a.sh: SAT of r5.2's new/rewritten legs on ref52 = every test file r5.2 changed (805a687..1292287), whole files.
+mapfile -t F < /var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/27ef6c0a-0069-4ed2-8167-9ed0ff6d05f3/scratchpad/adv58r5b/r52_changed_tests.txt
+/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/27ef6c0a-0069-4ed2-8167-9ed0ff6d05f3/scratchpad/adv58r5b/run.sh /var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/27ef6c0a-0069-4ed2-8167-9ed0ff6d05f3/scratchpad/adv58r5b/ref52 r52-sat "${F[@]}"
+```
+
+#### `replay_b.sh` (md5 `a496250a80c73631ad7a4e4d11df88cb`)
+```bash
+#!/usr/bin/env bash
+# replay_b.sh (wb52): switch-UNSET control over every replay target, then each replay scoped to the pin am-16 §2 names.
+/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/27ef6c0a-0069-4ed2-8167-9ed0ff6d05f3/scratchpad/adv58r5b/run_wb52.sh NONE r-NONE loremaster/tests/test_supersede_reanchor_58.py::TestTheHubBoundIsDERIVED loremaster/tests/test_reanchor_58_r2_rulings.py::TestTheHubCapFollowsKAcrossFloorBoundaries loremaster/tests/test_reanchor_58_r2_scale.py loremaster/tests/test_fixwave_a28c_63c_i_a.py loremaster/tests/test_reanchor_58_r5_rows.py loremaster/tests/test_reanchor_58_r2_rulings.py::TestAHealStoreFaultIsLOUD scripts/test_forgery_door_sweep.py loremaster/tests/test_supersede_reanchor_58.py::TestTheBootHealReanchorsStragglers loremaster/tests/test_reanchor_58_r4_state.py::TestTheFiredLedgerEqualsTheDerivedDomain loremaster/tests/test_reanchor_58_r2_scale.py
+for wb in WD17 WD17P WD16B; do /var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/27ef6c0a-0069-4ed2-8167-9ed0ff6d05f3/scratchpad/adv58r5b/run_wb52.sh $wb r-$wb loremaster/tests/test_supersede_reanchor_58.py::TestTheHubBoundIsDERIVED loremaster/tests/test_reanchor_58_r2_rulings.py::TestTheHubCapFollowsKAcrossFloorBoundaries loremaster/tests/test_reanchor_58_r2_scale.py; done
+/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/27ef6c0a-0069-4ed2-8167-9ed0ff6d05f3/scratchpad/adv58r5b/run_wb52.sh WD15D r-WD15D loremaster/tests/test_supersede_reanchor_58.py::TestTheHubBoundIsDERIVED loremaster/tests/test_reanchor_58_r2_scale.py loremaster/tests/test_reanchor_58_r5_rows.py
+for wb in WD9 WD8 X7B; do /var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/27ef6c0a-0069-4ed2-8167-9ed0ff6d05f3/scratchpad/adv58r5b/run_wb52.sh $wb r-$wb loremaster/tests/test_fixwave_a28c_63c_i_a.py loremaster/tests/test_reanchor_58_r5_rows.py; done
+/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/27ef6c0a-0069-4ed2-8167-9ed0ff6d05f3/scratchpad/adv58r5b/run_wb52.sh WD12K r-WD12K loremaster/tests/test_reanchor_58_r2_rulings.py::TestAHealStoreFaultIsLOUD
+for wb in W-HEAL2 WD22H; do /var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/27ef6c0a-0069-4ed2-8167-9ed0ff6d05f3/scratchpad/adv58r5b/run_wb52.sh $wb r-$wb loremaster/tests/test_reanchor_58_r4_state.py::TestTheFiredLedgerEqualsTheDerivedDomain; done
+for wb in WD23 WD13; do /var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/27ef6c0a-0069-4ed2-8167-9ed0ff6d05f3/scratchpad/adv58r5b/run_wb52.sh $wb r-$wb loremaster/tests/test_reanchor_58_r2_rulings.py::TestAHealStoreFaultIsLOUD scripts/test_forgery_door_sweep.py loremaster/tests/test_supersede_reanchor_58.py::TestTheBootHealReanchorsStragglers; done
+```
+
+### §REPLAY results
+| run | tree · tests | count · EXIT | reds | verdict |
+|---|---|---|---|---|
+| P0 control (ADV_WB unset) | wb52 · every replay target (HUB, CLS, DOOR, r4 heal class, r2_scale) | `1 failed, 751 passed` · 1 (129 s; the shrunk r4 heal leg GREEN and fast) | 64b-i `findings.py::_run_guarded` (`report() … 'title'`) only — baseline | the switch tree IS r5.2's reference when unset |
+| **WD17** (false typed facts `rows=7, row_cap=3`) | wb52 · HUB | `2 failed, 18 passed` · 1 | the cap+1 leg [0], [2]: `the refusal's typed facts must EQUAL their derivations … served {…'rows': 7, 'row_cap': 3…}, derived {…'rows': 5003…}` | **DIES by am-16 §2.1's pin** |
+| **WD17P** (true facts + " A smaller supersede will succeed." appended to the message) | wb52 · HUB | `2 failed, 18 passed` · 1 | the cap+1 leg [0], [2] — the exact ruled-sentence equality | **DIES by am-16 §2.1's exact-text pin** |
+| **WD16B** (no pre-check; compose's refusal re-raised, correctly typed, with a plain `raise`) | wb52 · HUB | `2 failed, 18 passed` · 1 | the cap+1 leg [0], [2]: `a transaction over the 5000-row cap reached compose ([5003] rows) … the refusal was compose's` | **DIES by am-16 §2.2's compose-spy pin** (the facts and text were right, so §2.1 alone would not have caught it — the spy is the load-bearing half) |
+| **WD15D** (`rows=1` on RELATE fragments > 1 500 statements) | wb52 · TestTheHubBoundIsDERIVED, r2_scale, r5_rows | `3 failed, 21 passed` · 1 | **L2**: `(rows, statements) of transactions whose fragment_rows ≠ statement count at 1666 dependents: [(3338, 5003)]`; + the cap+1 leg ×2 (the served `rows` 3 338 ≠ derived 5 003 — §2.1 catches it independently). L3 stays green: its 1 251-pair chunk is below this build's threshold, as expected | **DIES by am-16 §2.4's L2 pin** (plus §2.1) |
+| **WD9** (kind-blind anchored prefix for 58's four markers) | wb52 · a28c + r5_rows | `20 failed, 667 passed` · 1 | a28c `test_am36_1_2_3_a_typed_kind_never_reaches_the_text_branch` ×20 (typed kinds × the 4 derived 58 hostile texts): `a typed 'Configuration' error carrying 'fifty-eight-TxnCasLostError' words was labelled 'cas lost — …' BY ITS TEXT` | **DIES by am-16 §2.3's grown sets** (§5 item 4: the §4 sweep's grown sets vs WD9 — killed) |
+| WD8 (substring classifier for the four markers) | wb52 · a28c + r5_rows | `132 failed, 555 passed` · 1 | a28c echo sweep + the grown typed-kind cells + r5_rows (see log) | **DIES** (§5 item 4 vs WD8) |
+| X7B (heal-chunk marker dropped from the classifier) | wb52 · a28c + r5_rows | `4 failed, 6 passed, 8 errors` · 1 | a28c collection ERROR (the derived marker set: `exactly ONE marker must classify to TxnHealChunkError's label … found []`) + r5_rows ×4 | **DIES, loudly** (§5 item 4 vs X7B) |
+| **WD12K** (swallow a non-exhaustion store fault at chunk ≥ 2) | wb52 · r2 `TestAHealStoreFaultIsLOUD` | `3 failed, 2 passed` · 1 | `test_every_heal_door_after_the_backfill_RAISES[store, transport, outcome_unknown]` — `the completing boot opened 6 doors, expected 4` (the boot ran on past the faulted chunk-2 door; expected = k−1, derived) | **DIES by am-16 §2.5's 9-straggler / 3-chunk pin**, all three fault classes — deviation (1)'s `fixed + 4·per` (fit 4) reading is the shape that exposes chunk 2 and 3 |
