@@ -1418,3 +1418,233 @@ if __name__ == "__main__":
     part_heal(random.Random(seed), count)
     part_supersede(random.Random(seed + 1), count)
 ```
+
+## 14. Follow-up (lead-58, lore_comms #20091): the guard's INPUT — #636, #635, #634
+
+**Erratum first.** §13.2 said "the closure read is unchanged" and gave the heal's cost as one extra
+round trip, without measuring that read with many seeds. #636 is the result: the fix wave turned the
+heal into a boot denial at about 300 stragglers. The predicate held; its input did not.
+
+Sources: findings #634/#635/#636, `tasks.py` at cdf1ce4 (`ensure_ready`, `_read_mirror_state`,
+`_bounded_dependency_graph`, `_skip_cycle_closing_rows`, the three `_refuse_a_cycle` call sites),
+`server.py` (`build_app_context` readies the ledger before serving). **Measured by me:** 14.1, TEST store
+:18000, instrument pasted in §INSTRUMENT-4. Not run by me: the three findings' own probes.
+
+### 14.0 In one screen
+
+| # | finding | ruling |
+|---|---|---|
+| (a)+(b) | #636, #635 | **One input for all four writers: every `blocked_by` column, read in one statement.** No closure walk, no seeds, no depth bound, no `TIMEOUT 5s`. `_bounded_dependency_graph` is deleted. This closes #636 and both halves of #635 and overturns ESC-1 / FORK A (packet 04b-3) on measurement. |
+| (c) | #634 | **An in-process lock on `TaskLedger` around `supersede_task`'s guard-then-write.** Two processes writing one database stay a bound, pinned as a miss. |
+| — | operator? | Proceed. Three items for the morning (14.6). If the next audit finds another door in this class, I rule no fourth design: the doors found get pinned as bounds and go to the operator. |
+
+### 14.1 Measurement (2026-11-10, `probe_guard_input_58.py`, real schema, N dependents of one hub)
+
+| N dependency-bearing rows | full column read | boot mirror read (columns + edges) | bounded closure, 1 seed | 10 seeds | 50 seeds | predicate over the full graph |
+|---|---|---|---|---|---|---|
+| 300 | 0.003 s | 0.005 s | 0.012 s | 0.071 s | 0.333 s | 0.001 s |
+| 2,400 | 0.014 s | 0.023 s | 0.087 s | 0.574 s | 2.791 s | 0.038 s |
+| 19,200 | 0.072 s | 0.145 s | 0.706 s | 4.591 s | **refused at 5.0 s** | 0.111 s |
+
+- Controls: the full read returned N rows each time; the bounded read returned seeds + 1; the predicate
+  found 0 cycles in the acyclic graph and 1 after a closing edge was added.
+- The bounded read is slower than reading everything at every size, by about 10× with ONE seed, and
+  grows with the seed count. ESC-1's premise (a closure read keeps the write guard from scaling with
+  the backlog) is false as built on 3.3.5: it scales with the backlog AND the seeds. Cause not
+  established (the audit's guess is a per-row re-evaluated subquery; no EXPLAIN run).
+- Bounds: one shape (a hub), one host, quiet store. Full read + predicate at 19,200 rows: about 0.18 s.
+
+### 14.2 (a)+(b) The input, exactly (builder rider)
+
+- **One function** (name the builder's) returns `{task id: blocked_by}` for every row with a non-empty
+  column: the first statement of `_read_mirror_state`, alone, through the ordinary read seam.
+  `_refuse_a_cycle` and `_skip_cycle_closing_rows` call it in place of `_bounded_dependency_graph`.
+  The predicate, its arguments and every fate are unchanged from §13.
+- **Complete for the question:** a row with an empty column has no out-edge, so it is only ever a
+  leaf. A blocker naming no row is a leaf too (same as today's phantom seed).
+- **The heal reads it itself**, after the backfill, only when stragglers exist. Not threaded through
+  from `_backfill_blocks_edges`: one input function for four callers is simpler to prove shared than
+  a parameter passed across two boot steps.
+- **Deleted:** `_bounded_dependency_graph`, `_CLOSURE_START_PARAM`, and the docstring claiming "sound,
+  not a heuristic". `TASK_BLOCKER_MAX_DEPTH` stays for `transitive_blockers`, which serves its bound.
+- **Removed-behaviour inventory:** (1) one round trip (R7) → preserved, pinned by the existing
+  query-count pins re-keyed to the new statement; (2) "the guard reads only the closure" (ESC-1 / FORK
+  A) → DROPPED deliberately, on 14.1; (3) `TIMEOUT 5s` on the read → dropped, the request timeout
+  (30 s live, 300 s at boot) is the bound; (4) the silent 32-hop truncation → OLD BUG (#635), not
+  re-pinned; (5) a phantom seed contributes no row and no error → preserved (it is a leaf).
+- **Named bound, with its instrument:** the guard's cost is now linear in the dependency-bearing rows
+  (0.18 s at 19,200; production held 234 tasks on 2026-11-08). The boot already holds that count, so
+  it logs WARNING `task.guard.graph_large` when the count exceeds 20,000, the largest size measured.
+  One named constant carrying this section's number. A boot emitting it re-runs §INSTRUMENT-4 at that
+  size.
+
+### 14.3 (c) #634 — concurrent supersedes
+
+- **Ruling:** one `asyncio.Lock` on the ledger (the house already keeps `_connect_lock` there) held by
+  `supersede_task` from before its guard read until its transaction returns. Sequential behaviour is
+  unchanged. The second supersede then reads the first one's writes and is refused.
+- **Why only supersede:** a row that no persisted row names lies on no cycle. A created row has no
+  in-edge at commit; a `create_many` batch names itself only inside its own transaction. A successor
+  gets in-edges from the dependents it re-anchors, which is why two supersedes can close a loop jointly
+  and two creates cannot. Reasoned, not measured; 14.4 item 4 is its check.
+- **Why not the heal:** `build_app_context` readies the ledger before the server accepts a call, so
+  the heal has finished before any verb runs in the served shape.
+- **Cost:** supersedes on one ledger run one at a time (a hub of 3,332 dependents holds it about 10 s,
+  §1.4). Claims, transitions, creates and reads are not held.
+- **Bound, pinned as a miss:** two PROCESSES writing one database can still write the joint cycle. The
+  served shape is one lore server per project. Pin: the audit's two-ledger, barrier-forced fixture
+  ASSERTS the cycle is written, with the message "KNOWN BOUND (#634): if you closed this deliberately,
+  delete this pin and say so". Trigger: any deployment with two task-writing processes on one database
+  (packet 39 must consult it). `supersede_task`'s docstring states the bound.
+
+### 14.4 Pins (contract author: ONE targeted set, no adversary re-grade)
+
+1. **#636:** 300 stragglers with distinct heads (the audit's world) → the boot completes and all heal.
+   Kills any input whose cost grows with the seed count.
+2. **#635, both doors, the audit's legs:** the 40-link chain → the live supersede raises
+   `TaskCycleError` and writes nothing; the heal skips D and records it once. Control at 3 links in
+   the same legs.
+3. **#634:** the audit's fixture on ONE ledger, both supersedes started together, repeated 20 times
+   inside the test → every repeat: exactly one `TaskCycleError`, no cycle over all columns. Plus the
+   pinned miss of 14.3.
+4. **Creates need no lock (cold audit, a run, not a standing test):** the auditor tries to close a
+   cycle with a create racing a supersede and with two creates. Zero cycles expected; one cycle
+   re-opens 14.3's "only supersede".
+5. **`task.guard.graph_large`:** with the constant shrunk below the fixture's row count the boot emits
+   it once; at the shipped value it does not.
+6. **The sweep the deletion forces.** Ten test files and three scripts name the closure read (counted
+   with a text search, a rename-exhaustiveness case): `test_blocks_edge.py` (15),
+   `test_agent_capability_seams.py` (8), `test_cycle_write_path_04b3.py` (6),
+   `test_query_tasks_bounded.py` (3), `test_trace_telemetry.py` (3), `test_readonly_guard.py` (2),
+   `_recut_auth_fixtures.py` (2), `test_tool_allowlist.py` (1), `_surreal_fakes.py` (1),
+   `test_auth_composition_recut.py` (1); `scripts/coldaudit_cycle_04b3_fork_a_refute.py` (4),
+   `scripts/cycle_coexisting_legacy_soundness_probe.py` (1), `scripts/restore_prod_dump.py` (1). Some
+   pin the overturned ruling and will be red on a correct build. Each hit gets its own verdict
+   (re-key to the new read / delete as certifying FORK A / unrelated mention); "the rest are X" is not
+   an answer. This is the largest part of the wave.
+
+### 14.5 Cost, and the cheaper route
+
+- **Cost:** one author run (14.4, dominated by item 6), one builder pass (one read function, two call
+  sites changed, one function deleted, one lock, one log line), no adversary run, one delta audit, and
+  the packet's full suite again (`--maxprocesses=12`, per the lead, for #508).
+- **The cheaper route, named for the operator:** change the heal's input only (#636 is the one
+  blocking regression) and pin #635 and #634 as bounds on the live supersede. I do not rule it: the
+  two findings are old code but become REACHABLE only with packet 58's re-anchor (before it, no live
+  write gave an existing row a new in-edge), so they are this packet's doors; and it would leave one
+  policy with two inputs, one of them measured slower and unsound.
+
+### 14.6 Proceed, and the morning items
+
+Proceed: the build is undeployed and every step is a revertible commit. For the operator:
+1. **ESC-1 / FORK A (packet 04b-3, cold-audited) is overturned** on 14.1's measurement.
+2. **Supersedes are serialised per ledger**, and the two-process case is a pinned bound (14.3).
+3. **This is the third design pass on the cycle class, and two of my rulings in it were wrong where I
+   reasoned instead of measuring** (§12.3, §13.2's cost line). What is different here: the input now
+   has no constant to hide behind (no depth, no seed factor, no timeout), and the one remaining bound
+   is pinned. My stop rule is in 14.0.
+
+## §INSTRUMENT-4 — `probe_guard_input_58.py`, pasted verbatim (run 2026-11-10 from the repo root: `uv run python <file>`)
+
+```python
+"""am-17 §14: what the cycle guard's INPUT costs (TEST store :18000 only).
+
+For a task table of N dependency-bearing rows (N dependents of one hub, real schema):
+  full     one `SELECT record::id(id), blocked_by FROM task WHERE array::len(blocked_by) > 0`
+  mirror   the boot's `_read_mirror_state` (that column read plus the whole `blocks` edge read)
+  bounded  the built `_bounded_dependency_graph` with S seeds (S distinct dependents), S in SEEDS
+  scc      the built predicate `find_row_blocked_by_cycles` over the full graph, one proposed row, in memory
+Control: `full` must return N rows; `bounded` returns seeds + 1 rows (each seed and its one blocker, the
+hub) and 1 row when the hub is the seed (the closure walks UP to blockers; the hub has none).
+Run from the repo root: `uv run python <this file> [N,N,...]`.
+"""
+import asyncio
+import sys
+import time
+
+sys.path.insert(0, "/home/ejprice/PycharmProjects/lore/loremaster/tests")
+import _reanchor_58_support as s  # noqa: E402
+from _surreal_harness import drop_database, make_env, unique_database  # noqa: E402
+from loremaster.tasks import find_row_blocked_by_cycles  # noqa: E402
+
+SIZES = tuple(int(x) for x in (sys.argv[1] if len(sys.argv) > 1 else "300,2400,19200").split(","))
+SEEDS = (1, 10, 50)
+FULL = "SELECT record::id(id) AS id, blocked_by FROM task WHERE array::len(blocked_by) > 0"
+
+
+async def timed(coro):
+    t = time.monotonic()
+    try:
+        out = await coro
+        return time.monotonic() - t, out
+    except Exception as e:  # noqa: BLE001 - a probe reports what it saw
+        return time.monotonic() - t, f"RAISED {type(e).__name__}: {str(e)[:90]}"
+
+
+async def main() -> None:
+    for n in SIZES:
+        env = make_env(database=unique_database(), dim=s.PRODUCTION_DIM)
+        assert ":18000" in env.url, "TEST store only"
+        ledger = s.new_ledger(env)
+        await ledger.ensure_ready()
+        try:
+            await s.raw_seed_row(ledger, "hubx", blocked_by=[])
+            done = 0
+            ids: list[str] = []
+            while done < n:                       # seed in slices so no one seeding txn is huge
+                step = min(4000, n - done)
+                ids += await s.bulk_seed_dependents(ledger, "hubx", step, f"d{done}x")
+                done += step
+            wall, rows = await timed(s.raw(ledger, FULL))
+            rows = rows if isinstance(rows, list) else []
+            print(f"N={n} full: {wall:.3f}s rows={len(rows)}", flush=True)
+            wall, _ = await timed(ledger._read_mirror_state())  # noqa: SLF001
+            print(f"N={n} mirror: {wall:.3f}s", flush=True)
+            wall, out = await timed(ledger._bounded_dependency_graph(["hubx"]))  # noqa: SLF001
+            print(f"N={n} bounded control seed=hub: {wall:.3f}s -> "
+                  f"{len(out) if isinstance(out, dict) else out}", flush=True)
+            for seeds in SEEDS:
+                wall, out = await timed(ledger._bounded_dependency_graph(ids[:seeds]))  # noqa: SLF001
+                print(f"N={n} bounded seeds={seeds}: {wall:.3f}s -> "
+                      f"{len(out) if isinstance(out, dict) else out}", flush=True)
+            stored = {str(r["id"]): [str(b) for b in r["blocked_by"]] for r in rows}
+            t = time.monotonic()
+            hit = find_row_blocked_by_cycles(stored, {"newrow": [ids[0]]}, {"newrow"}, all_or_nothing=True)
+            miss_wall = time.monotonic() - t
+            stored["hubx"] = ["newrow"]           # control: now newrow -> d0 -> hubx -> newrow
+            hit2 = find_row_blocked_by_cycles(stored, {"newrow": [ids[0]]}, {"newrow"}, all_or_nothing=True)
+            print(f"N={n} scc: {miss_wall:.3f}s acyclic_hits={len(hit)} control_hits={len(hit2)}", flush=True)
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+
+asyncio.run(main())
+```
+
+### 14.7 Lead corrections and additions (lead-58, 2026-11-10; §14 otherwise stands)
+
+1. **No pin-the-miss (OVERRULES 14.3's "pinned as a miss" and 14.4 item 3's second sentence).** The operator
+   retired pin-the-miss tests on 2026-11-09 (repo CLAUDE.md, "WHEN YOU CANNOT CLOSE A HOLE, RECORD IT": never
+   write a test that asserts a hole exists). The two-process write skew is recorded as **finding #634, kept open
+   as the bound**, plus a docstring on `supersede_task` and on the lock naming #634 and its trigger (any
+   deployment with two task-writing processes on one database; packet 39 consults it). No test asserts the cycle
+   is written. The two-process cycle is not reachable in the served topology (one lore server per project), so
+   the render does not name it; the trigger is the re-open. 14.6 item 2 and item 3's "the one remaining bound is
+   pinned" read "recorded" accordingly.
+2. **#638, both ruled properties pinned in the same targeted set** (bucket (b), cheap, and the set is being
+   written anyway): (i) determinism: the served cycle and the WARNING's `cycle` are identical across permuted
+   insertion orders of `stored` and `proposed` (in memory, at least 3 permutations, one world per writer
+   shape); (ii) once, before packing: leg B's world under a shrunk `TXN_ROW_WARN_THRESHOLD` that packs one row
+   per chunk → both rows unchanged and recorded (the audit's strengthened S2).
+3. **Served-text consistency (delta blind F3, minor product):** the two cycle refusals render arrows in
+   opposite directions. The batch-key refusal (`find_blocked_by_cycle`, graphlib) is normalised to the
+   persisted refusal's direction (`row -> its blocker`, which also matches the legacy and heal records), at
+   ONE place: the detector's return. Its served pin re-keys.
+4. **Builder riders from the delta audit's minors:** the `query_tasks` docstring names the superseded-row
+   exclusion (sharing D-2, #130(a)'s dropped rider); the `store.apply.large_transaction` record carries its
+   composer (the source) so #628's trigger can be attributed (sharing D-3, F8 part 1); stale "ONE shared
+   detector" prose rewritten to §13.3's one-detector-per-question (blind F4 / sharing D-1).
+5. **Registry:** `packet-58-fixwave`'s 26 ids are green at cdf1ce4. The contract author removes them and owns
+   exactly this set's new reds under the same entry (still `active: true`), then deletes the entry when the build
+   lands.
