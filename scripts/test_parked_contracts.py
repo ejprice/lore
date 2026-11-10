@@ -300,10 +300,12 @@ class ParkedSandbox:
     def registry_path(self) -> Path:
         return self.pytester.path / REGISTRY_RELATIVE
 
-    def write_registry(self, text: str | None) -> None:
-        """Write the registry, or remove it when ``text`` is ``None`` (the absent case)."""
+    def write_registry(self, text: str | bytes | None) -> None:
+        """Write the registry (``bytes`` verbatim, ``str`` as UTF-8); ``None`` removes it (absent case)."""
         if text is None:
             self.registry_path.unlink(missing_ok=True)
+        elif isinstance(text, bytes):
+            self.registry_path.write_bytes(text)
         else:
             self.registry_path.write_text(text, encoding="utf-8")
 
@@ -447,6 +449,18 @@ class TestDeselectionReport:
         stated = _standalone_integers(run.summary_line())
         assert EXPECTED_PARKED_COUNT - 1 in stated and EXPECTED_PARKED_COUNT not in stated, stated
 
+    @pytest.mark.parametrize(
+        "workers", [pytest.param("0", id="n0"), pytest.param(SANDBOX_WORKERS, id="xdist")]
+    )
+    def test_no_summary_line_when_the_run_deselects_nothing(
+        self, sandbox: ParkedSandbox, workers: str
+    ) -> None:
+        # Cold audit F2 (wrong build WB1): S2's line is printed only "when anything was deselected". A valid
+        # registry and a selection holding no parked node (LIVE_GREEN is listed, but under the ACTIVE bound).
+        run = sandbox.run("-n", workers, UNRELATED_GREEN, LIVE_GREEN)
+        assert run.ran == {UNRELATED_GREEN, LIVE_GREEN}
+        assert run.lines_containing(RUN_PARKED_FLAG) == [], run.lines
+
     def test_summary_line_is_printed_once_under_xdist(self, sandbox: ParkedSandbox) -> None:
         # Under xdist the controller collects nothing and worker stdout is not shown: the line must still
         # reach the terminal, once, with the count of ONE collection (not summed over workers).
@@ -494,12 +508,22 @@ def _misfiled_node_registry() -> str:
 
 
 #: (case id, registry text or None for absent, the token the ONE warning line must carry beyond the filename).
+def _non_utf8_registry() -> bytes:
+    # Finding #630 (cold audit F1): a registry saved by a Latin-1 editor. Byte 0xe9 ("é") is not valid UTF-8,
+    # and the hook must degrade like every other broken registry instead of an INTERNALERROR.
+    return (f"# reviewed by Ren\u00e9 (registry owner)\n{VALID_REGISTRY}").encode("latin-1")
+
+
+#: The case-insensitive token naming a non-UTF-8 registry's problem (a codec message or a hand-written one).
+NON_UTF8_PROBLEM_TOKEN = "utf-8"
+
 BROKEN_REGISTRIES = [
     ("absent", None, REGISTRY_FILENAME),
     ("unparseable", "version: 1\nbounds: [\n  {id: parked-alpha-contract, files: [\n", REGISTRY_FILENAME),
     ("unknown-key", _unknown_key_registry(), "parked_until"),
     ("non-boolean-active", _string_active_registry(), "active"),
     ("misfiled-node-id", _misfiled_node_registry(), SHELVED_METHOD),
+    ("non-utf8", _non_utf8_registry(), NON_UTF8_PROBLEM_TOKEN),
 ]
 
 
@@ -511,7 +535,7 @@ class TestBrokenRegistry:
         [pytest.param(text, token, id=case) for case, text, token in BROKEN_REGISTRIES],
     )
     def test_broken_registry_deselects_nothing_and_warns_once(
-        self, sandbox: ParkedSandbox, text: str | None, problem_token: str
+        self, sandbox: ParkedSandbox, text: str | bytes | None, problem_token: str
     ) -> None:
         sandbox.write_registry(text)
         # Two GREEN nodes, one of them parked in the sandbox registry: if anything is still deselected the
@@ -522,11 +546,20 @@ class TestBrokenRegistry:
         assert run.result.ret == pytest.ExitCode.OK, os.linesep.join(run.lines)
         warnings = run.lines_containing(REGISTRY_FILENAME)
         assert len(warnings) == 1, f"S5: expected ONE line naming {REGISTRY_FILENAME}, got {warnings}"
-        assert problem_token in warnings[0], warnings[0]
+        assert problem_token.lower() in warnings[0].lower(), warnings[0]
 
-    def test_broken_registry_warns_once_under_xdist(self, sandbox: ParkedSandbox) -> None:
+    @pytest.mark.parametrize(
+        ("text", "problem_token"),
+        [
+            pytest.param(_unknown_key_registry(), "parked_until", id="unknown-key"),
+            pytest.param(_non_utf8_registry(), NON_UTF8_PROBLEM_TOKEN, id="non-utf8"),
+        ],
+    )
+    def test_broken_registry_warns_once_under_xdist(
+        self, sandbox: ParkedSandbox, text: str | bytes, problem_token: str
+    ) -> None:
         # Ruling A5: every repo run uses -n, so the ONE warning must reach the terminal from the controller.
-        sandbox.write_registry(_unknown_key_registry())
+        sandbox.write_registry(text)
         run = sandbox.run("-n", SANDBOX_WORKERS, PARKED_GREEN, LIVE_GREEN)
         assert run.ran == {PARKED_GREEN, LIVE_GREEN}
         assert run.result.ret == pytest.ExitCode.OK, os.linesep.join(run.lines)
@@ -534,7 +567,7 @@ class TestBrokenRegistry:
         assert len(warnings) == 1, (
             f"S5 under xdist: expected ONE line naming {REGISTRY_FILENAME}, got {warnings}"
         )
-        assert "parked_until" in warnings[0], warnings[0]
+        assert problem_token.lower() in warnings[0].lower(), warnings[0]
 
 
 # ---------------------------------------------------------------------------

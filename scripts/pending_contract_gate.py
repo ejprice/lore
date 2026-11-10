@@ -794,7 +794,10 @@ class PendingContractRegistry(BaseModel):
     @classmethod
     def load(cls, path: Path) -> PendingContractRegistry:
         try:
-            raw = yaml.safe_load(path.read_text())
+            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except UnicodeDecodeError as error:
+            # A ValueError, not an OSError: without this arm it escapes as an INTERNALERROR (finding #630).
+            raise RegistryError(f"cannot read registry {path}: not valid UTF-8 ({error})") from error
         except (OSError, yaml.YAMLError) as error:
             raise RegistryError(f"cannot read registry {path}: {error}") from error
         if not isinstance(raw, dict):
@@ -1082,7 +1085,10 @@ class GateManifest(BaseModel):
     @classmethod
     def load(cls, path: Path) -> GateManifest:
         try:
-            raw = yaml.safe_load(path.read_text())
+            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except UnicodeDecodeError as error:
+            # A ValueError, not an OSError: without this arm it escapes as an INTERNALERROR (finding #630).
+            raise ManifestError(f"cannot read manifest {path}: not valid UTF-8 ({error})") from error
         except (OSError, yaml.YAMLError) as error:
             raise ManifestError(f"cannot read manifest {path}: {error}") from error
         if not isinstance(raw, dict):

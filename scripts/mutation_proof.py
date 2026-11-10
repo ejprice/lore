@@ -56,8 +56,9 @@ shell-quoting a multi-line anchor is its own defect generator.
     the output, and a transcribed set is the tautology in a new costume — the
     same shape as an assertion fitted to whatever the code already does. This
     BOUND cannot be closed mechanically; it lives with the caller.
-  * ⚠ TAKE DECLARED NODE IDS FROM ``pytest --collect-only -q``, NOT FROM THE
-    SOURCE. pytest ASCII-ESCAPES non-ASCII characters in parametrised ids — an
+  * ⚠ TAKE DECLARED NODE IDS FROM ``pytest --collect-only -q --run-parked``, NOT FROM
+    THE SOURCE (a plain ``--collect-only`` hides every parked contract test).
+    pytest ASCII-ESCAPES non-ASCII characters in parametrised ids — an
     em-dash in a parameter becomes a literal ``—`` on the wire — so an id
     transcribed from the test file can be unmatchable, and the proof reports a
     two-way mismatch on a mutation that was perfectly correct. Collecting is not
