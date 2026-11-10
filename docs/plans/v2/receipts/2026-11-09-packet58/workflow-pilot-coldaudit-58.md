@@ -38,3 +38,17 @@ Adopt Workflow for cold audits, with four changes:
 4. **Save the script** as a named workflow (`.claude/workflows/coldaudit.js`), with the graded commit, base, receipts dir and dimension list as `args`, so the next lead reuses it instead of re-authoring it.
 
 Lead-context cost should be re-measured on the second use of a saved script, where the authoring cost disappears. That comparison decides whether this becomes the standing default.
+
+## Addendum: second use, the delta audit (`wf_4b3bc42b-1af`, 2026-11-10 07:29Z, graded `cdf1ce4`)
+| metric | delta run | first run |
+|---|---|---|
+| agents | 9 | 9 |
+| subagent tokens (harness) | 1,942,986 | 1,913,524 |
+| wall time | 38.0 min (`duration_ms` 2,281,966) | 53.5 min |
+| findings raised / verified / refuted | 23 / 23 / 0 | 27 / 27 / 4 |
+| lead-context cost (MEDIUM, by character count) | ~6k tokens: the script re-authored inline (~16k chars, since it reused the structure rather than the saved file), a notification of ~1.8k chars, untruncated under the new return budget, and the summary and decisions sections read (~9k chars) | ~9k tokens |
+
+- **Changes 1 and 2 from §Recommendation were applied and worked.** The verdict rule now counts any confirmed product defect as NO-GO. The synthesiser's capped return arrived whole (~1.8k chars, against the first run's truncated ~8.5k).
+- **The delta audit found what the contract loop missed again:** a write-skew race (#634), a depth bound (#635) and a read that fails the boot at scale (#636). The contract-blind reader and the probes dimension found them, so the structural-independence argument holds on the second use.
+- **New friction:** the full suite was OOM-killed after 49 s at the 16G cap. A solo run of the gate resolves `-n auto` (64 workers, #508). The gate already forwards `--maxprocesses`, which can only lower the count, so the brief's command should be `pending_contract_gate.py --currency -- --maxprocesses=12`. Fold that into the saved script (change 4).
+- Lead-context cost fell by about a third on the second use, even though the script was re-sent inline rather than reused by `scriptPath`. Saving it as a named workflow (change 4) should remove most of the remaining authoring cost.
