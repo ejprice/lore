@@ -196,4 +196,76 @@ each was found by tripping over it. Two waves is the limit for instance fixes.
 11. **SAT receipt:** 0 attributable reds over the declared targeted set on the updated reference,
     `loremaster.__file__` printed; `--currency --legs typecheck,ruff` at RED_ORPHANED 0.
 
+## 7. Q5 (lead-58, lore_comms #20037): the raw THROW marker must not leak — a pin IS owed, under §4
+
+Sources read: `REPORT-contract-58-r5.md` §R5.2 item 8's observation and Deviations 5;
+`test_retry_seam.py::test_the_governed_conflict_marker_label_and_type_are_registered_in_the_seam` and
+`test_surreal_store.py::test_the_governed_conflict_label_carries_no_raw_marker_or_suffix`;
+`test_fixwave_a28c_63c_i_a.py::test_am36_1_2_an_echoed_phrase_moves_nothing`; `test_txn_contention.py`'s
+sensitive-marker leg.
+
+- **Does an existing instrument cover the four by derivation? NO.**
+  - The echo sweep (`test_am36_1_2_an_echoed_phrase_moves_nothing`, which r5 grew with four THROW hosts) asserts
+    the served CLASS, one attempt, the deadline and the root-cause position. It never reads the raised text for
+    the marker.
+  - `test_txn_contention.py`'s leg asserts an echoed VALUE is absent from the message. It seeds an ASSERT echo; a
+    label that IS the marker passes it.
+  - The two governed pins named above assert exactly this property, for the governed label only, by name.
+- **Not spec-silent.** §4 rules that every test site listing the governed member lists 58's four or says why
+  not. Those two sites are single-member pins of a property the four share, so they were *must grow* rows; r5.2's
+  sweep called them "not a member list" and, correctly, raised the gap instead of dropping it. The ruling behind
+  the property is 63-rulings §2.5 rider ii (the label teaches what happened and never carries the raw marker or
+  its `<t>:<id>` suffix — finding #456's defect) and ledger #31.
+- **What wrong build passes today?** A label set to its marker (`claim_lost: …`). Every class, mapping and
+  `proven_no_key` pin stays green, and the consumer is served the engine-facing key in a teaching error.
+- **Ruling — pin it in 58's own file, by behaviour, ∀ four.** In `test_reanchor_58_r5_rows.py`'s
+  `TestTheFourClassesAreTypedAndAnchored`, where each marker's REAL THROW is already driven through the seam to
+  its typed error: for every marker from `fifty_eight_thrown_markers()`, on both raise sites the class already
+  drives, `marker not in str(error)` and the THROW's `<id>` suffix is not in `str(error)`. Positive control in
+  the same leg: the raw engine text the seam received DOES contain both (so the check is shown able to fire).
+  No edit to the two governed pins and no new grant: the assertion lives where 58's members are derived.
+- **Why the seam is enough (and its bound):** every ledger verdict and every served render downstream is built
+  from the typed error, whose text is the label plus the server-log hint. Stated bound: a door that catches a raw
+  SDK error without passing the seam is outside this pin; the runtime SDK guard owns that.
+- **Loop cap: author-corrects-and-lead-verifies (§5), not the cold audit.** It is one assertion in an existing
+  leg. The lead's verification: the leg GREEN on the reference (count line), and one mutation on the reference
+  tree — set one of the four labels to embed its marker → the leg goes RED → restore byte-exact. If the
+  adversary's replay is still open when the assertion lands, that mutation rides the replay as one more build
+  instead; either way it is one run, and no enumeration.
+
+## 8. Q4 addendum (lore_comms #20028 / #20034): the 302 s heal leg, and an erratum on am-15 §1.3's heal claim
+
+- **Is the 302 s a re-key defect from the unshrunk 50,000 cap? NO.** The leg ran under §8.1's 5,000 fixture: fit
+  about 1,250, so `2·fit + 1` = 2,501 stragglers, re-seeded and re-booted once to measure and once per armed write.
+  The adversary's isolated run shows it SLOW, not hung (1 passed, 302.55 s). r5.2 already applies §2.5's in-test
+  shrink to it (9 rows, 3 chunks). Nothing further is owed, except that the replay re-runs W-HEAL2 and WD22H
+  against the shrunk leg (r5.2 Deviations 4; inside §5 item 3).
+- **Does it bear on am-15 §1.3? Yes — it shows that sentence over-claimed, and I correct it.** I wrote "the boot
+  heal is not in this band" from one number: a 49,999-statement transaction took 53.7 s on a SCHEMALESS,
+  un-indexed table, which I had labelled a lower bound two paragraphs earlier and then used as if it were the
+  cost. What is established: `ensure_ready_operation`'s 300 s is a PER-REQUEST timeout, so it bounds each heal
+  chunk, not the boot; and one full chunk costs AT LEAST 53.7 s. What is not: the cost of a full chunk on the
+  real schema. The 302 s leg does not measure it either (its time is spread over several boots and their
+  seeding), so I draw no number from it.
+- **The consequence if a real full chunk exceeds 300 s:** the chunk raises `SurrealOutcomeUnknownError`, the boot
+  fails loud (am-3 §2), nothing commits, and the next boot packs the same chunk and fails the same way — am-3
+  §1's "deterministic refusal retried forever", reached by time instead of by count. It needs roughly 16,000
+  stragglers in one boot; production holds 116 task rows.
+- **Ruling: MEASURE-THEN-TUNE, with the decision point named.** Data: the wall-clock of ONE heal chunk packed to
+  the real cap on the REAL schema (a one-off probe against `:18000` using the built ledger, not a suite test —
+  F19). When: 58's build close-out, beside the real-population heal receipt (am-15 §6 item 11). Decided by: me,
+  or the operator if I am gone. Rule to apply: above 150 s (half the request budget), the packer's `max_size`
+  re-opens as a design question; at or below, the bound stands as stated here.
+- **Interim instrument:** a heal chunk over 10,000 rows emits the house size WARN from `TaskLedger._apply` — the
+  same trigger §1.3 names for the supersede.
+
+## 9. BC-r4-3(c) is RETIRED (contract-58-r5 §R5.2 Deviations 6; adversary WD22)
+
+BC-r4-3(c) told the builder the heal "must be reached BY NAME from the boot path", claiming a `getattr` or
+callback dispatch "derives no root and its legs red". The adversary built exactly that with a correct heal
+(WD22) and every leg is GREEN. So the constraint forbids a correct build for a property no pin holds, and its
+stated consequence is false. Retired. What binds the builder is BC-r4-3 (a), (b), (d) and §2.5: the heal's
+faults behave correctly at every write, driven from the boot. How the boot dispatches to the heal is the
+builder's.
+
 No production code, test, registry or store touched by this amendment. No attribution trailer on the commit.
