@@ -59,8 +59,9 @@ Fan-out: haiku 0 · sonnet 0 · peak 0.
 **Where I chose between readings (brief-base §2):**
 1. *F12: "`TXN_ROW_HARD_CAP` is the one bound; packet 58's packer … re-size by rows"* — reading A: the packer's
    `max_size` must BE the hard cap; reading B: the packer sizes by rows, keeps no statement cap, and never exceeds the
-   one bound. I pick **B**. The hard cap stays the only size at which anything is REFUSED; a chunk target below it
-   refuses nothing (the same stragglers heal, in more transactions). am-15 §2 fixed `max_size` at the hard cap under
+   one bound. I pick **B**. No straggler POPULATION is refused below the hard cap: a chunk target below it
+   only splits the same stragglers over more transactions. A SINGLE row heavier than the chunk bound IS refused
+   (§5, §11); the earlier wording here ("a chunk target below it refuses nothing") over-claimed and is withdrawn. am-15 §2 fixed `max_size` at the hard cap under
    reading A without a real-schema measurement; this amends it.
 2. *am-16 §8: "above 150 s … the packer's `max_size` re-opens"* — reading A: tune only `max_size`; reading B: find why
    the chunk is slow first. I pick **B**: the measured cause (§1.1) is one a smaller `max_size` cannot bound.
@@ -888,3 +889,33 @@ The instrument for that is the cold audit's contract-blind read of the patch (ri
   to lead-base is the operator's call. Do you want a finding filed for it?
 - The ordering law was broken once and A does not pretend otherwise; the wave report should say so in
   its deviations.
+
+## 11. Follow-up (lead-58, lore_comms #20072): §0 against §5 on a single over-bound row
+
+**Ruling: §2/§5 stand. WB9 is a wrong build. No code changes** (the build's
+`constrained_batches(..., min(WARN, HARD), strict=True)` is the ruled form). §0's reading-B sentence was
+written about populations and said more than that; it is reworded in place. Confidence HIGH.
+
+- **The rule, once:** one row whose own `fragment_rows` weight exceeds `min(WARN, HARD)` makes the boot
+  fail loud with `StragglerHealPackerError`, `row_cap` = that bound, nothing committed. This holds for a
+  weight in `(bound, hard]` exactly as for a weight above the hard cap.
+- **Why not WB9 (pack it alone, let `compose` refuse):**
+  1. It breaks the pinned property of §6.1, "every heal transaction's `fragment_rows` is at most the
+     packer's live bound", for the one input where the bound matters.
+  2. A chunk above the bound has no measured safety for this shape. §1's figures above 10,000 rows
+     (21 s at 16,000, 229 s at 50,000) are for one-blocker stragglers. A single row that heavy names
+     thousands of blockers, and its dependent-anchored DELETEs each walk that row's own in-edges, so its
+     cost grows with the square of its blocker count. Not measured; LOW confidence on the size, which is
+     the reason to refuse it.
+  3. A timeout there is `SurrealOutcomeUnknownError` on every boot, a worse refusal than a typed one
+     that names the row.
+- **Cost of the ruling, stated:** a task naming between roughly 2,500 and 12,500 superseded blockers is
+  now refused where WB9 might have healed it slowly. §5 already names this as the accepted bound.
+  Trigger and instrument: any production boot raising `StragglerHealPackerError`; it names `row_id`
+  and `weight`, and re-opens this section with that row's shape measured by §INSTRUMENT part E.
+- **Pin it like this (MP-1, routed by the adversary as a builder requirement plus cold-audit probe P3;
+  this section does not change that routing or reopen the loop cap):** in the WARN-below-hard world
+  (800 under 5,000), one straggler weighing more than 800 and at most 5,000 → the boot raises
+  `StragglerHealPackerError` with `row_cap == 800`, and the row and its edges are unchanged. Control in
+  the same leg: a straggler weighing at most 800 heals. This is the leg WB9 dies on; the existing F10
+  monster (5,101, over both bounds) cannot kill it.
